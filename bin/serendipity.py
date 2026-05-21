@@ -21,6 +21,7 @@ import os
 import re
 import sqlite3
 import sys
+from collections import Counter
 
 DB_PATH = os.path.expanduser("~/.claude/memory-system/db/index.db")
 
@@ -38,16 +39,17 @@ def extract_key_terms(text, min_len=5, max_terms=8):
         "these", "those", "through", "using", "which", "would",
     }
     filtered = [w for w in words if w not in stopwords]
-    from collections import Counter
     counts = Counter(filtered)
     return [w for w, _ in counts.most_common(max_terms)]
 
 
 def search_fts5(conn, query, limit=5, exclude_project=None):
-    sanitized = re.sub(r'[*(){}[\]^~:+\-]', ' ', query)
+    sanitized = re.sub(r'[*()\[\]{}^~:+\-]', ' ', query)
     sanitized = sanitized.replace('"', '')
     words = [w for w in sanitized.split() if len(w) >= 3 and w.upper() not in ("AND", "OR", "NOT", "NEAR")]
-    fts_query = " OR ".join(words) if words else query
+    if not words:
+        return []
+    fts_query = " OR ".join(words[:4])
 
     sql = """
         SELECT c.path, c.name, c.project, c.section_heading, c.content,
@@ -139,11 +141,15 @@ def main():
         sys.exit(1)
 
     conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
 
     cwd = os.getcwd()
-    project = cwd.replace("/", "-").lstrip("-")
+    project = None
+    sanitized_cwd = "-" + cwd.replace("/", "-").lstrip("-")
+    for row in conn.execute("SELECT DISTINCT project FROM memory_chunks WHERE project IS NOT NULL"):
+        if sanitized_cwd.endswith(row[0]) or row[0].endswith(cwd.split("/")[-1]):
+            project = row[0]
+            break
 
     surprises = find_serendipity(conn, query, current_project=project)
 
