@@ -239,22 +239,48 @@ A validated, recent, human-created memory always outranks an old, unverified, ag
 
 ## Comparison
 
-|                       | Eidetic              | [claude-mem](https://github.com/anthropics/claude-mem) (76K) | [engram](https://github.com/Gentleman-Programming/engram) (3.7K) | [memsearch](https://github.com/zilliztech/memsearch) (1.8K) |
-| --------------------- | -------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------- | ----------------------------------------------------------- |
-| Search                | FTS5 + vector hybrid | SQLite + ChromaDB                                            | Vector + BM25                                                    | Milvus + BM25                                               |
-| Auto-inject           | rules/ (no cap)      | MCP server                                                   | hooks                                                            | hint + skill                                                |
-| Signal extraction     | Haiku async          | PostToolUse                                                  | manual                                                           | no                                                          |
-| **Compounding**       | yes                  | no                                                           | no                                                               | no                                                          |
-| **Self-ref discount** | 0.5x                 | no                                                           | no                                                               | no                                                          |
-| **Evidence tiers**    | 3 tiers              | no                                                           | no                                                               | no                                                          |
-| **Code search**       | tree-sitter          | no                                                           | no                                                               | no                                                          |
-| Phase-adaptive        | 3 phases             | no                                                           | no                                                               | no                                                          |
-| Dependencies          | **zero** (core)      | ChromaDB, worker                                             | Node.js                                                          | Milvus, PyTorch                                             |
-| Rollback              | 1 cmd, 5s            | manual                                                       | no                                                               | manual                                                      |
+### What only Eidetic does
 
-**When to use Eidetic:** You want a memory system that actually learns, not just stores. Zero setup, compounds knowledge, works out of the box.
+These features exist in no other Claude Code memory tool (as of May 2026, based on [40-repo competitive analysis](https://github.com/LARIkoz/eidetic/releases/tag/v2.2.0)):
 
-**When to use alternatives:** You need multi-agent support beyond MCP (engram), or semantic search is critical and you don't want to install fastembed (memsearch).
+| Unique feature                | What it means                                            | Why it matters                                                     |
+| ----------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------ |
+| **Compounding**               | Updates existing memories instead of creating duplicates | 50 sessions = 50 refined rules, not 500 files                      |
+| **Self-referential discount** | Agent-extracted memories ranked 0.5x vs human-created    | Prevents hallucination → memory → recall → reinforcement loops     |
+| **Evidence tiers**            | validated > observed > hypothesis, compound-weighted     | Search returns proven knowledge first, guesses last                |
+| **Code search**               | Tree-sitter AST → searchable functions/classes           | "Where is the rate-limit handler?" actually works                  |
+| **Phase-adaptive**            | Behavior changes at 10/30 sessions                       | Session 50 agent is proactive, session 1 agent explains everything |
+| **Zero deps core**            | bash + python3 + sqlite3                                 | No Docker, no npm, no pip for basic usage. `install.sh` and done   |
+
+### Full comparison
+
+| Capability                   | Eidetic                  | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
+| ---------------------------- | ------------------------ | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
+|                              | **v2.2**                 | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
+| Search                       | FTS5 + vector            | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
+| Recall benchmark             | **100%**                 | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
+| Auto-inject on session start | **rules/ (no cap)**      | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
+| Signal extraction            | Haiku async              | PostToolUse                                            | manual                                                    | —                                                    | —                                                                      |
+| Compounding                  | **yes**                  | —                                                      | —                                                         | —                                                    | —                                                                      |
+| Self-ref discount            | **0.5x**                 | —                                                      | —                                                         | —                                                    | —                                                                      |
+| Evidence tiers               | **3 tiers**              | —                                                      | —                                                         | —                                                    | —                                                                      |
+| Code search                  | **tree-sitter**          | —                                                      | —                                                         | —                                                    | —                                                                      |
+| Phase-adaptive               | **3 phases**             | —                                                      | —                                                         | —                                                    | —                                                                      |
+| Serendipity links            | **yes**                  | —                                                      | —                                                         | —                                                    | —                                                                      |
+| Multi-agent (MCP)            | yes                      | yes                                                    | yes (Cursor, Copilot)                                     | yes                                                  | —                                                                      |
+| Dependencies                 | **zero**                 | ChromaDB, worker                                       | Node.js                                                   | Milvus, PyTorch                                      | Obsidian app                                                           |
+| Rollback                     | **1 cmd, 5s**            | manual                                                 | —                                                         | manual                                               | manual                                                                 |
+| Token compression            | **2.17x** (57→124 rules) | —                                                      | —                                                         | —                                                    | 71x (claimed)                                                          |
+
+### When to use what
+
+| Your situation                                      | Best choice |
+| --------------------------------------------------- | ----------- |
+| Claude Code user who wants it to remember and learn | **Eidetic** |
+| Need shared memory across Cursor + Claude + Copilot | engram      |
+| Already using Obsidian, want simple integration     | lucasrosati |
+| Need heavy multilingual semantic search             | memsearch   |
+| Want largest community and web UI                   | claude-mem  |
 
 ---
 
