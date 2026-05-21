@@ -1,34 +1,35 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/LARIkoz/eidetic/releases/tag/v1.0.0)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/LARIkoz/eidetic/releases/tag/v1.0.0)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](#install)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
+[![MCP](https://img.shields.io/badge/MCP-server%20included-orange.svg)](#mcp-server)
 
-**Long-term memory for Claude Code that scales without manual maintenance.**
+**Every session starts where the last one ended.**
 
-Claude Code forgets between sessions. `MEMORY.md` has a 200-line limit. Eidetic replaces it with FTS5 search, auto context injection, and session signal extraction. Zero external dependencies — `bash` + `python3` + `sqlite3`.
+Eidetic makes your AI coding agent remember — decisions, rules, failures, patterns — across all sessions and all projects. Zero setup. Zero dependencies.
 
 ```bash
 git clone https://github.com/LARIkoz/eidetic.git && cd eidetic && bash install.sh
 ```
 
+Works with Claude Code (hooks + skills), Cursor, Windsurf, Cline, and any MCP-compatible agent.
+
 ---
 
-## The Problem
+## Why
 
-Claude Code forgets everything between sessions. The built-in `MEMORY.md` auto-memory has a **200-line platform limit** — any behavioral rule past line 200 is invisible to the agent. The agent violates rules it cannot see, creating false confidence.
+You teach your agent a rule. Next session — it forgot. You explain again. And again.
 
-At a growth rate of 5-10 memory files per week, this problem doubles every 3 months.
+The built-in `MEMORY.md` has a **200-line platform limit**. Your 11 most important rules? Past line 200. Invisible. The agent violates rules it cannot see.
 
-**Concrete failure mode:** You create a rule "never suggest API top-up" at line 211 of MEMORY.md. The agent never sees it. It suggests API top-up. You add another rule. Now you have two invisible rules. The index file that's supposed to help the agent actually harms it — it promises knowledge the agent can't access.
+Eidetic fixes this:
 
-Eidetic replaces this bottleneck with:
-
-- **FTS5 full-text search** across all projects (50ms, 400+ files)
-- **Automatic context injection** via `~/.claude/rules/` (no size cap)
-- **Session signal extraction** (decisions, failures, patterns auto-captured)
-- **Compounding** (updates existing knowledge instead of creating duplicates)
+- **59+ behavioral rules always visible** — injected on every session start via `~/.claude/rules/` (no size cap)
+- **Search across all projects** — "what did we decide about X?" → answer in 50ms, regardless of which folder it's in
+- **Auto-learning** — decisions, failures, and patterns extracted from every session automatically
+- **Compounding** — updates existing knowledge instead of creating duplicate files. The only memory system that revises, not just appends
 
 ---
 
@@ -490,36 +491,29 @@ Each alternative solves 1-2 of these. Eidetic solves all five, with zero externa
 
 ---
 
-## Transition from Built-in Auto-Memory
+## Is It Safe?
 
-Eidetic runs in parallel with Claude's built-in auto-memory (Phase A). This is safe — duplicate context causes no harm, and if the hook fails, MEMORY.md still works.
-
-After 5 stable sessions, disable auto-memory:
-
-```json
-// In ~/.claude/settings.json
-"autoMemoryEnabled": false
-```
-
-The hook's fallback: if FTS5 index is missing, it writes `head -200 MEMORY.md` to the rules file — identical to the old behavior.
+- **Runs in parallel** with built-in auto-memory — nothing breaks if you install it
+- **Doesn't modify your files** — only reads and indexes. Original memories untouched
+- **Rollback = 1 command, <5 seconds** — `bash ~/.claude/memory-system/bin/rollback.sh`
+- **Fallback** — if index is missing, falls back to `head -200 MEMORY.md` (same as before)
+- **Agent-created memories = 0.5x weight** — the system can't reinforce its own hallucinations
 
 ---
 
 ## Roadmap
 
-### v1.1 — Quality (current)
+### Done
 
-- [x] **Serendipity links** — surfaces unexpected cross-project connections. "You're searching key rotation → btw, there's a proxy skill and a model-selection rule from another project that connect." Inspired by Luhmann: _"The slip-box is designed to surprise you."_
+- [x] **v1.0** — FTS5 search + auto context injection + signal extraction + compounding + evidence tiers + serendipity links
+- [x] **v1.1** — Consreview (12 bugs fixed), session counter, phase-adaptive behavior
+- [x] **v1.2** — MCP server (5 tools, works with Cursor/Windsurf/Cline)
 
-### v1.2 — Multi-agent (current)
+### Planned
 
-- [x] **MCP server** — 5 tools (search, serendipity, health, reindex, lint) over JSON-RPC stdio. Works with Claude Code, Cursor, Windsurf, Cline. Zero deps.
-
-### v2.0 — Intelligence
-
-- [ ] **Hybrid vector search** — FTS5 + embeddings via RRF (Reciprocal Rank Fusion). Triggered when FTS5 recall drops below 80%.
-- [ ] **Web dashboard** — lightweight single-file HTML for browsing memories, search, and knowledge graph visualization.
-- [ ] **Active DELETE** — automated stale memory cleanup with human confirmation. Karpathy's third operation: add, update, **delete**.
+- [ ] **v1.3 — Smart Token Compression** — tiered display (critical rules = full text, low-priority = name-only). Adaptive budget by project context. Match lucasrosati's 71x claim without Obsidian dependency.
+- [ ] **v2.0 — Hybrid Vector Search** — FTS5 + local embeddings via RRF. Triggered when FTS5 recall drops below 80%. Kills memsearch advantage without Milvus.
+- [ ] **v2.2 — Code-Aware Parsing** — Tree-sitter AST chunks for Python/JS/TS. Search finds functions, not just markdown. Kills Durafen advantage without Qdrant.
 
 ---
 
