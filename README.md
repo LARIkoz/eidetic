@@ -480,9 +480,19 @@ The hook's fallback: if FTS5 index is missing, it writes `head -200 MEMORY.md` t
 
 ## Roadmap
 
-- **Vector search** — hybrid FTS5 + embeddings via RRF. Triggered when FTS5 recall drops below 80% (currently at threshold with 418 files).
-- **Serendipity links** — surface unexpected connections between memories across projects. "You're working on key rotation → btw, there's a rate-limit finding in another project."
-- **Multi-agent support** — extend hooks to work with Codex CLI and Gemini CLI alongside Claude Code.
+### v1.1 — Quality (current)
+
+- [x] **Serendipity links** — surfaces unexpected cross-project connections. "You're searching key rotation → btw, there's a proxy skill and a model-selection rule from another project that connect." Inspired by Luhmann: _"The slip-box is designed to surprise you."_
+
+### v1.2 — Multi-agent
+
+- [ ] **MCP server** — expose search + recall as MCP tools. Cursor, Windsurf, and any MCP-compatible agent gets Eidetic memory without custom hooks.
+
+### v2.0 — Intelligence
+
+- [ ] **Hybrid vector search** — FTS5 + embeddings via RRF (Reciprocal Rank Fusion). Triggered when FTS5 recall drops below 80%.
+- [ ] **Web dashboard** — lightweight single-file HTML for browsing memories, search, and knowledge graph visualization.
+- [ ] **Active DELETE** — automated stale memory cleanup with human confirmation. Karpathy's third operation: add, update, **delete**.
 
 ---
 
