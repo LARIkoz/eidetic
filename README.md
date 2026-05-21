@@ -65,7 +65,7 @@ A bigger MEMORY.md is a longer sticky note. Eidetic is a searchable, self-updati
 ## How It Works
 
 ```
-                         SESSION START (~200ms)
+                    SESSION START (~350ms warm, ~11s first run*)
                                 |
                     +-----------+-----------+
                     |           |           |
@@ -171,17 +171,18 @@ After a search, Eidetic looks for unexpected cross-project connections via wikil
 
 ## Performance
 
-| Metric                        | Value                          |
-| ----------------------------- | ------------------------------ |
-| Session start overhead        | **~200ms**                     |
-| Full reindex (423 files)      | 0.6s                           |
-| Incremental reindex           | 40ms                           |
-| FTS5 search                   | ~50ms                          |
-| Hybrid search (FTS5 + vector) | ~200ms                         |
-| Code index (143 files)        | 0.1s                           |
-| Signal extraction cost        | ~$0.002/session                |
-| Index size                    | 7.8MB (FTS5) + 4.9MB (vectors) |
-| External dependencies         | **zero** (core)                |
+| Metric                          | Value                            |
+| ------------------------------- | -------------------------------- |
+| Session start (warm)            | **~350ms**                       |
+| Session start (cold, first run) | ~11s (fastembed ONNX model load) |
+| Full reindex (423 files)        | 0.6s                             |
+| Incremental reindex             | 40ms                             |
+| FTS5 search                     | ~50ms                            |
+| Hybrid search (FTS5 + vector)   | ~200ms                           |
+| Code index (143 files)          | 0.1s                             |
+| Signal extraction cost          | ~$0.002/session                  |
+| Index size                      | 7.8MB (FTS5) + 4.9MB (vectors)   |
+| External dependencies           | **zero** (core)                  |
 
 ---
 
