@@ -22,9 +22,12 @@ TODAY = datetime.now().strftime("%Y-%m-%d")
 
 def search_fts5(conn, query, limit=3):
     """Search FTS5 for existing memory on same topic."""
-    fts_query = " ".join(w for w in query.split() if len(w) > 2)[:200]
-    if not fts_query.strip():
+    sanitized = re.sub(r'[*()\[\]{}^~:+\-]', ' ', query)
+    sanitized = sanitized.replace('"', '""')
+    words = [w for w in sanitized.split() if len(w) > 2 and w.upper() not in ("AND", "OR", "NOT", "NEAR")]
+    if not words:
         return []
+    fts_query = '"' + " ".join(words[:6]) + '"'
 
     try:
         rows = conn.execute("""
@@ -79,6 +82,7 @@ def update_existing(filepath, signal_text):
             count=1,
         )
 
+    tmp = None
     try:
         import tempfile
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(filepath), suffix=".tmp")
@@ -87,10 +91,11 @@ def update_existing(filepath, signal_text):
         os.replace(tmp, filepath)
         return True
     except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         return False
 
 
@@ -124,10 +129,13 @@ def create_signal_file(cwd, signals):
     if os.path.exists(filepath):
         with open(filepath, "r") as f:
             existing = f.read()
-        with open(filepath, "a") as f:
-            for signal in signals:
-                if signal.strip() not in existing:
-                    f.write(f"- {signal.strip()}\n")
+        new_lines = [f"- {s.strip()}\n" for s in signals if s.strip() not in existing]
+        if new_lines:
+            import tempfile
+            fd, tmp = tempfile.mkstemp(dir=signals_dir, suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(existing.rstrip("\n") + "\n" + "".join(new_lines))
+            os.replace(tmp, filepath)
         return filepath
 
     content = f"""---
