@@ -36,6 +36,21 @@ Claude Code has a **200-line MEMORY.md limit**. Your 124 behavioral rules? Only 
 
 Every new session starts from zero. Decisions, patterns, failures you taught it yesterday — gone. You re-explain. Again. And again.
 
+### Why a longer MEMORY.md wouldn't help
+
+Even if the limit were 10,000 lines — MEMORY.md is a flat file. A flat file can't:
+
+| What you need                                                 | MEMORY.md                            | Eidetic                                                                 |
+| ------------------------------------------------------------- | ------------------------------------ | ----------------------------------------------------------------------- |
+| **Search** — "what did we decide about testing?"              | Read top to bottom, every time       | FTS5 + vector, 50ms, finds it across any project                        |
+| **Relevance** — show rules for THIS project, not all projects | Everything dumped together           | Filters by CWD, ranks by project relevance                              |
+| **Learning** — capture decisions from sessions automatically  | You manually edit after each session | Haiku extracts signals, compounds into existing memories                |
+| **Quality** — distinguish proven rules from agent guesses     | All lines have equal weight          | Evidence tiers: validated > observed > hypothesis. Agent-created = 0.5x |
+| **Freshness** — detect when a rule became outdated            | No way to know                       | Freshness decay: >30 days = lower rank. Drift detection (planned)       |
+| **Code search** — "where is the rate limiter?"                | Not possible                         | Tree-sitter parses functions/classes into searchable chunks             |
+
+A bigger MEMORY.md is a longer sticky note. Eidetic is a searchable, self-updating knowledge base with quality tracking.
+
 ## What Eidetic Does
 
 | Without Eidetic             | With Eidetic                                     |
