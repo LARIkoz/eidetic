@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""Eidetic MCP Server — Memory tools for any MCP-compatible agent.
+
+Exposes Eidetic memory system as MCP tools over stdio (JSON-RPC).
+Works with Claude Code, Cursor, Windsurf, and any MCP client.
+
+Zero external deps — python3 stdlib only.
+
+Usage:
+  python3 mcp_server.py
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+MEMORY_SYSTEM = os.path.expanduser("~/.claude/memory-system")
+BIN = os.path.join(MEMORY_SYSTEM, "bin")
+
+TOOLS = [
+    {
+        "name": "memory_search",
+        "description": "Search long-term memory across all projects. Returns ranked results with compound scoring (evidence × source × freshness). Use when you need past decisions, rules, context, or knowledge.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language search query, e.g. 'key rotation decision' or 'deployment rules'"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return (default 5)",
+                    "default": 5
+                },
+                "type_filter": {
+                    "type": "string",
+                    "description": "Filter by memory type: feedback, project, user, or reference",
+                    "enum": ["feedback", "project", "user", "reference"]
+                }
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "memory_serendipity",
+        "description": "Find unexpected cross-project connections related to a query. Surfaces memories you didn't know were relevant — from other projects, other contexts. Inspired by Zettelkasten: 'The slip-box is designed to surprise you.'",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Topic to find unexpected connections for"
+                }
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "memory_health",
+        "description": "Check Eidetic memory system health: index status, search functionality, hooks, backups.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "memory_reindex",
+        "description": "Trigger incremental reindex of memory files. Run after adding or modifying memory files.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "full": {
+                    "type": "boolean",
+                    "description": "Full rebuild instead of incremental (slower but fixes corrupted index)",
+                    "default": False
+                }
+            }
+        }
+    },
+    {
+        "name": "memory_lint",
+        "description": "Run memory health lint: find orphan files, broken wikilinks, contradiction pairs, and large files that should be split.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    }
+]
+
+
+def run_script(script, args=None, timeout=10):
+    cmd = [sys.executable, os.path.join(BIN, script)]
+    if args:
+        cmd.extend(args)
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout
+        )
+        return result.stdout + result.stderr
+    except subprocess.TimeoutExpired:
+        return "ERROR: Script timed out"
+    except FileNotFoundError:
+        return f"ERROR: Script not found: {script}"
+
+
+def handle_search(params):
+    query = params.get("query", "")
+    limit = str(params.get("limit", 5))
+    args = [os.path.expanduser("~/.claude/memory-system/db/index.db"), query, "--limit", limit, "--json"]
+    type_filter = params.get("type_filter")
+    if type_filter:
+        args.extend(["--type", type_filter])
+    return run_script("search_impl.py", args)
+
+
+def handle_serendipity(params):
+    query = params.get("query", "")
+    return run_script("serendipity.py", [query])
+
+
+def handle_health(params):
+    cmd = [os.path.join(BIN, "health.sh")]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        return result.stdout
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+def handle_reindex(params):
+    mode = "--full" if params.get("full") else "--incremental"
+    cmd = [os.path.join(BIN, "index.sh"), mode]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return result.stdout + result.stderr
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+def handle_lint(params):
+    return run_script("lint_impl.py")
+
+
+HANDLERS = {
+    "memory_search": handle_search,
+    "memory_serendipity": handle_serendipity,
+    "memory_health": handle_health,
+    "memory_reindex": handle_reindex,
+    "memory_lint": handle_lint,
+}
+
+
+def send_response(id, result=None, error=None):
+    response = {"jsonrpc": "2.0", "id": id}
+    if error:
+        response["error"] = error
+    else:
+        response["result"] = result
+    sys.stdout.write(json.dumps(response) + "\n")
+    sys.stdout.flush()
+
+
+def handle_request(request):
+    method = request.get("method", "")
+    id = request.get("id")
+    params = request.get("params", {})
+
+    if method == "initialize":
+        send_response(id, {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {
+                "name": "eidetic",
+                "version": "1.2.0"
+            }
+        })
+
+    elif method == "notifications/initialized":
+        pass
+
+    elif method == "tools/list":
+        send_response(id, {"tools": TOOLS})
+
+    elif method == "tools/call":
+        tool_name = params.get("name", "")
+        tool_args = params.get("arguments", {})
+        handler = HANDLERS.get(tool_name)
+
+        if not handler:
+            send_response(id, error={
+                "code": -32601,
+                "message": f"Unknown tool: {tool_name}"
+            })
+            return
+
+        try:
+            output = handler(tool_args)
+            send_response(id, {
+                "content": [{"type": "text", "text": output}]
+            })
+        except Exception as e:
+            send_response(id, {
+                "content": [{"type": "text", "text": f"ERROR: {e}"}],
+                "isError": True
+            })
+
+    elif method == "ping":
+        send_response(id, {})
+
+    else:
+        if id is not None:
+            send_response(id, error={
+                "code": -32601,
+                "message": f"Method not found: {method}"
+            })
+
+
+def main():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            request = json.loads(line)
+            handle_request(request)
+        except json.JSONDecodeError:
+            send_response(None, error={
+                "code": -32700,
+                "message": "Parse error"
+            })
+
+
+if __name__ == "__main__":
+    main()

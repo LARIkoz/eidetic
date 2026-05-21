@@ -32,6 +32,7 @@ echo "   Backed up existing hooks"
 echo "2. Installing memory system..."
 mkdir -p "$MEMORY_SYSTEM"/{bin,db}
 cp bin/*.sh bin/*.py "$MEMORY_SYSTEM/bin/"
+cp mcp_server.py "$MEMORY_SYSTEM/mcp_server.py"
 chmod +x "$MEMORY_SYSTEM/bin/"*.sh
 
 # Install hooks

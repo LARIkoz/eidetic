@@ -235,6 +235,33 @@ bash install.sh
 6. Builds initial FTS5 index
 7. Runs health check
 
+### MCP Server (multi-agent)
+
+Eidetic also works as an MCP server — any MCP-compatible agent (Cursor, Windsurf, Claude Code, Cline) can use it.
+
+Add to your MCP config (e.g. `~/.claude/settings.json` or Cursor's `mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "eidetic": {
+      "command": "python3",
+      "args": ["~/.claude/memory-system/mcp_server.py"]
+    }
+  }
+}
+```
+
+**Available MCP tools:**
+
+| Tool                 | Description                                                      |
+| -------------------- | ---------------------------------------------------------------- |
+| `memory_search`      | Search all memories with compound ranking. Supports type filter. |
+| `memory_serendipity` | Find unexpected cross-project connections (Zettelkasten)         |
+| `memory_health`      | System health check                                              |
+| `memory_reindex`     | Trigger incremental or full reindex                              |
+| `memory_lint`        | Find orphans, broken links, contradictions                       |
+
 ---
 
 ## Data Model
@@ -484,9 +511,9 @@ The hook's fallback: if FTS5 index is missing, it writes `head -200 MEMORY.md` t
 
 - [x] **Serendipity links** — surfaces unexpected cross-project connections. "You're searching key rotation → btw, there's a proxy skill and a model-selection rule from another project that connect." Inspired by Luhmann: _"The slip-box is designed to surprise you."_
 
-### v1.2 — Multi-agent
+### v1.2 — Multi-agent (current)
 
-- [ ] **MCP server** — expose search + recall as MCP tools. Cursor, Windsurf, and any MCP-compatible agent gets Eidetic memory without custom hooks.
+- [x] **MCP server** — 5 tools (search, serendipity, health, reindex, lint) over JSON-RPC stdio. Works with Claude Code, Cursor, Windsurf, Cline. Zero deps.
 
 ### v2.0 — Intelligence
 
