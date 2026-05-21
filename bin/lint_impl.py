@@ -48,7 +48,8 @@ def extract_wikilinks(filepath):
             text = f.read()
     except Exception:
         return []
-    return re.findall(r'\[\[([^\]]+)\]\]', text)
+    raw = re.findall(r'\[\[([^\]]+)\]\]', text)
+    return [link.split("|")[0].split("#")[0].strip() for link in raw]
 
 
 def extract_name_from_frontmatter(filepath):
@@ -94,9 +95,10 @@ def main():
             if link in inbound:
                 inbound[link] += 1
             elif link in name_to_path:
-                base = os.path.basename(name_to_path[link]).replace(".md", "")
-                if base in inbound:
-                    inbound[base] += 1
+                for iname in inbound:
+                    if iname == link or iname.endswith("/" + link):
+                        inbound[iname] += 1
+                        break
 
     broken = []
     for filename, links in all_links.items():

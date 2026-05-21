@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""AI Memory System v1 — FTS5 Search.
+"""AI Memory System v2.0 — Hybrid FTS5 + Vector Search.
 
-Searches the FTS5 index with compound ranking:
-  final_score = fts5_rank * evidence_weight * source_weight * freshness_weight
+Primary: FTS5 with compound ranking (fast, keyword-based).
+Fallback: Vector search via fastembed when FTS5 returns < 3 results.
+Merge: Reciprocal Rank Fusion (RRF) when both return results.
 
-Zero external deps: python3 stdlib + sqlite3.
+Core deps: python3 stdlib + sqlite3. Optional: fastembed (for vector search).
 """
 
 import json
@@ -105,6 +106,11 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
     results.sort(key=lambda x: x["score"], reverse=True)
     results = results[:limit]
 
+    vector_db = db_path.replace("index.db", "vectors.db")
+    if len(results) < 3 and os.path.exists(vector_db):
+        vec_results = _vector_search(vector_db, conn, query, limit, type_filter)
+        results = _rrf_merge(results, vec_results, limit)
+
     if output_json:
         print(json.dumps(results, indent=2, ensure_ascii=False))
     else:
@@ -114,7 +120,8 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
 
         for i, r in enumerate(results, 1):
             short_path = r["path"].replace(os.path.expanduser("~"), "~")
-            print(f"\n--- [{i}] score={r['score']} ({r['evidence']}/{r['source']}) ---")
+            source_tag = "hybrid" if r.get("vector_score") else "fts5"
+            print(f"\n--- [{i}] score={r['score']} ({r['evidence']}/{r['source']}) [{source_tag}] ---")
             print(f"  File: {short_path}")
             if r["name"]:
                 print(f"  Name: {r['name']}")
@@ -122,6 +129,81 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
             print(f"  {r['snippet']}")
 
     conn.close()
+
+
+def _vector_search(vector_db, index_conn, query, limit, type_filter):
+    try:
+        from embed import search as vec_search
+        vec_results = vec_search(vector_db, query, limit=limit * 2)
+    except ImportError:
+        return []
+    except Exception:
+        return []
+
+    results = []
+    for sim, chunk_id, path, name in vec_results:
+        if sim < 0.4:
+            continue
+        row = index_conn.execute("""
+            SELECT type, evidence, source, last_verified, content, section_heading, project
+            FROM memory_chunks WHERE id = ?
+        """, (chunk_id,)).fetchone()
+        if not row:
+            continue
+        typ, evidence, source, lv, content, heading, project = row
+        if type_filter and typ != type_filter:
+            continue
+
+        ev_w = EVIDENCE_WEIGHTS.get(evidence, 0.7)
+        src_w = SOURCE_WEIGHTS.get(source, 0.5)
+        fr_w = compute_freshness(lv)
+        compound = sim * ev_w * src_w * fr_w
+
+        snippet = content[:200].replace("\n", " ").strip() if content else ""
+        if content and len(content) > 200:
+            snippet += "..."
+
+        results.append({
+            "path": path,
+            "project": project or "",
+            "name": name or "",
+            "type": typ or "",
+            "section": heading or "",
+            "snippet": snippet,
+            "evidence": evidence or "observed",
+            "source": source or "user-explicit",
+            "freshness": fr_w,
+            "score": round(compound, 4),
+            "fts_rank": 0,
+            "vector_score": round(sim, 4),
+        })
+    return results
+
+
+def _rrf_merge(fts_results, vec_results, limit, k=60):
+    scores = {}
+    data = {}
+
+    for rank, r in enumerate(fts_results):
+        key = (r["path"], r["section"])
+        scores[key] = scores.get(key, 0) + 1.0 / (k + rank + 1)
+        data[key] = r
+
+    for rank, r in enumerate(vec_results):
+        key = (r["path"], r["section"])
+        scores[key] = scores.get(key, 0) + 1.0 / (k + rank + 1)
+        if key not in data:
+            data[key] = r
+        else:
+            data[key]["vector_score"] = r.get("vector_score", 0)
+
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    results = []
+    for key, rrf_score in ranked[:limit]:
+        entry = data[key]
+        entry["score"] = round(rrf_score, 4)
+        results.append(entry)
+    return results
 
 
 def main():

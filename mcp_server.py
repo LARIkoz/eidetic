@@ -107,7 +107,7 @@ def run_script(script, args=None, timeout=10):
 
 def handle_search(params):
     query = params.get("query", "")
-    limit = str(params.get("limit", 5))
+    limit = str(min(int(params.get("limit", 5)), 50))
     args = [os.path.expanduser("~/.claude/memory-system/db/index.db"), query, "--limit", limit, "--json"]
     type_filter = params.get("type_filter")
     if type_filter:

@@ -73,8 +73,12 @@ fi
 LOCKDIR="$MEMORY_SYSTEM/.memory.lock"
 if ! mkdir "$LOCKDIR" 2>/dev/null; then
     LOCK_AGE=$(( $(date +%s) - $(stat -f%m "$LOCKDIR" 2>/dev/null || echo 0) ))
-    if [ "$LOCK_AGE" -gt 30 ]; then rm -r "$LOCKDIR" 2>/dev/null; mkdir "$LOCKDIR" 2>/dev/null || true; fi
-    if [ ! -d "$LOCKDIR" ]; then exit 0; fi
+    if [ "$LOCK_AGE" -gt 30 ]; then
+        rm -r "$LOCKDIR" 2>/dev/null
+        if ! mkdir "$LOCKDIR" 2>/dev/null; then exit 0; fi
+    else
+        exit 0
+    fi
 fi
 trap 'rm -r "$LOCKDIR" 2>/dev/null' EXIT
 

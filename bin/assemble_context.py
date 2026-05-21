@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""AI Memory System v1 — Context Assembly.
+"""AI Memory System v1.3 — Context Assembly with Smart Compression.
 
 Assembles memory-context.md for Claude auto-load:
-1. ALL feedback memories (P3: never invisible)
+1. ALL feedback memories (P3: never invisible) with tiered display + clustering
 2. Project-relevant memories (by CWD match)
 3. Recent cross-project memories (last 14 days)
 
+v1.3: Tiered display, keyword clustering, adaptive budget.
 Token budget: ~6000 tokens (~24K chars).
 """
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -24,6 +26,31 @@ RECENT_BUDGET_RATIO = 0.2
 EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
 SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
 FRESHNESS_DAYS = 30
+
+RULE_CLUSTERS = [
+    {
+        "id": "consilium-review",
+        "label": "Consilium/Review Pipeline",
+        "patterns": [r"consilium", r"consreview", r"synthesis[\s._-]audit", r"synth[\s._-]hallucin",
+                     r"voice[\s._-]fail", r"voices[\s._-]fail", r"voices[\s._-]degrad", r"pipeline[\s._-]timings",
+                     r"pipeline[\s._-]premature", r"redteam", r"red[\s._-]team", r"audit[\s._-]verdict",
+                     r"synthesis[\s._-]invents", r"review[\s._-]agent[\s._-]rules"],
+        "summary": ("Re-synth mandatory when AUDIT says ISSUES. Red-team mandatory for "
+                     "design decisions. 4-tier post-processing (BLOCKER/IMPORTANT/VERIFY/NOISE). "
+                     "Wait for .pipeline_complete sentinel. Synth invents convergences — "
+                     "verify raw voices. Full concept+data+flagship models required."),
+    },
+    {
+        "id": "model-routing",
+        "label": "Model & CLI Routing",
+        "patterns": [r"model[\s._-]routing", r"model[\s._-]split", r"model[\s._-]benchmark", r"model[\s._-]freshness",
+                     r"model[\s._-]selection", r"codex[\s._-]cli", r"codex[\s._-]model", r"gemini[\s._-]cli",
+                     r"grok.+subscription", r"grok.+not\s+api"],
+        "summary": ("Opus 4.6[1m] orchestrator, 4.7 sub-agent only. Anthropic via subscription "
+                     "(never OpenRouter). Gemini Acc2 only (lari0305). Grok subscription only. "
+                     "Codex 4-layer customization. Sonnet via claude-batch."),
+    },
+]
 
 
 def compound_weight(evidence, source, last_verified):
@@ -46,12 +73,40 @@ def detect_project_slug(cwd):
     return sanitized
 
 
-def fetch_feedback(conn, budget_chars):
-    """Fetch ALL feedback memories. P3: never invisible.
+def _escape_like(s):
+    """Escape SQL LIKE wildcards in a string."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
-    Strategy: one entry per FILE (not per chunk). Shows name + description +
-    first 300 chars of body. This guarantees all 120+ feedback rules fit
-    within budget. For full content, agent uses /memory-recall skill.
+
+def _match_cluster(name, desc):
+    """Match a feedback rule name+desc against cluster patterns. Returns cluster id or None."""
+    text = f"{name} {desc}".lower()
+    for cluster in RULE_CLUSTERS:
+        for pattern in cluster["patterns"]:
+            if re.search(pattern, text, re.IGNORECASE):
+                return cluster["id"]
+    return None
+
+
+def _format_cluster(cluster_def, member_names):
+    """Format a cluster as a compact block with summary + member list."""
+    lines = [f"- **[{cluster_def['label']}]** ({len(member_names)} rules): "
+             f"{cluster_def['summary']}\n"]
+    names_line = "  _Rules: " + ", ".join(sorted(member_names)[:8])
+    if len(member_names) > 8:
+        names_line += f", +{len(member_names) - 8} more"
+    names_line += "_\n"
+    lines.append(names_line)
+    return "".join(lines)
+
+
+def fetch_feedback(conn, budget_chars):
+    """Fetch ALL feedback memories with v1.3 smart compression.
+
+    P3: never invisible. Three compression strategies:
+    1. Clustering: group related rules (consilium, model-routing) into compact blocks
+    2. Tiered display: top=full desc, mid=name+50chars, low=name-only
+    3. Overflow: name-only for anything that doesn't fit
     """
     rows = conn.execute("""
         SELECT c.path, c.name, c.description, c.content,
@@ -63,33 +118,63 @@ def fetch_feedback(conn, budget_chars):
         ORDER BY c.name
     """).fetchall()
 
-    entries = []
+    clustered = {}  # cluster_id -> list of (weight, name, desc)
+    individual = []  # (weight, name, desc)
+
     for row in rows:
         path, name, desc, content, evidence, source, lv, _ = row
         w = compound_weight(evidence, source, lv)
-        short_path = path.replace(os.path.expanduser("~"), "~")
         display_name = name or os.path.basename(path).replace(".md", "")
+        display_desc = desc or (content[:150].replace("\n", " ").strip() if content else "")
 
-        if desc:
-            text = f"- **{display_name}**: {desc}\n"
+        cid = _match_cluster(display_name, display_desc)
+        if cid:
+            clustered.setdefault(cid, []).append((w, display_name, display_desc))
         else:
-            snippet = content[:150].replace("\n", " ").strip()
-            text = f"- **{display_name}**: {snippet}...\n"
-        entries.append((w, text, short_path))
-
-    entries.sort(key=lambda x: x[0], reverse=True)
+            individual.append((w, display_name, display_desc))
 
     result = []
     used = 0
-    for w, text, _ in entries:
-        if used + len(text) > budget_chars and used > 0:
-            result.append(f"_...and {len(entries) - len(result)} more feedback rules "
+
+    clustered_displayed = 0
+    for cluster_def in RULE_CLUSTERS:
+        members = clustered.get(cluster_def["id"])
+        if not members or len(members) < 3:
+            individual.extend(members or [])
+            continue
+        block = _format_cluster(cluster_def, [name for _, name, _ in members])
+        if used + len(block) <= budget_chars:
+            result.append(block)
+            used += len(block)
+            clustered_displayed += len(members)
+        else:
+            individual.extend(members)
+
+    individual.sort(key=lambda x: x[0], reverse=True)
+    n = len(individual)
+    top_cutoff = max(1, int(n * 0.4)) if n > 0 else 0
+    mid_cutoff = max(top_cutoff + 1, int(n * 0.7)) if n > 1 else 0
+
+    for i, (w, name, desc) in enumerate(individual):
+        if i < top_cutoff:
+            capped = desc[:500] + ("..." if len(desc) > 500 else "")
+            text = f"- **{name}**: {capped}\n"
+        elif i < mid_cutoff:
+            short = desc[:60].rstrip() + "..." if len(desc) > 60 else desc
+            text = f"- **{name}**: {short}\n" if short else f"- **{name}**\n"
+        else:
+            text = f"- {name}\n"
+
+        if used + len(text) > budget_chars:
+            remaining = n - i
+            result.append(f"_...and {remaining} more feedback rules "
                           f"(use /memory-recall to search)_\n")
             break
         result.append(text)
         used += len(text)
 
-    return "".join(result), used
+    total_rules = clustered_displayed + n
+    return "".join(result), used, total_rules
 
 
 def fetch_project(conn, cwd, budget_chars):
@@ -102,10 +187,10 @@ def fetch_project(conn, cwd, budget_chars):
                memory_fts.rank AS fts_rank
         FROM memory_chunks c
         LEFT JOIN memory_fts ON memory_fts.rowid = c.id
-        WHERE c.project LIKE ? AND c.type != 'feedback'
+        WHERE c.project LIKE ? ESCAPE '\\' AND c.type != 'feedback'
         ORDER BY c.mtime DESC
         LIMIT 50
-    """, (f"%{slug[-60:]}%",)).fetchall()
+    """, (f"%{_escape_like(slug[-60:])}%",)).fetchall()
 
     chunks = []
     seen = set()
@@ -148,8 +233,8 @@ def fetch_recent(conn, budget_chars, exclude_project=None):
     params = [cutoff]
 
     if exclude_project:
-        query += " AND (c.project IS NULL OR c.project NOT LIKE ?)"
-        params.append(f"%{exclude_project[-60:]}%")
+        query += " AND (c.project IS NULL OR c.project NOT LIKE ? ESCAPE '\\')"
+        params.append(f"%{_escape_like(exclude_project[-60:])}%")
 
     query += " ORDER BY c.mtime DESC LIMIT 30"
 
@@ -194,16 +279,14 @@ def main():
 
     slug = detect_project_slug(cwd)
 
-    feedback_budget = int(TOKEN_BUDGET_CHARS * FEEDBACK_BUDGET_RATIO)
     project_budget = int(TOKEN_BUDGET_CHARS * PROJECT_BUDGET_RATIO)
     recent_budget = int(TOKEN_BUDGET_CHARS * RECENT_BUDGET_RATIO)
 
-    feedback_text, feedback_used = fetch_feedback(conn, feedback_budget)
     project_text, project_used = fetch_project(conn, cwd, project_budget)
-
-    leftover = TOKEN_BUDGET_CHARS - feedback_used - project_used
-    recent_budget = max(recent_budget, leftover)
     recent_text, recent_used = fetch_recent(conn, recent_budget, slug)
+
+    feedback_budget = TOKEN_BUDGET_CHARS - project_used - recent_used
+    feedback_text, feedback_used, feedback_total = fetch_feedback(conn, feedback_budget)
 
     total_chars = feedback_used + project_used + recent_used
     total_tokens = total_chars // 4
@@ -242,8 +325,8 @@ def main():
     conn.close()
 
     print(f"Memory context updated: {total_tokens} tokens, "
-          f"{feedback_used // 4}t feedback + {project_used // 4}t project + "
-          f"{recent_used // 4}t recent")
+          f"{feedback_used // 4}t feedback ({feedback_total} rules) + "
+          f"{project_used // 4}t project + {recent_used // 4}t recent")
 
 
 if __name__ == "__main__":

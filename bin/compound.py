@@ -136,7 +136,7 @@ def create_signal_file(cwd, signals):
                 memory_dir = candidate
 
     if not memory_dir:
-        memory_dir = os.path.expanduser("~/.claude/memory-system/signals/")
+        memory_dir = os.path.expanduser("~/.claude/memory-system/")
         os.makedirs(memory_dir, exist_ok=True)
 
     signals_dir = os.path.join(memory_dir, "signals")
