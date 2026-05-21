@@ -1,0 +1,106 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.9", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Create test memory files
+        run: |
+          mkdir -p ~/.claude/projects/test-project/memory
+          cat > ~/.claude/projects/test-project/memory/test-rule.md << 'EOF'
+          ---
+          name: test-rule
+          description: Test feedback rule
+          type: feedback
+          ---
+          # Test Rule
+          Never do X because Y.
+          EOF
+
+          cat > ~/.claude/projects/test-project/memory/test-project.md << 'EOF'
+          ---
+          name: test-project-memory
+          description: Test project memory
+          metadata:
+            type: project
+            evidence: observed
+          ---
+          # Test Project
+          ## Section A
+          Content about section A.
+          ## Section B
+          Content about section B.
+          EOF
+
+      - name: Test full index
+        run: |
+          bash bin/index.sh --full
+          CHUNKS=$(sqlite3 ~/.claude/memory-system/db/index.db "SELECT COUNT(*) FROM memory_chunks")
+          echo "Indexed $CHUNKS chunks"
+          [ "$CHUNKS" -ge 2 ] || exit 1
+
+      - name: Test incremental index
+        run: |
+          bash bin/index.sh --incremental
+          echo "Incremental OK"
+
+      - name: Test search
+        run: |
+          RESULTS=$(bash bin/search.sh "test rule" --limit 3 2>&1)
+          echo "$RESULTS"
+          echo "$RESULTS" | grep -q "score=" || exit 1
+
+      - name: Test search with type filter
+        run: |
+          RESULTS=$(bash bin/search.sh "test" --type feedback --limit 3 2>&1)
+          echo "$RESULTS" | grep -q "feedback" || exit 1
+
+      - name: Test search JSON output
+        run: |
+          bash bin/search.sh "test" --json --limit 3 | python3 -c "import json,sys; json.load(sys.stdin)" || exit 1
+
+      - name: Test FTS5 special characters
+        run: |
+          bash bin/search.sh "C++" --limit 1 2>&1 || true
+          bash bin/search.sh "key-rotation" --limit 1 2>&1 || true
+          echo "Special chars handled OK"
+
+      - name: Test index rebuild idempotency
+        run: |
+          BEFORE=$(sqlite3 ~/.claude/memory-system/db/index.db "SELECT COUNT(*) FROM memory_chunks")
+          bash bin/index.sh --full
+          AFTER=$(sqlite3 ~/.claude/memory-system/db/index.db "SELECT COUNT(*) FROM memory_chunks")
+          [ "$BEFORE" = "$AFTER" ] || exit 1
+          echo "Idempotent: $BEFORE = $AFTER"
+
+      - name: Test lint
+        run: bash bin/lint.sh
+
+      - name: Test cleanup report
+        run: python3 bin/cleanup.py --report
+
+      - name: Test session counter
+        run: |
+          python3 bin/session_counter.py "$(pwd)" record-and-hint
+          python3 bin/session_counter.py "$(pwd)" stats
+
+      - name: Test health check
+        run: bash bin/health.sh

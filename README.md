@@ -1,8 +1,17 @@
 # Eidetic
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/LARIkoz/eidetic/releases/tag/v1.0.0)
+[![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)](#install)
+[![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
+
 **Long-term memory for Claude Code that scales without manual maintenance.**
 
-Zero external dependencies. `bash` + `python3` + `sqlite3`.
+Claude Code forgets between sessions. `MEMORY.md` has a 200-line limit. Eidetic replaces it with FTS5 search, auto context injection, and session signal extraction. Zero external dependencies — `bash` + `python3` + `sqlite3`.
+
+```bash
+git clone https://github.com/LARIkoz/eidetic.git && cd eidetic && bash install.sh
+```
 
 ---
 
