@@ -54,7 +54,10 @@ def init_db():
 
 
 def detect_project(cwd):
-    cwd = cwd.rstrip("/")
+    cwd = os.path.realpath(cwd).rstrip("/")
+    home = os.path.expanduser("~")
+    if cwd.startswith(home):
+        cwd = cwd[len(home):]
     return cwd.replace("/", "-").lstrip("-") or "unknown"
 
 

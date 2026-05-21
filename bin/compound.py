@@ -58,8 +58,24 @@ def extract_keywords(signal_text):
     return " ".join(keywords[:10])
 
 
+PROTECTED_TYPES = {"feedback", "user"}
+
+
+def _get_file_type(filepath):
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            head = f.read(500)
+    except Exception:
+        return None
+    for line in head.split("\n"):
+        m = re.match(r'^\s*type:\s*(\S+)', line.strip())
+        if m:
+            return m.group(1)
+    return None
+
+
 def update_existing(filepath, signal_text):
-    """Update existing memory file: append to History section."""
+    """Update existing memory file: append to History section. Does NOT update last_verified."""
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             content = f.read()
@@ -73,8 +89,10 @@ def update_existing(filepath, signal_text):
     else:
         content = content.rstrip() + f"\n\n## History\n\n{history_entry}"
 
-    # Update last_verified in frontmatter
-    if "last_verified:" in content:
+    # Do NOT auto-bump last_verified — agent-extracted signals should not
+    # inflate freshness of human-curated memories. Only explicit human
+    # verification should update this field.
+    if False and "last_verified:" in content:
         content = re.sub(
             r'last_verified:\s*\S+',
             f'last_verified: {TODAY}',
@@ -191,6 +209,9 @@ def main():
             results = search_fts5(conn, keywords, limit=3)
             for path, name, heading, content, rank in results:
                 if abs(rank) > 5.0 and "/memory/" in path and "SKILL.md" not in path:
+                    file_type = _get_file_type(path)
+                    if file_type in ("feedback", "user"):
+                        continue
                     if update_existing(path, signal):
                         compounded += 1
                         matched = True
