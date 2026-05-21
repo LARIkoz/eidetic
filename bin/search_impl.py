@@ -9,6 +9,7 @@ Core deps: python3 stdlib + sqlite3. Optional: fastembed (for vector search).
 """
 
 import json
+import importlib.util
 import os
 import re
 import sqlite3
@@ -19,6 +20,16 @@ from datetime import datetime, timedelta
 EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
 SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
 FRESHNESS_CUTOFF_DAYS = 30
+MAX_LIMIT = 50
+MAX_QUERY_TERMS = 8
+VECTOR_MIN_SIM = 0.65
+STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how",
+    "i", "in", "is", "it", "me", "my", "of", "on", "or", "our", "the",
+    "but", "does", "do", "not", "should", "that", "this", "to", "use",
+    "using", "was", "what", "where", "which", "who", "why", "with",
+    "как", "где", "для", "или", "что", "это", "наш", "наша", "наше",
+}
 
 
 def compute_freshness(last_verified):
@@ -34,22 +45,62 @@ def compute_freshness(last_verified):
         return 0.7
 
 
-def search(db_path, query, limit=10, type_filter=None, output_json=False):
-    """Search FTS5 index with compound ranking."""
-    if not os.path.exists(db_path):
-        print("ERROR: Index not found. Run: ~/.claude/memory-system/bin/index.sh --full", file=sys.stderr)
-        sys.exit(1)
+def _normalize_limit(limit):
+    try:
+        return max(1, min(int(limit), MAX_LIMIT))
+    except (TypeError, ValueError):
+        return 10
 
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.row_factory = sqlite3.Row
 
-    sanitized = re.sub(r'[*(){}[\]^~:+\-]', ' ', query)
-    sanitized = sanitized.replace('"', '""')
-    words = [w for w in sanitized.split() if w.upper() not in ("AND", "OR", "NOT", "NEAR")]
-    fts_query = '"' + " ".join(words) + '"' if words else query
+def _tokenize_query(query):
+    """Return safe natural-language terms for FTS5 MATCH expressions."""
+    terms = []
+    seen = set()
+    for raw in re.findall(r"\w+", query, flags=re.UNICODE):
+        term = raw.lower()
+        if len(term) < 2 or term in STOPWORDS:
+            continue
+        if term.upper() in ("AND", "OR", "NOT", "NEAR"):
+            continue
+        if term not in seen:
+            seen.add(term)
+            terms.append(term)
+        if len(terms) >= MAX_QUERY_TERMS:
+            break
+    return terms
 
+
+def _build_fts_queries(query):
+    """Try exact phrase first, then all-term prefix search, then any-term recall."""
+    terms = _tokenize_query(query)
+    if not terms:
+        return []
+
+    queries = []
+    if len(terms) > 1:
+        queries.append(("phrase", '"' + " ".join(terms) + '"'))
+    prefix_terms = [term + "*" for term in terms]
+    queries.append(("and", " AND ".join(prefix_terms)))
+    if len(terms) > 1:
+        queries.append(("or", " OR ".join(prefix_terms)))
+    return queries
+
+
+def _row_match_quality(row, terms, strategy):
+    haystack = " ".join([
+        row["path"] or "",
+        row["name"] or "",
+        row["type"] or "",
+        row["section_heading"] or "",
+        row["description"] or "",
+        row["content"] or "",
+    ]).lower()
+    coverage = sum(1 for term in terms if term in haystack) / max(1, len(terms))
+    strategy_boost = {"phrase": 0.30, "and": 0.15, "or": 0.0}.get(strategy, 0.0)
+    return coverage + strategy_boost
+
+
+def _fetch_fts_rows(conn, query, limit, type_filter):
     sql = """
         SELECT
             c.id, c.path, c.project, c.name, c.type,
@@ -60,30 +111,77 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
         JOIN memory_chunks c ON memory_fts.rowid = c.id
         WHERE memory_fts MATCH ?
     """
-    params = [fts_query]
 
     if type_filter:
         sql += " AND c.type = ?"
-        params.append(type_filter)
 
     sql += " ORDER BY memory_fts.rank LIMIT ?"
-    params.append(limit * 3)
 
-    try:
-        rows = conn.execute(sql, params).fetchall()
-    except sqlite3.OperationalError as e:
-        if "fts5" in str(e).lower() or "no such" in str(e).lower():
-            print(f"ERROR: Search failed: {e}", file=sys.stderr)
-            sys.exit(1)
-        raise
+    terms = _tokenize_query(query)
+    rows = []
+    seen_ids = set()
+    target = limit * 3
+
+    for strategy, fts_query in _build_fts_queries(query):
+        params = [fts_query]
+        if type_filter:
+            params.append(type_filter)
+        params.append(target)
+
+        try:
+            candidates = conn.execute(sql, params).fetchall()
+        except sqlite3.OperationalError as e:
+            if "fts5" in str(e).lower() or "no such" in str(e).lower():
+                print(f"ERROR: Search failed: {e}", file=sys.stderr)
+                sys.exit(1)
+            raise
+
+        for row in candidates:
+            if row["id"] in seen_ids:
+                continue
+            seen_ids.add(row["id"])
+            rows.append((row, strategy, _row_match_quality(row, terms, strategy)))
+
+        if len(rows) >= target:
+            break
+
+    return rows
+
+
+def _needs_vector(results, limit):
+    if not results:
+        return True
+    if len(results) < min(3, limit):
+        return True
+    top_quality = results[0].get("match_quality", 0)
+    if top_quality < 0.75:
+        return True
+    avg_quality = sum(r.get("match_quality", 0) for r in results[:3]) / min(3, len(results))
+    return avg_quality < 0.55
+
+
+def search(db_path, query, limit=10, type_filter=None, output_json=False):
+    """Search FTS5 index with compound ranking."""
+    if not os.path.exists(db_path):
+        print("ERROR: Index not found. Run: ~/.claude/memory-system/bin/index.sh --full", file=sys.stderr)
+        sys.exit(1)
+
+    limit = _normalize_limit(limit)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.row_factory = sqlite3.Row
+
+    rows = _fetch_fts_rows(conn, query, limit, type_filter)
 
     results = []
-    for row in rows:
+    for row, strategy, match_quality in rows:
         ev_w = EVIDENCE_WEIGHTS.get(row["evidence"], 0.7)
         src_w = SOURCE_WEIGHTS.get(row["source"], 1.0)
         fr_w = compute_freshness(row["last_verified"])
         raw_rank = abs(row["fts_rank"])
-        compound = raw_rank * ev_w * src_w * fr_w
+        compound = raw_rank * ev_w * src_w * fr_w * max(0.1, match_quality)
 
         snippet = row["content"][:200].replace("\n", " ").strip()
         if len(row["content"]) > 200:
@@ -101,15 +199,18 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
             "freshness": fr_w,
             "score": round(compound, 4),
             "fts_rank": round(raw_rank, 4),
+            "match": strategy,
+            "match_quality": round(match_quality, 3),
         })
 
-    results.sort(key=lambda x: x["score"], reverse=True)
+    results.sort(key=lambda x: (x["match_quality"], x["score"]), reverse=True)
     results = results[:limit]
 
     vector_db = db_path.replace("index.db", "vectors.db")
-    if len(results) < 3 and os.path.exists(vector_db):
-        vec_results = _vector_search(vector_db, conn, query, limit, type_filter)
-        results = _rrf_merge(results, vec_results, limit)
+    if _needs_vector(results, limit) and os.path.exists(vector_db):
+        vec_results = _vector_search(vector_db, conn, query, limit, type_filter, warn=not output_json)
+        if vec_results:
+            results = _rrf_merge(results, vec_results, limit)
 
     if output_json:
         print(json.dumps(results, indent=2, ensure_ascii=False))
@@ -131,18 +232,27 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
     conn.close()
 
 
-def _vector_search(vector_db, index_conn, query, limit, type_filter):
+def _vector_search(vector_db, index_conn, query, limit, type_filter, warn=False):
     try:
-        from embed import search as vec_search
-        vec_results = vec_search(vector_db, query, limit=limit * 2)
-    except ImportError:
+        embed_path = os.path.join(os.path.dirname(__file__), "embed.py")
+        spec = importlib.util.spec_from_file_location("eidetic_embed", embed_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load {embed_path}")
+        embed = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(embed)
+        vec_results = embed.search(vector_db, query, limit=limit * 2)
+    except ImportError as e:
+        if warn:
+            print(f"WARNING: vector search unavailable: {e}", file=sys.stderr)
         return []
-    except Exception:
+    except Exception as e:
+        if warn:
+            print(f"WARNING: vector search failed: {e}", file=sys.stderr)
         return []
 
     results = []
     for sim, chunk_id, path, name in vec_results:
-        if sim < 0.4:
+        if sim < VECTOR_MIN_SIM:
             continue
         row = index_conn.execute("""
             SELECT type, evidence, source, last_verified, content, section_heading, project
@@ -176,6 +286,8 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter):
             "score": round(compound, 4),
             "fts_rank": 0,
             "vector_score": round(sim, 4),
+            "match": "vector",
+            "match_quality": round(sim, 3),
         })
     return results
 
@@ -196,6 +308,7 @@ def _rrf_merge(fts_results, vec_results, limit, k=60):
             data[key] = r
         else:
             data[key]["vector_score"] = r.get("vector_score", 0)
+            data[key]["match"] = "hybrid"
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     results = []
@@ -221,7 +334,7 @@ def main():
     while i < len(sys.argv):
         arg = sys.argv[i]
         if arg == "--limit" and i + 1 < len(sys.argv):
-            limit = int(sys.argv[i + 1])
+            limit = _normalize_limit(sys.argv[i + 1])
             i += 2
         elif arg == "--type" and i + 1 < len(sys.argv):
             type_filter = sys.argv[i + 1]

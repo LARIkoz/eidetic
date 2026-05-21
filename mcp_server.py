@@ -37,7 +37,7 @@ TOOLS = [
                 "type_filter": {
                     "type": "string",
                     "description": "Filter by memory type: feedback, project, user, or reference",
-                    "enum": ["feedback", "project", "user", "reference"]
+                    "enum": ["feedback", "project", "user", "reference", "code"]
                 }
             },
             "required": ["query"]
@@ -105,14 +105,29 @@ def run_script(script, args=None, timeout=10):
         return f"ERROR: Script not found: {script}"
 
 
+def clamp_limit(value, default=5, max_limit=50):
+    try:
+        return max(1, min(int(value), max_limit))
+    except (TypeError, ValueError):
+        return default
+
+
 def handle_search(params):
-    query = params.get("query", "")
-    limit = str(min(int(params.get("limit", 5)), 50))
+    if not isinstance(params, dict):
+        params = {}
+
+    query = str(params.get("query", "")).strip()
+    if not query:
+        return "ERROR: query is required"
+
+    limit = str(clamp_limit(params.get("limit", 5)))
     args = [os.path.expanduser("~/.claude/memory-system/db/index.db"), query, "--limit", limit, "--json"]
     type_filter = params.get("type_filter")
     if type_filter:
+        if type_filter not in {"feedback", "project", "user", "reference", "code"}:
+            return f"ERROR: unsupported type_filter: {type_filter}"
         args.extend(["--type", type_filter])
-    return run_script("search_impl.py", args)
+    return run_script("search_impl.py", args, timeout=30)
 
 
 def handle_serendipity(params):
@@ -173,7 +188,7 @@ def handle_request(request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "eidetic",
-                "version": "1.2.0"
+                "version": "2.2.1"
             }
         })
 

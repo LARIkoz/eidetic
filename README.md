@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.2.0-blue.svg)](https://github.com/LARIkoz/eidetic/releases/tag/v2.2.0)
+[![Version](https://img.shields.io/badge/version-2.2.1-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -30,7 +30,8 @@ Session 50: *still follows it, plus 123 other rules you taught it*
 git clone https://github.com/LARIkoz/eidetic.git && cd eidetic && bash install.sh
 ```
 
-One command. Zero dependencies. Works immediately.
+One command. Core has zero external dependencies and works immediately.
+Optional semantic/vector search and code-aware indexing use small pip packages.
 
 ---
 
@@ -60,7 +61,7 @@ A bigger MEMORY.md is a longer sticky note. Eidetic is a searchable, self-updati
 | Without Eidetic             | With Eidetic                                     |
 | --------------------------- | ------------------------------------------------ |
 | 57 of 124 rules visible     | **124 of 124 rules visible** (smart compression) |
-| Keyword search only         | **Hybrid FTS5 + vector search** (100% recall)    |
+| Keyword search only         | **Hybrid FTS5 + vector search**                  |
 | Only markdown memories      | **Code search** — find functions by meaning      |
 | Forgets between sessions    | **Auto-extracts** decisions, failures, patterns  |
 | Knowledge piles up as files | **Compounds** — updates existing knowledge       |
@@ -124,16 +125,16 @@ How: keyword clustering (24 related rules compressed into 1 block), tiered displ
 
 ### Hybrid Search (v2.0)
 
-FTS5 for keywords (50ms). Vector search as fallback when keywords miss. Results merged via Reciprocal Rank Fusion.
+FTS5 for keywords (50ms). Vector search as fallback when keyword quality is low. Results merged via Reciprocal Rank Fusion.
 
 | Query type                  | FTS5 only   | Hybrid                   |
 | --------------------------- | ----------- | ------------------------ |
 | "consilium audit"           | found       | found                    |
 | "making AI remember things" | **nothing** | **memory-recall SKILL**  |
 | "shrink prompt size"        | **nothing** | **context optimization** |
-| **Total recall**            | **30%**     | **100%**                 |
+| **Historical benchmark**    | **30%**     | **100%**                 |
 
-Powered by [fastembed](https://github.com/qdrant/fastembed) (ONNX, 33MB model). Optional — FTS5 works without it.
+Powered by [fastembed](https://github.com/qdrant/fastembed) (ONNX, 33MB model). Optional — FTS5 works without it. Re-run the benchmark on your own corpus after changing ranking or vector thresholds.
 
 ### Code-Aware Search (v2.2)
 
@@ -179,14 +180,14 @@ After a search, Eidetic looks for unexpected cross-project connections via wikil
 | ------------------------------- | -------------------------------- |
 | Session start (warm)            | **~350ms**                       |
 | Session start (cold, first run) | ~11s (fastembed ONNX model load) |
-| Full reindex (423 files)        | 0.6s                             |
+| Full reindex (517 files)        | 0.6s                             |
 | Incremental reindex             | 40ms                             |
 | FTS5 search                     | ~50ms                            |
 | Hybrid search (FTS5 + vector)   | ~200ms                           |
 | Code index (143 files)          | 0.1s                             |
 | Signal extraction cost          | ~$0.002/session                  |
-| Index size                      | 7.8MB (FTS5) + 4.9MB (vectors)   |
-| External dependencies           | **zero** (core)                  |
+| Index size                      | 9.5MB (FTS5) + 5.9MB (vectors)   |
+| External dependencies           | **zero for core**; optional fastembed/tree-sitter for v2 features |
 
 ---
 
@@ -207,7 +208,7 @@ pip install fastembed        # +33MB, enables semantic search (v2.0)
 pip install tree-sitter tree-sitter-python tree-sitter-javascript tree-sitter-bash  # code search (v2.2)
 ```
 
-Core works without any pip installs. Rollback in 5 seconds: `bash ~/.claude/memory-system/bin/rollback.sh`
+Core works without any pip installs. Without optional packages, Eidetic degrades to FTS5-only memory search and skips code indexing. Rollback in 5 seconds: `bash ~/.claude/memory-system/bin/rollback.sh`
 
 ### MCP Server
 
@@ -276,7 +277,7 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 
 | Capability                   | Eidetic                  | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
 | ---------------------------- | ------------------------ | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
-|                              | **v2.2**                 | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
+|                              | **v2.2.1**               | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
 | Search                       | FTS5 + vector            | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
 | Recall benchmark             | **100%**                 | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
 | Auto-inject on session start | **rules/ (no cap)**      | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
@@ -288,7 +289,7 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 | Phase-adaptive               | **3 phases**             | —                                                      | —                                                         | —                                                    | —                                                                      |
 | Serendipity links            | **yes**                  | —                                                      | —                                                         | —                                                    | —                                                                      |
 | Multi-agent (MCP)            | yes                      | yes                                                    | yes (Cursor, Copilot)                                     | yes                                                  | —                                                                      |
-| Dependencies                 | **zero**                 | ChromaDB, worker                                       | Node.js                                                   | Milvus, PyTorch                                      | Obsidian app                                                           |
+| Dependencies                 | **zero core; optional pip for v2** | ChromaDB, worker                                       | Node.js                                                   | Milvus, PyTorch                                      | Obsidian app                                                           |
 | Rollback                     | **1 cmd, 5s**            | manual                                                 | —                                                         | manual                                               | manual                                                                 |
 | Token compression            | **2.17x** (57→124 rules) | —                                                      | —                                                         | —                                                    | 71x (claimed)                                                          |
 
@@ -351,7 +352,7 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v1.1** — 12 bug fixes via consreview (6 voices), session counter, phase-adaptive
 - [x] **v1.2** — MCP server (5 tools), works with Cursor/Windsurf/Cline
 - [x] **v1.3** — Smart token compression (57 → 124 rules, 2.17x)
-- [x] **v2.0** — Hybrid FTS5 + vector search (fastembed, 30% → 100% recall)
+- [x] **v2.0** — Hybrid FTS5 + vector search (fastembed, historical 30% → 100% recall benchmark)
 - [x] **v2.2** — Code-aware parsing (tree-sitter, 338 entities from 143 files)
 
 ### Next
@@ -366,6 +367,15 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v2.2.1 (2026-05-22)
+
+- Search recall hardening: phrase → AND-prefix → OR-prefix fallback instead of exact long-phrase only
+- Vector fallback visibility: import via file path, warning on unavailable/failed vector search, safer merge behavior
+- MCP hygiene: clamp invalid/negative limits, support `type_filter=code`, longer search timeout
+- Lint fixes: basename collision handling, Bash `[[...]]` false-positive filtering, installed skill link aliases
+- Backup/error-path hardening for `embed.py` and `index_impl.py`
+- Docs clarify zero-dependency core vs optional v2 packages
 
 ### v2.2.0 (2026-05-21)
 

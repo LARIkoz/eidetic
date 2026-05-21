@@ -267,13 +267,14 @@ def run_full(conn, files):
         import shutil
         shutil.copy2(db_path, backup_path)
 
-    conn.execute("DELETE FROM memory_chunks")
-    conn.execute("DELETE FROM index_meta")
-    conn.execute("INSERT INTO memory_fts(memory_fts) VALUES ('delete-all')")
-    conn.commit()
-
     indexed = 0
+    success = False
     try:
+        conn.execute("DELETE FROM memory_chunks")
+        conn.execute("DELETE FROM index_meta")
+        conn.execute("INSERT INTO memory_fts(memory_fts) VALUES ('delete-all')")
+        conn.commit()
+
         for filepath in files:
             try:
                 with open(filepath, "r", encoding="utf-8", errors="replace") as f:
@@ -285,14 +286,15 @@ def run_full(conn, files):
             except Exception as e:
                 print(f"WARN: skip {filepath}: {e}", file=sys.stderr)
         conn.commit()
+        success = True
     except Exception as e:
         print(f"ERROR: full reindex failed, restoring backup: {e}", file=sys.stderr)
         if backup_path and os.path.exists(backup_path):
             conn.close()
             import shutil
             shutil.copy2(backup_path, db_path)
-            raise
-    if backup_path and os.path.exists(backup_path):
+        raise
+    if success and backup_path and os.path.exists(backup_path):
         os.remove(backup_path)
     return indexed
 

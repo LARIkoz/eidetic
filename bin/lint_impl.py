@@ -27,8 +27,34 @@ STALE_DAYS = 30
 LARGE_THRESHOLD = 5120
 
 
+def file_stem(path):
+    return os.path.basename(path).replace(".md", "")
+
+
+def unique_key(path, used):
+    stem = file_stem(path)
+    if stem not in used:
+        return stem
+
+    project = "memory"
+    m = re.search(r'/\.claude/projects/([^/]+)/memory/', path)
+    if m:
+        project = m.group(1)
+    elif "/.claude/agent-memory/" in path:
+        parts = path.split("/.claude/agent-memory/", 1)[1].split("/")
+        project = "agent-" + parts[0] if len(parts) > 1 else "agent"
+
+    candidate = f"{project}/{stem}"
+    i = 2
+    while candidate in used:
+        candidate = f"{project}/{stem}#{i}"
+        i += 1
+    return candidate
+
+
 def collect_files():
     files = {}
+    used = set()
     for pattern in SCAN_DIRS:
         for dirpath in glob.glob(pattern):
             if not os.path.isdir(dirpath):
@@ -37,9 +63,17 @@ def collect_files():
                 if not f.endswith(".md") or f in EXCLUDE:
                     continue
                 fullpath = os.path.join(dirpath, f)
-                name = f.replace(".md", "")
-                files[name] = fullpath
+                key = unique_key(fullpath, used)
+                used.add(key)
+                files[key] = fullpath
     return files
+
+
+def is_shell_test(link):
+    return bool(
+        "$" in link
+        or re.search(r'(^|\s)(==|!=|-eq|-ne|-gt|-lt|-ge|-le)(\s|$)', link)
+    )
 
 
 def extract_wikilinks(filepath):
@@ -49,7 +83,12 @@ def extract_wikilinks(filepath):
     except Exception:
         return []
     raw = re.findall(r'\[\[([^\]]+)\]\]', text)
-    return [link.split("|")[0].split("#")[0].strip() for link in raw]
+    links = []
+    for link in raw:
+        target = link.split("|")[0].split("#")[0].strip()
+        if target and not is_shell_test(target):
+            links.append(target)
+    return links
 
 
 def extract_name_from_frontmatter(filepath):
@@ -78,12 +117,21 @@ def main():
 
     files = collect_files()
 
-    name_to_path = {}
+    name_to_keys = {}
+
+    def add_alias(alias, key):
+        if alias:
+            name_to_keys.setdefault(alias, set()).add(key)
+
     for filename, path in files.items():
-        name_to_path[filename] = path
+        add_alias(filename, filename)
+        add_alias(file_stem(path), filename)
         fm_name = extract_name_from_frontmatter(path)
         if fm_name:
-            name_to_path[fm_name] = path
+            add_alias(fm_name, filename)
+
+    for skill_path in glob.glob(os.path.expanduser("~/.claude/skills/*/SKILL.md")):
+        add_alias(os.path.basename(os.path.dirname(skill_path)), "__skill__")
 
     all_links = {}
     inbound = {name: 0 for name in files}
@@ -92,18 +140,14 @@ def main():
         links = extract_wikilinks(path)
         all_links[filename] = links
         for link in links:
-            if link in inbound:
-                inbound[link] += 1
-            elif link in name_to_path:
-                for iname in inbound:
-                    if iname == link or iname.endswith("/" + link):
-                        inbound[iname] += 1
-                        break
+            for target in name_to_keys.get(link, set()):
+                if target in inbound:
+                    inbound[target] += 1
 
     broken = []
     for filename, links in all_links.items():
         for link in links:
-            if link not in name_to_path and link not in files:
+            if link not in name_to_keys:
                 broken.append((filename, link))
 
     orphans = [(name, files[name]) for name, count in inbound.items() if count == 0]

@@ -1,1 +1,3 @@
 promo/
+__pycache__/
+*.pyc
