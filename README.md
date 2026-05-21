@@ -5,7 +5,11 @@
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
-**Your AI agent forgets everything between sessions. Eidetic fixes that.**
+**A Second Brain for your AI coding agent.**
+
+Inspired by [Tiago Forte's Building a Second Brain](https://www.buildingasecondbrain.com/), [Luhmann's Zettelkasten](https://en.wikipedia.org/wiki/Zettelkasten) (90,000 linked notes over 37 years), and [Karpathy's AI wiki concept](https://gist.github.com/karpathy/1dd0294ef9567971c1e4348a90d69285). Eidetic applies these ideas to AI agents: atomic knowledge cards, automatic linking, compounding over time, and quality-weighted recall.
+
+Your AI agent forgets everything between sessions. Eidetic fixes that.
 
 ```
 Session 1:  "Never mock the database in tests"
@@ -300,15 +304,40 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 
 ---
 
-## Architecture
+## Philosophy: Second Brain for AI Agents
 
-Eidetic is built on three principles:
+Humans have Second Brain systems — Zettelkasten, Obsidian, Notion. AI agents have nothing. They start every session with amnesia.
+
+Eidetic applies Second Brain principles to AI agents:
+
+| Second Brain concept                                               | Human tool                          | Eidetic equivalent                                                      |
+| ------------------------------------------------------------------ | ----------------------------------- | ----------------------------------------------------------------------- |
+| **Atomic notes** — one idea per card                               | Zettelkasten slip                   | One memory file per topic, split large files automatically              |
+| **Linking over categories** — connections matter more than folders | `[[wikilinks]]` in Obsidian         | `[[wikilinks]]` + serendipity search across all projects                |
+| **Progressive summarization** — content gets refined over time     | Highlight → bold → summary          | Compounding: raw signal → structured memory → updated with history      |
+| **Capture everything, curate later** — inbox → refined knowledge   | Quick Capture → Projects            | Session signals (raw) → compound.py (refined) → quality-weighted        |
+| **Spaced repetition** — resurface what matters                     | Anki flashcards                     | Freshness decay + drift detection (v2.5)                                |
+| **The system maintains itself** — or it dies                       | Manual maintenance = abandoned wiki | Agent does all indexing, linking, searching, compounding. Human curates |
+
+> "People don't abandon wikis because wikis are bad. They abandon them because maintenance grows faster than value." — [Karpathy](https://gist.github.com/karpathy/1dd0294ef9567971c1e4348a90d69285)
+
+Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance cost = zero for the human.
+
+### Architecture principles
 
 1. **Files are truth.** Indexes are derived. If the DB dies, rebuild from markdown in <1s.
 2. **Every memory must be findable without knowing where it is.** Cross-project search is the default.
 3. **Critical rules must never become invisible.** The system guarantees all behavioral rules reach the agent.
 
-Inspired by [Karpathy's wiki](https://gist.github.com/karpathy/1dd0294ef9567971c1e4348a90d69285), [Luhmann's Zettelkasten](https://en.wikipedia.org/wiki/Zettelkasten), and [claude-soul](https://github.com/DomDemetz/claude-soul).
+### Intellectual sources
+
+| Source                                                                                  | What we borrowed                                  | What we added                                         |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------- | ----------------------------------------------------- |
+| [Luhmann's Zettelkasten](https://en.wikipedia.org/wiki/Zettelkasten)                    | Atomic notes, sparse index, links over categories | Automated — agent splits, indexes, links, searches    |
+| [Tiago Forte's Second Brain](https://www.buildingasecondbrain.com/)                     | Capture → Organize → Distill → Express (CODE)     | Applied to AI: signals → compound → inject → act      |
+| [Karpathy's AI wiki](https://gist.github.com/karpathy/1dd0294ef9567971c1e4348a90d69285) | raw → curated pipeline, LLM does maintenance      | Working hooks, not a gist. Compounding, not appending |
+| [claude-soul](https://github.com/DomDemetz/claude-soul)                                 | Evidence tiers, 0.5x self-ref discount, signals   | Integrated into hooks, not a separate SDK             |
+| [memsearch](https://github.com/zilliztech/memsearch)                                    | FTS5, context:fork isolation                      | + vector hybrid, no Milvus, no file-lock bugs         |
 
 **Obsidian-compatible:** Memory files are markdown + `[[wikilinks]]` + YAML frontmatter. Open `~/.claude/projects/` as an Obsidian vault for graph view, backlinks, and search.
 
