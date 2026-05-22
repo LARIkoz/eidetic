@@ -372,12 +372,16 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 
 ### Next
 
-- [ ] **v2.6 — Handoff Integration** — auto-handoff on long sessions (>2h), cold-start priority for fresh handoffs, cross-session thread tracking. Zero deps.
-- [ ] **v2.7 — Progressive Summarization** — memories mature over time: raw signal → compound-enriched → condensed summary. After N updates, auto-generate a "distilled" version. Inspired by Tiago Forte's progressive summarization layers. Zero deps.
-- [ ] **v2.8 — Session Digest** — periodic review: "In the last 5 sessions you learned X, decided Y, updated 3 rules, 1 memory became stale." Inspired by Forte's weekly review. Zero deps.
 - [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Inject open tasks into session context. Pluggable adapter.
-- [ ] **v4.0 — Obsidian Projection + Human Wiki Layer** — project selected Eidetic memories into a human-readable Obsidian vault: `topics/`, `projects/`, `decisions/`, `tools/`, `daily/`, `MOC/`, curated backlinks, frontmatter, and source/evidence links. Start with a synthetic vault and diff-only output; real-vault writes require explicit backup and rollback.
-- [ ] **v4.1 — Soul Layer + Dashboard** — personality profile that adapts to user's decision style. Tension detection when principles conflict. Single-file HTML knowledge graph (D3.js). Dashboard can use the same curated wiki/projection model as the Obsidian layer.
+- [ ] **v4.0 — Obsidian Projection + Human Wiki Layer** — project selected Eidetic memories into a human-readable Obsidian vault with curated backlinks and source/evidence links.
+
+### v5.0 (deferred)
+
+- Auto-handoff on long sessions, cross-session thread tracking (v2.6 partial — cold-start shipped)
+- Progressive summarization — memories mature via LLM distillation (Tiago Forte layers)
+- Session digest — periodic review of what changed across sessions (Forte weekly review)
+- Soul layer — personality profile, tension detection, decision style adaptation
+- HTML dashboard — single-file knowledge graph (D3.js)
 
 ---
 
