@@ -340,7 +340,9 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 | [claude-soul](https://github.com/DomDemetz/claude-soul)                                 | Evidence tiers, 0.5x self-ref discount, signals   | Integrated into hooks, not a separate SDK             |
 | [memsearch](https://github.com/zilliztech/memsearch)                                    | FTS5, context:fork isolation                      | + vector hybrid, no Milvus, no file-lock bugs         |
 
-**Obsidian-compatible:** Memory files are markdown + `[[wikilinks]]` + YAML frontmatter. Open `~/.claude/projects/` as an Obsidian vault for graph view, backlinks, and search.
+**Obsidian-compatible today:** Memory files are markdown + `[[wikilinks]]` + YAML frontmatter. You can open `~/.claude/projects/` as an Obsidian vault for graph view, backlinks, and search.
+
+**Obsidian projection is roadmap:** A real human-facing second brain needs a curated projection layer, not just raw memory files. Eidetic should export selected, evidence-backed memories into Obsidian-style `topics/`, `projects/`, `decisions/`, `tools/`, `daily/`, and `MOC/` notes with frontmatter, backlinks, and diff-first writes.
 
 ---
 
@@ -362,7 +364,8 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [ ] **v2.7 — Progressive Summarization** — memories mature over time: raw signal → compound-enriched → condensed summary. After N updates, auto-generate a "distilled" version. Inspired by Tiago Forte's progressive summarization layers. Zero deps.
 - [ ] **v2.8 — Session Digest** — periodic review: "In the last 5 sessions you learned X, decided Y, updated 3 rules, 1 memory became stale." Inspired by Forte's weekly review. Zero deps.
 - [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Inject open tasks into session context. Pluggable adapter.
-- [ ] **v4.0 — Soul Layer + Dashboard** — personality profile that adapts to user's decision style. Tension detection when principles conflict. Single-file HTML knowledge graph (D3.js). Obsidian vault compatibility (already works — just docs).
+- [ ] **v4.0 — Obsidian Projection + Human Wiki Layer** — project selected Eidetic memories into a human-readable Obsidian vault: `topics/`, `projects/`, `decisions/`, `tools/`, `daily/`, `MOC/`, curated backlinks, frontmatter, and source/evidence links. Start with a synthetic vault and diff-only output; real-vault writes require explicit backup and rollback.
+- [ ] **v4.1 — Soul Layer + Dashboard** — personality profile that adapts to user's decision style. Tension detection when principles conflict. Single-file HTML knowledge graph (D3.js). Dashboard can use the same curated wiki/projection model as the Obsidian layer.
 
 ---
 
