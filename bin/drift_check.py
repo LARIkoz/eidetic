@@ -24,11 +24,10 @@ AGE_THRESHOLDS = {
 }
 DEFAULT_AGE_DAYS = 60
 
-DRIFT_PENALTIES = {
-    "broken_wikilink": 0.8,
-    "age_stale": 0.5,
-    "confidence_escalation": 0.3,
-}
+try:
+    from constants import DRIFT_PENALTIES
+except ImportError:
+    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3}
 
 
 def get_drift_db_path(index_db_path):

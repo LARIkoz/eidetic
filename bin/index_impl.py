@@ -260,43 +260,47 @@ def index_file(conn, filepath, meta, body):
 
 
 def run_full(conn, files):
-    """Full reindex: atomic rebuild via backup + restore on failure."""
+    """Full reindex: build temp DB then atomic swap via os.replace (B2: SIGKILL-safe)."""
+    import shutil
+    import tempfile
+
     db_path = conn.execute("PRAGMA database_list").fetchone()[2]
-    backup_path = db_path + ".pre-reindex.bak" if db_path else None
-    if backup_path and os.path.exists(db_path):
-        import shutil
-        shutil.copy2(db_path, backup_path)
+    if not db_path:
+        raise RuntimeError("Cannot determine DB path")
 
-    indexed = 0
-    success = False
+    db_dir = os.path.dirname(db_path)
+    fd, tmp_path = tempfile.mkstemp(dir=db_dir, suffix=".tmp.db")
+    os.close(fd)
+
     try:
-        conn.execute("DELETE FROM memory_chunks")
-        conn.execute("DELETE FROM index_meta")
-        conn.execute("INSERT INTO memory_fts(memory_fts) VALUES ('delete-all')")
-        conn.commit()
+        tmp_conn = sqlite3.connect(tmp_path)
+        tmp_conn.executescript(DB_SCHEMA)
 
+        indexed = 0
         for filepath in files:
             try:
                 with open(filepath, "r", encoding="utf-8", errors="replace") as f:
                     text = f.read()
                 meta, body = parse_frontmatter(text)
                 if body.strip():
-                    index_file(conn, filepath, meta, body)
+                    index_file(tmp_conn, filepath, meta, body)
                     indexed += 1
             except Exception as e:
                 print(f"WARN: skip {filepath}: {e}", file=sys.stderr)
-        conn.commit()
-        success = True
+        tmp_conn.commit()
+        tmp_conn.close()
+
+        conn.close()
+        os.replace(tmp_path, db_path)
+
+        new_conn = sqlite3.connect(db_path)
+        new_conn.execute("PRAGMA journal_mode=WAL")
+        return indexed
     except Exception as e:
-        print(f"ERROR: full reindex failed, restoring backup: {e}", file=sys.stderr)
-        if backup_path and os.path.exists(backup_path):
-            conn.close()
-            import shutil
-            shutil.copy2(backup_path, db_path)
+        print(f"ERROR: full reindex failed: {e}", file=sys.stderr)
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
         raise
-    if success and backup_path and os.path.exists(backup_path):
-        os.remove(backup_path)
-    return indexed
 
 
 def run_incremental(conn, files):

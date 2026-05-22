@@ -69,18 +69,16 @@ if [ -z "$RESULT" ] || echo "$RESULT" | grep -qi "^EMPTY$"; then
     exit 0
 fi
 
-# Acquire lock for compound + reindex (shared with SessionStart hook)
-LOCKDIR="$MEMORY_SYSTEM/.memory.lock"
-if ! mkdir "$LOCKDIR" 2>/dev/null; then
-    LOCK_AGE=$(( $(date +%s) - $(stat -f%m "$LOCKDIR" 2>/dev/null || echo 0) ))
-    if [ "$LOCK_AGE" -gt 30 ]; then
-        rm -r "$LOCKDIR" 2>/dev/null
-        if ! mkdir "$LOCKDIR" 2>/dev/null; then exit 0; fi
-    else
+# Acquire lock (shared with SessionStart hook — B3: PID-based, no TTL race)
+LOCKFILE="$MEMORY_SYSTEM/.memory.pid"
+if [ -f "$LOCKFILE" ]; then
+    OLD_PID=$(cat "$LOCKFILE" 2>/dev/null)
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
         exit 0
     fi
 fi
-trap 'rm -r "$LOCKDIR" 2>/dev/null' EXIT
+echo $$ > "$LOCKFILE"
+trap 'rm -f "$LOCKFILE"' EXIT
 
 # Reindex FIRST so compound.py searches fresh FTS5 (H3: stale index = duplicates)
 "$INDEX" --incremental >/dev/null 2>&1 || true

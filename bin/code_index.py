@@ -123,8 +123,11 @@ def index_code(conn, project_dir, project_slug=None):
     if project_slug is None:
         project_slug = project_dir.rstrip("/").replace("/", "-").lstrip("-")
 
-    conn.execute("DELETE FROM memory_chunks WHERE source = 'code-index' AND project = ?",
-                 (project_slug,))
+    abs_dir = os.path.abspath(project_dir).rstrip("/") + "/"
+    conn.execute(
+        "DELETE FROM memory_chunks WHERE source = 'code-index' AND path LIKE ?",
+        (abs_dir + "%",)
+    )
     conn.commit()
 
     files = find_code_files(project_dir, set(LANGUAGE_MAP.keys()))

@@ -119,21 +119,24 @@ def update_existing(filepath, signal_text):
 
 def create_signal_file(cwd, signals):
     """Create new signal file for signals without existing matches."""
-    sanitized = "-" + cwd.replace("/", "-").lstrip("-")
+    sanitized = cwd.rstrip("/").replace("/", "-").lstrip("-")
 
     memory_dir = None
     projects_dir = os.path.expanduser("~/.claude/projects/")
     if os.path.isdir(projects_dir):
         for d in os.listdir(projects_dir):
-            if sanitized.endswith(d) or d.endswith(sanitized.split("-")[-1]):
+            if d == sanitized or d == "-" + sanitized:
                 candidate = os.path.join(projects_dir, d, "memory")
                 if os.path.isdir(candidate):
                     memory_dir = candidate
                     break
         if not memory_dir:
-            candidate = os.path.join(projects_dir, sanitized, "memory")
-            if os.path.isdir(candidate):
-                memory_dir = candidate
+            for d in os.listdir(projects_dir):
+                if sanitized.endswith(d.lstrip("-")) and len(d) > 10:
+                    candidate = os.path.join(projects_dir, d, "memory")
+                    if os.path.isdir(candidate):
+                        memory_dir = candidate
+                        break
 
     if not memory_dir:
         memory_dir = os.path.expanduser("~/.claude/memory-system/")

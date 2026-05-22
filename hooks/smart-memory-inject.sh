@@ -5,19 +5,15 @@
 # P3: ALL feedback rules always included. P9: only relevant, not dump.
 set -euo pipefail
 
-LOCKDIR="$HOME/.claude/memory-system/.memory.lock"
-if ! mkdir "$LOCKDIR" 2>/dev/null; then
-    LOCK_AGE=$(( $(date +%s) - $(stat -f%m "$LOCKDIR" 2>/dev/null || echo 0) ))
-    if [ "$LOCK_AGE" -gt 30 ]; then
-        rm -r "$LOCKDIR" 2>/dev/null
-        if ! mkdir "$LOCKDIR" 2>/dev/null; then
-            echo "Memory system busy (stale lock cleanup failed), skipping"; exit 0
-        fi
-    else
-        echo "Memory system busy (lock age ${LOCK_AGE}s), skipping"; exit 0
+LOCKFILE="$HOME/.claude/memory-system/.memory.pid"
+if [ -f "$LOCKFILE" ]; then
+    OLD_PID=$(cat "$LOCKFILE" 2>/dev/null)
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+        echo "Memory system busy (PID $OLD_PID alive), skipping"; exit 0
     fi
 fi
-trap 'rm -r "$LOCKDIR" 2>/dev/null' EXIT
+echo $$ > "$LOCKFILE"
+trap 'rm -f "$LOCKFILE"' EXIT
 
 MEMORY_SYSTEM="$HOME/.claude/memory-system"
 DB="$MEMORY_SYSTEM/db/index.db"

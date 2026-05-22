@@ -32,11 +32,10 @@ STOPWORDS = {
 }
 
 
-DRIFT_PENALTIES = {
-    "broken_wikilink": 0.8,
-    "age_stale": 0.5,
-    "confidence_escalation": 0.3,
-}
+try:
+    from constants import DRIFT_PENALTIES
+except ImportError:
+    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3}
 
 
 def _load_drift_map(db_path):
