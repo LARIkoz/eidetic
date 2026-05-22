@@ -22,7 +22,7 @@ SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generate
 FRESHNESS_CUTOFF_DAYS = 30
 MAX_LIMIT = 50
 MAX_QUERY_TERMS = 8
-VECTOR_MIN_SIM = 0.65
+VECTOR_MIN_SIM = 0.55
 STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how",
     "i", "in", "is", "it", "me", "my", "of", "on", "or", "our", "the",
@@ -153,11 +153,10 @@ def _needs_vector(results, limit):
         return True
     if len(results) < min(3, limit):
         return True
-    top_quality = results[0].get("match_quality", 0)
-    if top_quality < 0.75:
+    has_phrase = any(r.get("match") == "phrase" for r in results[:3])
+    if not has_phrase:
         return True
-    avg_quality = sum(r.get("match_quality", 0) for r in results[:3]) / min(3, len(results))
-    return avg_quality < 0.55
+    return False
 
 
 def search(db_path, query, limit=10, type_filter=None, output_json=False):
@@ -203,7 +202,7 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
             "match_quality": round(match_quality, 3),
         })
 
-    results.sort(key=lambda x: (x["match_quality"], x["score"]), reverse=True)
+    results.sort(key=lambda x: x["score"], reverse=True)
     results = results[:limit]
 
     vector_db = db_path.replace("index.db", "vectors.db")
