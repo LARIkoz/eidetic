@@ -181,6 +181,12 @@ def _needs_vector(results, limit):
         return True
     if len(results) < min(3, limit):
         return True
+    strong_keyword = any(
+        r.get("match") in ("phrase", "and") and r.get("match_quality", 0) >= 1.0
+        for r in results[:3]
+    )
+    if strong_keyword:
+        return False
     has_phrase = any(r.get("match") == "phrase" for r in results[:3])
     if not has_phrase:
         return True
@@ -238,7 +244,9 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
     vector_db = db_path.replace("index.db", "vectors.db")
     has_phrase = any(r.get("match") == "phrase" for r in results[:3])
     if _needs_vector(results, limit) and os.path.exists(vector_db):
-        vec_results = _vector_search(vector_db, conn, query, limit, type_filter, warn=not output_json)
+        vec_results = _vector_search(
+            vector_db, conn, query, limit, type_filter, drift_map, warn=not output_json
+        )
         if vec_results:
             results = _rrf_merge(results, vec_results, limit, has_phrase=has_phrase)
 
@@ -262,7 +270,7 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
     conn.close()
 
 
-def _vector_search(vector_db, index_conn, query, limit, type_filter, warn=False):
+def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_map=None, warn=False):
     try:
         embed_path = os.path.join(os.path.dirname(__file__), "embed.py")
         spec = importlib.util.spec_from_file_location("eidetic_embed", embed_path)
@@ -302,7 +310,8 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, warn=False)
 
         ev_w = EVIDENCE_WEIGHTS.get(evidence, 0.7)
         src_w = SOURCE_WEIGHTS.get(source, 0.5)
-        fr_w = compute_freshness(lv)
+        dp = (drift_map or {}).get(path)
+        fr_w = dp if dp is not None else compute_freshness(lv)
         compound = sim * ev_w * src_w * fr_w
 
         snippet = content[:200].replace("\n", " ").strip() if content else ""
@@ -325,7 +334,7 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, warn=False)
             "match": "vector",
             "match_quality": round(sim, 3),
         })
-    results.sort(key=lambda x: x["vector_score"], reverse=True)
+    results.sort(key=lambda x: x["score"], reverse=True)
     return results
 
 

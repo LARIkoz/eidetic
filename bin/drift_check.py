@@ -110,6 +110,8 @@ def extract_wikilinks_from_content(content):
             continue
         if "$" in target or "{" in target or "\\" in target:
             continue
+        if re.match(r"^-[A-Za-z]\s", target) or "~/" in target:
+            continue
         if re.search(r'(^|\s)(==|!=|-eq|-ne|-gt|-lt|-ge|-le)(\s|$)', target):
             continue
         if target == "..." or len(target) < 2:

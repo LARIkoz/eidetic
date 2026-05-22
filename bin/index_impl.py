@@ -293,8 +293,6 @@ def run_full(conn, files):
         conn.close()
         os.replace(tmp_path, db_path)
 
-        new_conn = sqlite3.connect(db_path)
-        new_conn.execute("PRAGMA journal_mode=WAL")
         return indexed
     except Exception as e:
         print(f"ERROR: full reindex failed: {e}", file=sys.stderr)
@@ -354,6 +352,9 @@ def main():
 
     if mode == "--full":
         indexed = run_full(conn, files)
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         elapsed = time.time() - t0
         total = conn.execute("SELECT COUNT(*) FROM memory_chunks").fetchone()[0]
         print(f"Full index: {indexed} files, {total} chunks, {elapsed:.2f}s")
