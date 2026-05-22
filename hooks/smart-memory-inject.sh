@@ -81,4 +81,10 @@ if [ -n "$SESSION_HINT" ] && [ -f "$RULES_FILE" ]; then
     echo "$SESSION_HINT" >> "$RULES_FILE"
 fi
 
+# Check for updates (background, non-blocking)
+UPDATE_CHECK="$MEMORY_SYSTEM/bin/check-update.sh"
+if [ -f "$UPDATE_CHECK" ]; then
+    bash "$UPDATE_CHECK" 2>/dev/null &
+fi
+
 echo "Memory context updated (with session hint)"

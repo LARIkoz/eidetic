@@ -1,5 +1,5 @@
 #!/bin/bash
-# Claude Memory System — Installer
+# Eidetic — Installer (with auto-update support)
 # Zero external deps: bash + python3 + sqlite3 (all pre-installed on macOS/Linux)
 set -euo pipefail
 
@@ -8,8 +8,11 @@ HOOKS_DIR="$HOME/.claude/hooks"
 SKILLS_DIR="$HOME/.claude/skills/memory-recall"
 RULES_DIR="$HOME/.claude/rules"
 SETTINGS="$HOME/.claude/settings.json"
+META="$MEMORY_SYSTEM/.installed.json"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_URL="https://github.com/LARIkoz/eidetic.git"
 
-echo "=== Claude Memory System — Install ==="
+echo "=== Eidetic Memory System — Install ==="
 echo ""
 
 # Check prerequisites
@@ -98,25 +101,52 @@ with open(settings_path, "w") as f:
 PYEOF
 fi
 
+# Write install metadata (for auto-updates)
+echo "6. Writing install metadata..."
+GIT_SHA=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
+VERSION=$(sed -n 's/.*version-\([0-9][0-9.]*\)-.*/\1/p' "$SCRIPT_DIR/README.md" 2>/dev/null | head -1)
+[ -z "$VERSION" ] && VERSION="unknown"
+python3 << PYEOF
+import json, time, os
+meta_path = os.path.expanduser("$META")
+meta = {
+    "version": "$VERSION",
+    "git_sha": "$GIT_SHA",
+    "repo": "$REPO_URL",
+    "installed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "update_method": "install"
+}
+with open(meta_path, "w") as f:
+    json.dump(meta, f, indent=2)
+print(f"   Version: {meta['version']} ({meta['git_sha'][:7]})")
+PYEOF
+
 # Build initial index
-echo "6. Building FTS5 index..."
+echo "7. Building FTS5 index..."
 "$MEMORY_SYSTEM/bin/index.sh" --full 2>&1
 
 # Run health check
 echo ""
-echo "7. Health check..."
+echo "8. Health check..."
 "$MEMORY_SYSTEM/bin/health.sh"
 
 echo ""
 echo "=== Installation complete ==="
 echo ""
 echo "What happens now:"
-echo "  - Every session start: 59+ feedback rules auto-injected"
+echo "  - Every session start: rules auto-injected + update check (background)"
 echo "  - Every session end: signals extracted and compounded"
 echo "  - Search: ~/.claude/memory-system/bin/search.sh \"your query\""
 echo "  - Recall skill: /memory-recall in Claude Code"
 echo "  - Health: ~/.claude/memory-system/bin/health.sh"
+echo "  - Update: ~/.claude/memory-system/bin/update.sh"
 echo "  - Rollback: bash ~/.claude/memory-system/bin/rollback.sh"
+echo ""
+echo "Auto-updates:"
+echo "  - Checks for updates every 6 hours (at session start, background)"
+echo "  - Shows a one-line notice when an update is available"
+echo "  - Run 'bash ~/.claude/memory-system/bin/update.sh' to apply"
 echo ""
 echo "Optional v2 features:"
 echo "  - Semantic vector search: python3 -m pip install --user fastembed"

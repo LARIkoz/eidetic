@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.2.1-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.2.2-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -176,17 +176,17 @@ After a search, Eidetic looks for unexpected cross-project connections via wikil
 
 ## Performance
 
-| Metric                          | Value                            |
-| ------------------------------- | -------------------------------- |
-| Session start (warm)            | **~350ms**                       |
-| Session start (cold, first run) | ~11s (fastembed ONNX model load) |
-| Full reindex (517 files)        | 0.6s                             |
-| Incremental reindex             | 40ms                             |
-| FTS5 search                     | ~50ms                            |
-| Hybrid search (FTS5 + vector)   | ~200ms                           |
-| Code index (143 files)          | 0.1s                             |
-| Signal extraction cost          | ~$0.002/session                  |
-| Index size                      | 9.5MB (FTS5) + 5.9MB (vectors)   |
+| Metric                          | Value                                                             |
+| ------------------------------- | ----------------------------------------------------------------- |
+| Session start (warm)            | **~350ms**                                                        |
+| Session start (cold, first run) | ~11s (fastembed ONNX model load)                                  |
+| Full reindex (517 files)        | 0.6s                                                              |
+| Incremental reindex             | 40ms                                                              |
+| FTS5 search                     | ~50ms                                                             |
+| Hybrid search (FTS5 + vector)   | ~200ms                                                            |
+| Code index (143 files)          | 0.1s                                                              |
+| Signal extraction cost          | ~$0.002/session                                                   |
+| Index size                      | 9.5MB (FTS5) + 5.9MB (vectors)                                    |
 | External dependencies           | **zero for core**; optional fastembed/tree-sitter for v2 features |
 
 ---
@@ -209,6 +209,16 @@ pip install tree-sitter tree-sitter-python tree-sitter-javascript tree-sitter-ba
 ```
 
 Core works without any pip installs. Without optional packages, Eidetic degrades to FTS5-only memory search and skips code indexing. Rollback in 5 seconds: `bash ~/.claude/memory-system/bin/rollback.sh`
+
+### Updates
+
+Eidetic checks for updates in the background at session start (every 6 hours). When an update is available, you'll see a one-line notice:
+
+```
+Eidetic update available (a1b2c3d). Run: bash ~/.claude/memory-system/bin/update.sh
+```
+
+Updates preserve your databases, rules, and hook registrations — only code files are replaced.
 
 ### MCP Server
 
@@ -275,23 +285,23 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 
 ### Full comparison
 
-| Capability                   | Eidetic                  | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
-| ---------------------------- | ------------------------ | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
-|                              | **v2.2.1**               | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
-| Search                       | FTS5 + vector            | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
-| Recall benchmark             | **100%**                 | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
-| Auto-inject on session start | **rules/ (no cap)**      | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
-| Signal extraction            | Haiku async              | PostToolUse                                            | manual                                                    | —                                                    | —                                                                      |
-| Compounding                  | **yes**                  | —                                                      | —                                                         | —                                                    | —                                                                      |
-| Self-ref discount            | **0.5x**                 | —                                                      | —                                                         | —                                                    | —                                                                      |
-| Evidence tiers               | **3 tiers**              | —                                                      | —                                                         | —                                                    | —                                                                      |
-| Code search                  | **tree-sitter**          | —                                                      | —                                                         | —                                                    | —                                                                      |
-| Phase-adaptive               | **3 phases**             | —                                                      | —                                                         | —                                                    | —                                                                      |
-| Serendipity links            | **yes**                  | —                                                      | —                                                         | —                                                    | —                                                                      |
-| Multi-agent (MCP)            | yes                      | yes                                                    | yes (Cursor, Copilot)                                     | yes                                                  | —                                                                      |
+| Capability                   | Eidetic                            | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
+| ---------------------------- | ---------------------------------- | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
+|                              | **v2.2.2**                         | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
+| Search                       | FTS5 + vector                      | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
+| Recall benchmark             | **100%**                           | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
+| Auto-inject on session start | **rules/ (no cap)**                | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
+| Signal extraction            | Haiku async                        | PostToolUse                                            | manual                                                    | —                                                    | —                                                                      |
+| Compounding                  | **yes**                            | —                                                      | —                                                         | —                                                    | —                                                                      |
+| Self-ref discount            | **0.5x**                           | —                                                      | —                                                         | —                                                    | —                                                                      |
+| Evidence tiers               | **3 tiers**                        | —                                                      | —                                                         | —                                                    | —                                                                      |
+| Code search                  | **tree-sitter**                    | —                                                      | —                                                         | —                                                    | —                                                                      |
+| Phase-adaptive               | **3 phases**                       | —                                                      | —                                                         | —                                                    | —                                                                      |
+| Serendipity links            | **yes**                            | —                                                      | —                                                         | —                                                    | —                                                                      |
+| Multi-agent (MCP)            | yes                                | yes                                                    | yes (Cursor, Copilot)                                     | yes                                                  | —                                                                      |
 | Dependencies                 | **zero core; optional pip for v2** | ChromaDB, worker                                       | Node.js                                                   | Milvus, PyTorch                                      | Obsidian app                                                           |
-| Rollback                     | **1 cmd, 5s**            | manual                                                 | —                                                         | manual                                               | manual                                                                 |
-| Token compression            | **2.17x** (57→124 rules) | —                                                      | —                                                         | —                                                    | 71x (claimed)                                                          |
+| Rollback                     | **1 cmd, 5s**                      | manual                                                 | —                                                         | manual                                               | manual                                                                 |
+| Token compression            | **2.17x** (57→124 rules)           | —                                                      | —                                                         | —                                                    | 71x (claimed)                                                          |
 
 ### When to use what
 
@@ -370,6 +380,13 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v2.2.2 (2026-05-22)
+
+- Auto-update system: version tracking, background update check every 6h, one-command update
+- `bin/check-update.sh` — fast version check via `git ls-remote` (~200ms, runs at SessionStart)
+- `bin/update.sh` — fetch latest, replace code files, preserve db/rules/hooks
+- Install metadata at `~/.claude/memory-system/.installed.json`
 
 ### v2.2.1 (2026-05-22)
 
