@@ -32,6 +32,29 @@ STOPWORDS = {
 }
 
 
+DRIFT_PENALTIES = {
+    "broken_wikilink": 0.8,
+    "age_stale": 0.5,
+    "confidence_escalation": 0.3,
+}
+
+
+def _load_drift_map(conn):
+    try:
+        rows = conn.execute("""
+            SELECT path, drift_type FROM drift_findings
+            WHERE resolved_at IS NULL AND first_seen > 1
+        """).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    result = {}
+    for path, drift_type in rows:
+        penalty = DRIFT_PENALTIES.get(drift_type, 0.5)
+        if path not in result or penalty < result[path]:
+            result[path] = penalty
+    return result
+
+
 def compute_freshness(last_verified):
     """Fresh (<30d) = 1.0, stale = 0.5, unknown = 0.7."""
     if not last_verified:
@@ -172,13 +195,15 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
     conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
 
+    drift_map = _load_drift_map(conn)
     rows = _fetch_fts_rows(conn, query, limit, type_filter)
 
     results = []
     for row, strategy, match_quality in rows:
         ev_w = EVIDENCE_WEIGHTS.get(row["evidence"], 0.7)
         src_w = SOURCE_WEIGHTS.get(row["source"], 1.0)
-        fr_w = compute_freshness(row["last_verified"])
+        dp = drift_map.get(row["path"])
+        fr_w = dp if dp is not None else compute_freshness(row["last_verified"])
         raw_rank = abs(row["fts_rank"])
         compound = raw_rank * ev_w * src_w * fr_w * max(0.1, match_quality)
 

@@ -53,16 +53,42 @@ RULE_CLUSTERS = [
 ]
 
 
-def compound_weight(evidence, source, last_verified):
+DRIFT_PENALTIES = {
+    "broken_wikilink": 0.8,
+    "age_stale": 0.5,
+    "confidence_escalation": 0.3,
+}
+
+
+def load_drift_findings(conn):
+    try:
+        rows = conn.execute("""
+            SELECT path, drift_type, first_seen FROM drift_findings
+            WHERE resolved_at IS NULL AND first_seen > 1
+        """).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    findings = {}
+    for path, drift_type, first_seen in rows:
+        penalty = DRIFT_PENALTIES.get(drift_type, 0.5)
+        if path not in findings or penalty < findings[path]:
+            findings[path] = penalty
+    return findings
+
+
+def compound_weight(evidence, source, last_verified, drift_penalty=None):
     ev = EVIDENCE_WEIGHTS.get(evidence, 0.7)
     src = SOURCE_WEIGHTS.get(source, 1.0)
-    fr = 0.7
-    if last_verified:
-        try:
-            lv = datetime.fromisoformat(last_verified)
-            fr = 1.0 if (datetime.now() - lv).days < FRESHNESS_DAYS else 0.5
-        except (ValueError, TypeError):
-            pass
+    if drift_penalty is not None:
+        fr = drift_penalty
+    else:
+        fr = 0.7
+        if last_verified:
+            try:
+                lv = datetime.fromisoformat(last_verified)
+                fr = 1.0 if (datetime.now() - lv).days < FRESHNESS_DAYS else 0.5
+            except (ValueError, TypeError):
+                pass
     return ev * src * fr
 
 
@@ -177,9 +203,10 @@ def fetch_feedback(conn, budget_chars):
     return "".join(result), used, total_rules
 
 
-def fetch_project(conn, cwd, budget_chars):
+def fetch_project(conn, cwd, budget_chars, drift_map=None):
     """Fetch project-relevant memories by matching project slug."""
     slug = detect_project_slug(cwd)
+    drift_map = drift_map or {}
 
     rows = conn.execute("""
         SELECT DISTINCT c.path, c.name, c.description, c.section_heading, c.content,
@@ -201,7 +228,8 @@ def fetch_project(conn, cwd, budget_chars):
             continue
         seen.add(key)
 
-        w = compound_weight(evidence, source, lv)
+        dp = drift_map.get(path)
+        w = compound_weight(evidence, source, lv, drift_penalty=dp)
         short_path = path.replace(os.path.expanduser("~"), "~")
         snippet = content[:500] if len(content) > 500 else content
         text = f"**{name or heading}** ({typ}) — {short_path}\n{snippet}\n\n"
@@ -220,7 +248,7 @@ def fetch_project(conn, cwd, budget_chars):
     return "".join(result), used
 
 
-def fetch_recent(conn, budget_chars, exclude_project=None):
+def fetch_recent(conn, budget_chars, exclude_project=None, drift_map=None):
     """Fetch recent cross-project memories (last 14 days)."""
     cutoff = int((datetime.now() - timedelta(days=14)).timestamp())
 
@@ -249,10 +277,12 @@ def fetch_recent(conn, budget_chars, exclude_project=None):
             continue
         seen.add(key)
 
-        w = compound_weight(evidence, source, lv)
+        dp = (drift_map or {}).get(path)
+        w = compound_weight(evidence, source, lv, drift_penalty=dp)
+        stale_tag = " ⚠stale" if dp else ""
         short_path = path.replace(os.path.expanduser("~"), "~")
         snippet = content[:300] if len(content) > 300 else content
-        text = f"**{name or heading}** ({typ}, {proj or 'cross-project'}) — {short_path}\n{snippet}\n\n"
+        text = f"**{name or heading}**{stale_tag} ({typ}, {proj or 'cross-project'}) — {short_path}\n{snippet}\n\n"
         chunks.append((w, text))
 
     chunks.sort(key=lambda x: x[0], reverse=True)
@@ -278,12 +308,13 @@ def main():
     conn.execute("PRAGMA busy_timeout=5000")
 
     slug = detect_project_slug(cwd)
+    drift_map = load_drift_findings(conn)
 
     project_budget = int(TOKEN_BUDGET_CHARS * PROJECT_BUDGET_RATIO)
     recent_budget = int(TOKEN_BUDGET_CHARS * RECENT_BUDGET_RATIO)
 
-    project_text, project_used = fetch_project(conn, cwd, project_budget)
-    recent_text, recent_used = fetch_recent(conn, recent_budget, slug)
+    project_text, project_used = fetch_project(conn, cwd, project_budget, drift_map)
+    recent_text, recent_used = fetch_recent(conn, recent_budget, slug, drift_map)
 
     feedback_budget = TOKEN_BUDGET_CHARS - project_used - recent_used
     feedback_text, feedback_used, feedback_total = fetch_feedback(conn, feedback_budget)

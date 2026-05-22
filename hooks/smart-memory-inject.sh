@@ -42,6 +42,9 @@ fi
 # Incremental reindex (< 500ms)
 "$INDEX" --incremental >/dev/null 2>&1 || true
 
+# Drift detection (24h throttle, crash-guarded — B6: must not kill injection)
+python3 "$MEMORY_SYSTEM/bin/drift_check.py" "$DB" 2>/dev/null || true
+
 # Code indexing for CWD project (if tree-sitter available)
 if python3 -c "import tree_sitter" 2>/dev/null; then
     python3 -c "
