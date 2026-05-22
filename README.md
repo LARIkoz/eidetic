@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.2.2-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-2.5.0-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -180,7 +180,7 @@ After a search, Eidetic looks for unexpected cross-project connections via wikil
 | ------------------------------- | ----------------------------------------------------------------- |
 | Session start (warm)            | **~350ms**                                                        |
 | Session start (cold, first run) | ~11s (fastembed ONNX model load)                                  |
-| Full reindex (517 files)        | 0.6s                                                              |
+| Full reindex (522 files)        | 0.6s                                                              |
 | Incremental reindex             | 40ms                                                              |
 | FTS5 search                     | ~50ms                                                             |
 | Hybrid search (FTS5 + vector)   | ~200ms                                                            |
@@ -287,7 +287,7 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 
 | Capability                   | Eidetic                            | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
 | ---------------------------- | ---------------------------------- | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
-|                              | **v2.2.2**                         | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
+|                              | **v2.5.0**                         | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
 | Search                       | FTS5 + vector                      | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
 | Recall benchmark             | **100%**                           | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
 | Auto-inject on session start | **rules/ (no cap)**                | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
@@ -301,6 +301,7 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 | Multi-agent (MCP)            | yes                                | yes                                                    | yes (Cursor, Copilot)                                     | yes                                                  | —                                                                      |
 | Dependencies                 | **zero core; optional pip for v2** | ChromaDB, worker                                       | Node.js                                                   | Milvus, PyTorch                                      | Obsidian app                                                           |
 | Rollback                     | **1 cmd, 5s**                      | manual                                                 | —                                                         | manual                                               | manual                                                                 |
+| Drift detection              | **wikilink + age + confidence**    | —                                                      | —                                                         | —                                                    | —                                                                      |
 | Token compression            | **2.17x** (57→124 rules)           | —                                                      | —                                                         | —                                                    | 71x (claimed)                                                          |
 
 ### When to use what
@@ -366,10 +367,11 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v1.3** — Smart token compression (57 → 124 rules, 2.17x)
 - [x] **v2.0** — Hybrid FTS5 + vector search (fastembed, historical 30% → 100% recall benchmark)
 - [x] **v2.2** — Code-aware parsing (tree-sitter, 338 entities from 143 files)
+- [x] **v2.2.2** — Auto-update system, search recall 12→18/20 (vector boost + dedup)
+- [x] **v2.5** — Drift detection: wikilink validation, age-based staleness, confidence escalation. No competitor does this.
 
 ### Next
 
-- [ ] **v2.5 — Drift Detection + Spaced Recall** — sample random memories on session start: check if referenced files/functions still exist (drift), and resurface forgotten-but-relevant knowledge (spaced repetition for agents). Inspired by Anki: the system decides what the agent should re-learn today. Zero deps.
 - [ ] **v2.6 — Handoff Integration** — auto-handoff on long sessions (>2h), cold-start priority for fresh handoffs, cross-session thread tracking. Zero deps.
 - [ ] **v2.7 — Progressive Summarization** — memories mature over time: raw signal → compound-enriched → condensed summary. After N updates, auto-generate a "distilled" version. Inspired by Tiago Forte's progressive summarization layers. Zero deps.
 - [ ] **v2.8 — Session Digest** — periodic review: "In the last 5 sessions you learned X, decided Y, updated 3 rules, 1 memory became stale." Inspired by Forte's weekly review. Zero deps.
@@ -380,6 +382,20 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v2.5.0 (2026-05-22)
+
+- **Drift detection** — wikilink validation, type-based age thresholds, confidence escalation detection
+- Separate `drift_state.db` (P1: index.db stays derived/rebuildable)
+- Differential penalty: broken_wikilink=0.8x, age_stale=0.5x, confidence_escalation=0.3x
+- Baseline mode: first detection = no penalty, penalty on second consecutive detection
+- 24h throttle, auto-resolve when drift disappears, orphan pruning
+- Drift-aware ranking in both search and context assembly
+- Crash-safe full reindex via temp DB + `os.replace()`
+- PID-based lock replaces TTL-based mkdir (macOS compatible, no race)
+- 13 bugfixes from consilium (5 voices) + consreview (6 voices)
+- Constants deduplication (`constants.py`), compound.py project matching fix
+- Search recall improved to 18/20 (vector boost + per-path dedup + tiered FTS)
 
 ### v2.2.2 (2026-05-22)
 
