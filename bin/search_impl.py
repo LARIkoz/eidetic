@@ -39,12 +39,18 @@ DRIFT_PENALTIES = {
 }
 
 
-def _load_drift_map(conn):
+def _load_drift_map(db_path):
+    drift_path = db_path.replace("index.db", "drift_state.db")
+    if not os.path.exists(drift_path):
+        return {}
     try:
-        rows = conn.execute("""
+        dc = sqlite3.connect(drift_path)
+        dc.execute("PRAGMA busy_timeout=2000")
+        rows = dc.execute("""
             SELECT path, drift_type FROM drift_findings
             WHERE resolved_at IS NULL AND first_seen > 1
         """).fetchall()
+        dc.close()
     except sqlite3.OperationalError:
         return {}
     result = {}
@@ -195,7 +201,7 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
     conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
 
-    drift_map = _load_drift_map(conn)
+    drift_map = _load_drift_map(db_path)
     rows = _fetch_fts_rows(conn, query, limit, type_filter)
 
     results = []

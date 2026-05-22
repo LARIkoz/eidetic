@@ -2,10 +2,10 @@
 """Eidetic v2.5 — Drift Detection
 
 Detects stale memories via wikilink validation and age checks.
-Writes findings to drift_findings table in index.db.
+Reads from index.db, writes to drift_state.db (separate from derived index — P1).
 Runs at SessionStart (24h throttle). No file mutations.
 
-Charter: P5 (quality tracked), P6 (system improves), P11 (contradictions surfaced).
+Charter: P1 (derived separate), P5 (quality tracked), P6 (improves), P11 (contradictions).
 """
 
 import os
@@ -31,46 +31,60 @@ DRIFT_PENALTIES = {
 }
 
 
-def init_drift_table(conn):
+def get_drift_db_path(index_db_path):
+    return os.path.join(os.path.dirname(index_db_path), "drift_state.db")
+
+
+def init_drift_db(drift_path):
+    conn = sqlite3.connect(drift_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS drift_findings (
             path TEXT NOT NULL,
             drift_type TEXT NOT NULL,
-            memory_type TEXT,
             detail TEXT,
+            memory_type TEXT,
             detected_at TEXT NOT NULL,
             resolved_at TEXT,
             resolved_by TEXT,
             first_seen INTEGER DEFAULT 1,
-            PRIMARY KEY (path, drift_type)
+            PRIMARY KEY (path, drift_type, detail)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS drift_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
         )
     """)
     conn.commit()
+    return conn
 
 
-def should_run(conn):
+def should_run(drift_conn):
     try:
-        row = conn.execute(
-            "SELECT mtime FROM index_meta WHERE path = '__drift_check__'"
+        row = drift_conn.execute(
+            "SELECT value FROM drift_meta WHERE key = 'last_check'"
         ).fetchone()
-        if row and time.time() - row[0] < 86400:
+        if row and time.time() - float(row[0]) < 86400:
             return False
-    except sqlite3.OperationalError:
+    except (sqlite3.OperationalError, ValueError):
         pass
     return True
 
 
-def record_run(conn):
-    conn.execute(
-        "INSERT OR REPLACE INTO index_meta (path, mtime) VALUES ('__drift_check__', ?)",
-        (int(time.time()),)
+def record_run(drift_conn):
+    drift_conn.execute(
+        "INSERT OR REPLACE INTO drift_meta (key, value) VALUES ('last_check', ?)",
+        (str(time.time()),)
     )
-    conn.commit()
+    drift_conn.commit()
 
 
-def build_known_names(conn):
+def build_known_names(index_conn):
     names = set()
-    rows = conn.execute("SELECT DISTINCT path, name FROM memory_chunks").fetchall()
+    rows = index_conn.execute("SELECT DISTINCT path, name FROM memory_chunks").fetchall()
     for path, name in rows:
         stem = os.path.basename(path).replace(".md", "")
         names.add(stem)
@@ -90,19 +104,26 @@ def extract_wikilinks_from_content(content):
         return []
     raw = re.findall(r'\[\[([^\]]+)\]\]', content)
     links = []
+    seen = set()
     for link in raw:
         target = link.split("|")[0].split("#")[0].strip()
-        if target and "$" not in target and not re.search(
-            r'(^|\s)(==|!=|-eq|-ne|-gt|-lt|-ge|-le)(\s|$)', target
-        ):
-            links.append(target)
+        if not target or target in seen:
+            continue
+        if "$" in target or "{" in target or "\\" in target:
+            continue
+        if re.search(r'(^|\s)(==|!=|-eq|-ne|-gt|-lt|-ge|-le)(\s|$)', target):
+            continue
+        if target == "..." or len(target) < 2:
+            continue
+        seen.add(target)
+        links.append(target)
     return links
 
 
-def check_wikilink_drift(conn, known_names):
-    rows = conn.execute("""
+def check_wikilink_drift(index_conn, known_names):
+    rows = index_conn.execute("""
         SELECT DISTINCT path, type, content FROM memory_chunks
-        WHERE content LIKE '%[[%'
+        WHERE content LIKE '%[[%' AND source != 'code-index'
     """).fetchall()
 
     findings = []
@@ -110,18 +131,20 @@ def check_wikilink_drift(conn, known_names):
         links = extract_wikilinks_from_content(content)
         for link in links:
             if link not in known_names:
-                findings.append((path, mem_type, "broken_wikilink", f"[[{link}]] not found"))
+                findings.append((path, mem_type, "broken_wikilink", f"[[{link}]]"))
     return findings
 
 
-def check_age_drift(conn):
-    now = datetime.utcnow()
+def check_age_drift(index_conn):
+    now = datetime.now()
     findings = []
 
-    rows = conn.execute("""
-        SELECT DISTINCT path, type, evidence, last_verified, mtime
+    rows = index_conn.execute("""
+        SELECT path, type, evidence, last_verified, mtime
         FROM memory_chunks
         WHERE evidence != 'hypothesis'
+        GROUP BY path
+        HAVING MIN(id)
     """).fetchall()
 
     for path, mem_type, evidence, last_verified, mtime in rows:
@@ -129,16 +152,16 @@ def check_age_drift(conn):
         if threshold is None:
             continue
 
+        verified_dt = None
         if last_verified:
             try:
-                verified_dt = datetime.fromisoformat(last_verified.replace("Z", "+00:00").replace("+00:00", ""))
+                clean = last_verified.replace("Z", "").replace("+00:00", "")
+                verified_dt = datetime.fromisoformat(clean)
             except (ValueError, AttributeError):
-                verified_dt = None
-        else:
-            verified_dt = None
+                pass
 
         if verified_dt is None and mtime:
-            verified_dt = datetime.utcfromtimestamp(mtime)
+            verified_dt = datetime.fromtimestamp(mtime)
 
         if verified_dt is None:
             continue
@@ -147,24 +170,26 @@ def check_age_drift(conn):
         if age_days > threshold:
             findings.append((
                 path, mem_type, "age_stale",
-                f"age={age_days}d threshold={threshold}d type={mem_type}"
+                f"age={age_days}d threshold={threshold}d"
             ))
     return findings
 
 
-def check_confidence_escalation(conn):
-    rows = conn.execute("""
-        SELECT path, type, content FROM memory_chunks
+def check_confidence_escalation(index_conn):
+    rows = index_conn.execute("""
+        SELECT path, type FROM memory_chunks
         WHERE source = 'agent-extracted'
     """).fetchall()
 
     path_counts = {}
-    for path, mem_type, content in rows:
+    for path, mem_type in rows:
         path_counts.setdefault(path, {"agent": 0, "type": mem_type})
         path_counts[path]["agent"] += 1
 
     user_paths = set()
-    for row in conn.execute("SELECT DISTINCT path FROM memory_chunks WHERE source = 'user-explicit'"):
+    for row in index_conn.execute(
+        "SELECT DISTINCT path FROM memory_chunks WHERE source = 'user-explicit'"
+    ):
         user_paths.add(row[0])
 
     findings = []
@@ -172,107 +197,120 @@ def check_confidence_escalation(conn):
         if info["agent"] >= 3 and path not in user_paths:
             findings.append((
                 path, info["type"], "confidence_escalation",
-                f"agent_updates={info['agent']} user_updates=0"
+                f"agent={info['agent']}"
             ))
     return findings
 
 
-def write_findings(conn, findings):
-    now_iso = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+def write_findings(drift_conn, findings):
+    now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
     new_count = 0
     for path, mem_type, drift_type, detail in findings:
-        row = conn.execute(
-            "SELECT first_seen FROM drift_findings WHERE path = ? AND drift_type = ?",
-            (path, drift_type)
+        row = drift_conn.execute(
+            "SELECT first_seen FROM drift_findings WHERE path = ? AND drift_type = ? AND detail = ?",
+            (path, drift_type, detail)
         ).fetchone()
 
         if row:
-            conn.execute("""
-                UPDATE drift_findings SET detail = ?, detected_at = ?,
+            drift_conn.execute("""
+                UPDATE drift_findings SET detected_at = ?,
                     first_seen = first_seen + 1, resolved_at = NULL, resolved_by = NULL
-                WHERE path = ? AND drift_type = ?
-            """, (detail, now_iso, path, drift_type))
+                WHERE path = ? AND drift_type = ? AND detail = ?
+            """, (now_iso, path, drift_type, detail))
         else:
-            conn.execute("""
-                INSERT INTO drift_findings (path, drift_type, memory_type, detail, detected_at, first_seen)
+            drift_conn.execute("""
+                INSERT INTO drift_findings (path, drift_type, detail, memory_type, detected_at, first_seen)
                 VALUES (?, ?, ?, ?, ?, 1)
-            """, (path, drift_type, mem_type, detail, now_iso))
+            """, (path, drift_type, detail, mem_type, now_iso))
             new_count += 1
-    conn.commit()
+    drift_conn.commit()
     return new_count
 
 
-def auto_resolve(conn, findings):
-    finding_keys = {(path, drift_type) for path, _, drift_type, _ in findings}
-    now_iso = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+def auto_resolve(drift_conn, findings):
+    finding_keys = {(p, dt, d) for p, _, dt, d in findings}
+    now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    existing = conn.execute(
-        "SELECT path, drift_type FROM drift_findings WHERE resolved_at IS NULL"
+    existing = drift_conn.execute(
+        "SELECT path, drift_type, detail FROM drift_findings WHERE resolved_at IS NULL"
     ).fetchall()
 
     resolved = 0
-    for path, drift_type in existing:
-        if (path, drift_type) not in finding_keys:
-            conn.execute("""
+    for path, drift_type, detail in existing:
+        if (path, drift_type, detail) not in finding_keys:
+            drift_conn.execute("""
                 UPDATE drift_findings SET resolved_at = ?, resolved_by = 'auto-resolve'
-                WHERE path = ? AND drift_type = ?
-            """, (now_iso, path, drift_type))
+                WHERE path = ? AND drift_type = ? AND detail = ?
+            """, (now_iso, path, drift_type, detail))
             resolved += 1
-    conn.commit()
+    drift_conn.commit()
     return resolved
 
 
-def prune_orphan_findings(conn):
-    deleted = conn.execute("""
-        DELETE FROM drift_findings
-        WHERE path NOT IN (SELECT DISTINCT path FROM memory_chunks)
-    """).rowcount
-    conn.commit()
+def prune_orphans(drift_conn, index_conn):
+    known_paths = set()
+    for row in index_conn.execute("SELECT DISTINCT path FROM memory_chunks"):
+        known_paths.add(row[0])
+
+    all_drift_paths = drift_conn.execute(
+        "SELECT DISTINCT path FROM drift_findings"
+    ).fetchall()
+
+    deleted = 0
+    for (path,) in all_drift_paths:
+        if path not in known_paths:
+            drift_conn.execute("DELETE FROM drift_findings WHERE path = ?", (path,))
+            deleted += 1
+    drift_conn.commit()
     return deleted
 
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: drift_check.py <db_path>", file=sys.stderr)
+        print("Usage: drift_check.py <index_db_path>", file=sys.stderr)
         sys.exit(1)
 
-    db_path = sys.argv[1]
-    if not os.path.exists(db_path):
+    index_db_path = sys.argv[1]
+    if not os.path.exists(index_db_path):
         sys.exit(0)
 
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
+    drift_db_path = get_drift_db_path(index_db_path)
 
-    init_drift_table(conn)
+    index_conn = sqlite3.connect(index_db_path)
+    index_conn.execute("PRAGMA journal_mode=WAL")
+    index_conn.execute("PRAGMA busy_timeout=5000")
 
-    if not should_run(conn):
-        active = conn.execute(
+    drift_conn = init_drift_db(drift_db_path)
+
+    if not should_run(drift_conn):
+        active = drift_conn.execute(
             "SELECT COUNT(*) FROM drift_findings WHERE resolved_at IS NULL"
         ).fetchone()[0]
         print(f"Drift check: skipped (ran <24h ago). {active} active findings.")
-        conn.close()
+        index_conn.close()
+        drift_conn.close()
         return
 
-    known_names = build_known_names(conn)
+    known_names = build_known_names(index_conn)
 
     all_findings = []
-    all_findings.extend(check_wikilink_drift(conn, known_names))
-    all_findings.extend(check_age_drift(conn))
-    all_findings.extend(check_confidence_escalation(conn))
+    all_findings.extend(check_wikilink_drift(index_conn, known_names))
+    all_findings.extend(check_age_drift(index_conn))
+    all_findings.extend(check_confidence_escalation(index_conn))
 
-    pruned = prune_orphan_findings(conn)
-    resolved = auto_resolve(conn, all_findings)
-    new_count = write_findings(conn, all_findings)
+    pruned = prune_orphans(drift_conn, index_conn)
+    resolved = auto_resolve(drift_conn, all_findings)
+    new_count = write_findings(drift_conn, all_findings)
 
-    record_run(conn)
+    record_run(drift_conn)
 
-    active = conn.execute(
+    active = drift_conn.execute(
         "SELECT COUNT(*) FROM drift_findings WHERE resolved_at IS NULL"
     ).fetchone()[0]
 
     print(f"Drift check: {len(all_findings)} detected, {new_count} new, {resolved} resolved, {pruned} pruned. {active} active.")
-    conn.close()
+    index_conn.close()
+    drift_conn.close()
 
 
 if __name__ == "__main__":

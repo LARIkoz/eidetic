@@ -82,10 +82,10 @@ if ! mkdir "$LOCKDIR" 2>/dev/null; then
 fi
 trap 'rm -r "$LOCKDIR" 2>/dev/null' EXIT
 
-# Pass to compounding logic
-echo "$RESULT" | python3 "$COMPOUND" "$(pwd)" 2>/dev/null || exit 0
-
-# Reindex to make new signals searchable
+# Reindex FIRST so compound.py searches fresh FTS5 (H3: stale index = duplicates)
 "$INDEX" --incremental >/dev/null 2>&1 || true
+
+# Pass to compounding logic (now searches up-to-date index)
+echo "$RESULT" | python3 "$COMPOUND" "$(pwd)" 2>/dev/null || exit 0
 
 exit 0

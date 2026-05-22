@@ -181,6 +181,8 @@ def handle_request(request):
     method = request.get("method", "")
     id = request.get("id")
     params = request.get("params", {})
+    if not isinstance(params, dict):
+        params = {}
 
     if method == "initialize":
         send_response(id, {

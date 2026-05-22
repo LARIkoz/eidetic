@@ -73,8 +73,8 @@ fi
 # Record session + get phase-adaptive hint
 SESSION_HINT=$(python3 "$MEMORY_SYSTEM/bin/session_counter.py" "$(pwd)" "record-and-hint" 2>/dev/null || echo "")
 
-# Assemble context via Python (complex logic)
-python3 "$MEMORY_SYSTEM/bin/assemble_context.py" "$DB" "$RULES_FILE" "$(pwd)"
+# Assemble context via Python (crash-guarded — B6/H4: must not kill injection)
+python3 "$MEMORY_SYSTEM/bin/assemble_context.py" "$DB" "$RULES_FILE" "$(pwd)" || true
 
 # Append session hint to memory-context.md
 if [ -n "$SESSION_HINT" ] && [ -f "$RULES_FILE" ]; then

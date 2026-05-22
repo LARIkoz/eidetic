@@ -60,16 +60,22 @@ DRIFT_PENALTIES = {
 }
 
 
-def load_drift_findings(conn):
+def load_drift_findings(db_path):
+    drift_path = db_path.replace("index.db", "drift_state.db")
+    if not os.path.exists(drift_path):
+        return {}
     try:
+        conn = sqlite3.connect(drift_path)
+        conn.execute("PRAGMA busy_timeout=2000")
         rows = conn.execute("""
-            SELECT path, drift_type, first_seen FROM drift_findings
+            SELECT path, drift_type FROM drift_findings
             WHERE resolved_at IS NULL AND first_seen > 1
         """).fetchall()
+        conn.close()
     except sqlite3.OperationalError:
         return {}
     findings = {}
-    for path, drift_type, first_seen in rows:
+    for path, drift_type in rows:
         penalty = DRIFT_PENALTIES.get(drift_type, 0.5)
         if path not in findings or penalty < findings[path]:
             findings[path] = penalty
@@ -308,7 +314,7 @@ def main():
     conn.execute("PRAGMA busy_timeout=5000")
 
     slug = detect_project_slug(cwd)
-    drift_map = load_drift_findings(conn)
+    drift_map = load_drift_findings(db_path)
 
     project_budget = int(TOKEN_BUDGET_CHARS * PROJECT_BUDGET_RATIO)
     recent_budget = int(TOKEN_BUDGET_CHARS * RECENT_BUDGET_RATIO)
