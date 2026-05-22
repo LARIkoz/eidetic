@@ -303,6 +303,57 @@ def fetch_recent(conn, budget_chars, exclude_project=None, drift_map=None):
     return "".join(result), used
 
 
+HANDOFF_MAX_AGE_MINUTES = 30
+HANDOFF_MAX_CHARS = 3000
+
+
+def fetch_fresh_handoff(cwd, slug):
+    """Find the most recent handoff state.md for this project (< 30 min old)."""
+    import glob as _glob
+
+    candidates = []
+
+    memory_pattern = os.path.expanduser(f"~/.claude/projects/*{slug[-40:]}*/memory/**/state.md")
+    for f in _glob.glob(memory_pattern, recursive=True):
+        candidates.append(f)
+
+    for handoff_dir in [os.path.join(cwd, "handoff"), os.path.join(cwd, ".kurdyuk-lite/runs")]:
+        if os.path.isdir(handoff_dir):
+            for root, dirs, files in os.walk(handoff_dir):
+                if "state.md" in files:
+                    candidates.append(os.path.join(root, "state.md"))
+
+    if not candidates:
+        return "", 0
+
+    now = time.time()
+    best = None
+    best_mtime = 0
+    for path in candidates:
+        try:
+            mtime = os.path.getmtime(path)
+            age_min = (now - mtime) / 60
+            if age_min < HANDOFF_MAX_AGE_MINUTES and mtime > best_mtime:
+                best = path
+                best_mtime = mtime
+        except OSError:
+            continue
+
+    if not best:
+        return "", 0
+
+    try:
+        with open(best, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read(HANDOFF_MAX_CHARS)
+    except OSError:
+        return "", 0
+
+    age_min = int((now - best_mtime) / 60)
+    short_path = best.replace(os.path.expanduser("~"), "~")
+    text = f"**Handoff** ({age_min}m ago) — {short_path}\n{content}\n\n"
+    return text, len(text)
+
+
 def main():
     db_path = sys.argv[1]
     rules_file = sys.argv[2]
@@ -315,13 +366,18 @@ def main():
     slug = detect_project_slug(cwd)
     drift_map = load_drift_findings(db_path)
 
+    handoff_text, handoff_used = fetch_fresh_handoff(cwd, slug)
+
     project_budget = int(TOKEN_BUDGET_CHARS * PROJECT_BUDGET_RATIO)
     recent_budget = int(TOKEN_BUDGET_CHARS * RECENT_BUDGET_RATIO)
+
+    if handoff_used > 0:
+        project_budget = max(1000, project_budget - handoff_used // 2)
 
     project_text, project_used = fetch_project(conn, cwd, project_budget, drift_map)
     recent_text, recent_used = fetch_recent(conn, recent_budget, slug, drift_map)
 
-    feedback_budget = TOKEN_BUDGET_CHARS - project_used - recent_used
+    feedback_budget = TOKEN_BUDGET_CHARS - project_used - recent_used - handoff_used
     feedback_text, feedback_used, feedback_total = fetch_feedback(conn, feedback_budget)
 
     total_chars = feedback_used + project_used + recent_used
@@ -338,6 +394,10 @@ def main():
     if feedback_text:
         output.append("## Behavioral Rules (type=feedback) — ALWAYS APPLY\n\n")
         output.append(feedback_text)
+
+    if handoff_text:
+        output.append("## Recent Handoff (cold-start priority)\n\n")
+        output.append(handoff_text)
 
     if project_text:
         output.append("## Project Context\n\n")
