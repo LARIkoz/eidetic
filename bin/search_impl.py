@@ -206,10 +206,11 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
     results = results[:limit]
 
     vector_db = db_path.replace("index.db", "vectors.db")
+    has_phrase = any(r.get("match") == "phrase" for r in results[:3])
     if _needs_vector(results, limit) and os.path.exists(vector_db):
         vec_results = _vector_search(vector_db, conn, query, limit, type_filter, warn=not output_json)
         if vec_results:
-            results = _rrf_merge(results, vec_results, limit)
+            results = _rrf_merge(results, vec_results, limit, has_phrase=has_phrase)
 
     if output_json:
         print(json.dumps(results, indent=2, ensure_ascii=False))
@@ -249,10 +250,16 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, warn=False)
             print(f"WARNING: vector search failed: {e}", file=sys.stderr)
         return []
 
-    results = []
+    best_per_path = {}
     for sim, chunk_id, path, name in vec_results:
         if sim < VECTOR_MIN_SIM:
             continue
+        if path in best_per_path and best_per_path[path][0] >= sim:
+            continue
+        best_per_path[path] = (sim, chunk_id, name)
+
+    results = []
+    for path, (sim, chunk_id, name) in best_per_path.items():
         row = index_conn.execute("""
             SELECT type, evidence, source, last_verified, content, section_heading, project
             FROM memory_chunks WHERE id = ?
@@ -288,12 +295,15 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, warn=False)
             "match": "vector",
             "match_quality": round(sim, 3),
         })
+    results.sort(key=lambda x: x["vector_score"], reverse=True)
     return results
 
 
-def _rrf_merge(fts_results, vec_results, limit, k=60):
+def _rrf_merge(fts_results, vec_results, limit, k=60, has_phrase=False):
     scores = {}
     data = {}
+
+    vec_boost = 1.0 if has_phrase else 1.5
 
     for rank, r in enumerate(fts_results):
         key = (r["path"], r["section"])
@@ -302,7 +312,7 @@ def _rrf_merge(fts_results, vec_results, limit, k=60):
 
     for rank, r in enumerate(vec_results):
         key = (r["path"], r["section"])
-        scores[key] = scores.get(key, 0) + 1.0 / (k + rank + 1)
+        scores[key] = scores.get(key, 0) + vec_boost / (k + rank + 1)
         if key not in data:
             data[key] = r
         else:
