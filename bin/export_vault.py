@@ -43,16 +43,15 @@ SOURCE_WEIGHTS = {
     "system": 0.3,
 }
 
-OPERATIONAL_PATTERNS = (
+OPERATIONAL_EXACT = {
     "state.md",
-    "SYNTH_FAILURE",
-    "tmp_rescue",
-    "session_counter",
+    "SYNTH_FAILURE.md",
     "MEMORY.md",
-    "AUDIT_STRUCT",
-    "HOLES_CHECK",
-    "BLIND_SPOTS",
-)
+    "AUDIT_STRUCT.md",
+    "HOLES_CHECK.md",
+    "BLIND_SPOTS.md",
+}
+OPERATIONAL_PREFIXES = ("tmp_rescue", "session_counter")
 
 TYPE_FOLDER = {
     "feedback": "rules",
@@ -165,11 +164,11 @@ def get_meta_field(meta, key, default=None):
 
 # ---------- discovery + gate ----------
 
-def is_operational(filename):
-    for pat in OPERATIONAL_PATTERNS:
-        if pat in filename:
-            return True
-    return False
+def is_operational(filepath):
+    basename = os.path.basename(filepath)
+    if basename in OPERATIONAL_EXACT:
+        return True
+    return any(basename.startswith(p) for p in OPERATIONAL_PREFIXES)
 
 
 def project_slug_from_path(path):
@@ -179,7 +178,7 @@ def project_slug_from_path(path):
 
 def passes_gate(filepath, meta, force=False):
     """Quality gate. Returns (passed, reason_if_skipped)."""
-    if is_operational(os.path.basename(filepath)):
+    if is_operational(filepath):
         return False, "operational"
     try:
         size = os.path.getsize(filepath)
@@ -288,6 +287,8 @@ def original_name_slug(meta, filepath):
 # ---------- template formatting ----------
 
 WIKILINK_RE = re.compile(r"\[\[([^\[\]\n|#]+)(#[^\[\]\n|]+)?(\|[^\[\]\n]+)?\]\]")
+# Footer line produced by footer() — used to strip it on polish round-trip
+FOOTER_RE = re.compile(r'^_Confidence:.*·.*Source:.*_$')
 
 
 def rewrite_wikilinks(body, link_map):
@@ -321,7 +322,7 @@ def extract_blockquote_intro(body):
 
 
 def extract_field(body, label):
-    """Pull a 'Label:' value — single line, leave multi-line lists alone."""
+    """Pull a 'Label:' value — continues past wraps until blank line or next field."""
     pattern = re.compile(
         r"^[ \t]*(?:\*\*|__)?[ \t]*" + re.escape(label)
         + r"[ \t]*(?:\*\*|__)?[ \t]*:[ \t]*(?:\*\*)?[ \t]*(.+?)[ \t]*(?:\*\*)?[ \t]*$",
@@ -331,6 +332,18 @@ def extract_field(body, label):
     if not m:
         return None
     value = m.group(1).strip().rstrip("*").strip()
+    # Capture continuation lines until next field or blank line
+    rest_start = m.end()
+    continuation = []
+    for line in body[rest_start:].split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            break
+        if re.match(r"^(?:\*\*|__)?[\w\s]+(?:\*\*|__)?:", stripped):
+            break
+        continuation.append(stripped)
+    if continuation:
+        value += " " + " ".join(continuation)
     return value or None
 
 
@@ -438,9 +451,12 @@ def render_template(meta, body, vault_type, link_map, project_slug, aliases):
         if quote:
             parts.append(quote)
             parts.append("")
-        parts.append("## Details")
-        parts.append("")
-        parts.append(rest if rest else rewritten_body)
+        # Skip ## Details when body has no remainder beyond the blockquote intro
+        details = rest if rest else (rewritten_body if not quote else "")
+        if details:
+            parts.append("## Details")
+            parts.append("")
+            parts.append(details)
     elif vault_type == "reference":
         if description:
             parts.append("_Reference:_ {}".format(description.strip()))
@@ -504,8 +520,8 @@ def _split_frontmatter_body_footer(content):
     lines = rest.rstrip().split("\n")
     footer_line = ""
     body_lines = lines
-    # Footer is the last italic _..._ line written by footer()
-    if lines and lines[-1].startswith("_") and lines[-1].endswith("_"):
+    # Footer is the last line matching footer() output exactly
+    if lines and FOOTER_RE.match(lines[-1]):
         footer_line = lines[-1]
         body_lines = lines[:-1]
         # Drop trailing blank line before footer
@@ -581,6 +597,10 @@ def sha256_file(path):
     return h.hexdigest()
 
 
+def sha256_text(text):
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
 def load_manifest(target):
     mf = os.path.join(target, ".manifest.json")
     if not os.path.exists(mf):
@@ -611,9 +631,16 @@ def write_note(target, folder, filename, content):
     out = Path(target, folder, filename)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = str(out) + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(content)
-    os.replace(tmp, out)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp, out)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def write_moc(target, folder, notes):
@@ -721,8 +748,11 @@ def resolve_project_filter(raw, available):
         return None
     if raw in available:
         return raw
-    # Substring fuzzy match
-    matches = [p for p in available if raw.lower() in p.lower()]
+    # Substring fuzzy match — require 3+ chars to avoid noisy matches
+    if len(raw) < 3:
+        matches = [p for p in available if p == raw]
+    else:
+        matches = [p for p in available if raw.lower() in p.lower()]
     if len(matches) == 1:
         return matches[0]
     if not matches:
@@ -785,7 +815,7 @@ def export(target, project_filter=None, delta=False,
         if not ok:
             skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
             continue
-        parsed.append((filepath, slug, meta, body))
+        parsed.append((filepath, slug, meta, body, text))
 
     print("Gate passed: {}.".format(len(parsed)), flush=True)
     if skip_reasons:
@@ -809,7 +839,7 @@ def export(target, project_filter=None, delta=False,
     plan = []
     link_map = {}
     used = {}
-    for filepath, slug, meta, body in parsed:
+    for filepath, slug, meta, body, raw_text in parsed:
         vt = get_type(meta)
         if vt:
             folder = TYPE_FOLDER.get(vt, "_unsorted")
@@ -843,6 +873,7 @@ def export(target, project_filter=None, delta=False,
             "slug": slug,
             "meta": meta,
             "body": body,
+            "raw_text": raw_text,
             "folder": folder,
             "vault_type": vault_type,
             "filename": filename,
@@ -864,9 +895,11 @@ def export(target, project_filter=None, delta=False,
     folder_notes["_unsorted"] = []
     by_type_count = {}
 
-    for item in plan:
+    for i, item in enumerate(plan):
+        if (i + 1) % 50 == 0:
+            print("  Writing {}/{}...".format(i + 1, len(plan)), flush=True)
         rel_path = "{}/{}".format(item["folder"], item["filename"])
-        sha = sha256_file(item["filepath"])
+        sha = sha256_text(item["raw_text"])
 
         weight = compound_weight(item["meta"], item["filepath"], db_map, item["body"])
         desc = get_meta_field(item["meta"], "description", "") or ""
@@ -890,7 +923,7 @@ def export(target, project_filter=None, delta=False,
 
         new_manifest["files"][rel_path] = {
             "sha256": sha,
-            "source_path": item["filepath"],
+            "source_path": item["filepath"].replace(os.path.expanduser("~"), "~"),
         }
 
         if delta and rel_path in old_files and old_files[rel_path].get("sha256") == sha:
@@ -902,11 +935,25 @@ def export(target, project_filter=None, delta=False,
         )
         write_note(target, item["folder"], item["filename"], content)
 
-    # In delta mode, keep records for files still on disk that we didn't rewrite
+    # In delta mode, keep records for files still on disk that we didn't rewrite.
+    # M4 limitation: when sources are added/removed, previously-unresolved wikilinks
+    # in untouched notes won't be re-rendered. Run a full export (no --delta) periodically.
+    orphans = 0
     if delta:
+        current_sources = {item["filepath"] for item in plan}
         for rel, info in old_files.items():
             if rel not in new_manifest["files"] and os.path.exists(os.path.join(target, rel)):
                 new_manifest["files"][rel] = info
+                src = info.get("source_path", "")
+                src_abs = os.path.expanduser(src) if src.startswith("~") else src
+                if src_abs and src_abs not in current_sources:
+                    orphans += 1
+        if orphans:
+            print(
+                "  {} orphaned notes in vault (source deleted). Remove manually "
+                "or re-export without --delta.".format(orphans),
+                flush=True,
+            )
 
     if polish:
         # H3: pre-check CLI availability before iterating
@@ -1011,10 +1058,11 @@ def main():
         sys.exit(1)
     skip_gate = args.all
     allow_existing = args.force
+    polish_count = max(1, min(args.polish_count, 200))
     try:
         export(args.target_dir, project_filter=args.project, delta=args.delta,
                skip_gate=skip_gate, allow_existing=allow_existing,
-               polish=args.polish, polish_count=args.polish_count)
+               polish=args.polish, polish_count=polish_count)
     except KeyboardInterrupt:
         print("Aborted.", file=sys.stderr)
         sys.exit(1)
