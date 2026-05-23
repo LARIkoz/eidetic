@@ -86,6 +86,29 @@ TOOLS = [
             "type": "object",
             "properties": {}
         }
+    },
+    {
+        "name": "export_vault",
+        "description": "Export Eidetic memory to an Obsidian-compatible vault directory. Filters by quality gate, applies templates, writes MOCs and wikilinks.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Target vault directory (absolute path)"
+                },
+                "project": {
+                    "type": "string",
+                    "description": "Optional project slug filter"
+                },
+                "delta": {
+                    "type": "boolean",
+                    "description": "Incremental export — only rewrite changed notes",
+                    "default": False
+                }
+            },
+            "required": ["target"]
+        }
     }
 ]
 
@@ -158,12 +181,26 @@ def handle_lint(params):
     return run_script("lint_impl.py")
 
 
+def handle_export_vault(params):
+    target = str(params.get("target", "")).strip()
+    if not target:
+        return "ERROR: target directory required"
+    args = [target]
+    project = params.get("project")
+    if project:
+        args.extend(["--project", str(project)])
+    if params.get("delta"):
+        args.append("--delta")
+    return run_script("export_vault.py", args, timeout=60)
+
+
 HANDLERS = {
     "memory_search": handle_search,
     "memory_serendipity": handle_serendipity,
     "memory_health": handle_health,
     "memory_reindex": handle_reindex,
     "memory_lint": handle_lint,
+    "export_vault": handle_export_vault,
 }
 
 
