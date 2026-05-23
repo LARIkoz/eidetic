@@ -83,18 +83,6 @@ GRAPH_COLORS = {
     "topics": "#ff0000",
 }
 
-TOPIC_CLUSTERS = {
-    "Consilium & Review Pipeline": ["consilium", "consreview", "review", "synthesis", "voice", "audit"],
-    "Provider & Model Routing": ["model", "provider", "routing", "dashscope", "openrouter", "deepseek", "mistral", "gemini", "nvidia", "groq", "cohere"],
-    "Key Management & Security": ["key", "hunt", "secret", "penalty", "rotation", "security", "litellm"],
-    "Database & Performance": ["sqlite", "database", "bulk", "ram", "performance", "cache", "wal"],
-    "Scraping & Data Collection": ["scraper", "apptweak", "scraping", "cdp", "browser", "firecrawl", "jina"],
-    "Pipeline Architecture": ["pipeline", "niche", "classify", "split", "quality", "phase"],
-    "Research & Tools": ["research", "exa", "perplexity", "search", "max-research"],
-    "Handoff & Session Management": ["handoff", "session", "compact", "continuity", "state"],
-    "Smoke Testing & Quality": ["smoke", "test", "verify", "validate", "red team"],
-    "AI Agent Behavior": ["brainstorm", "explain", "decide", "concept", "feedback"],
-}
 
 
 # ---------- frontmatter parsing ----------
@@ -703,24 +691,116 @@ def apply_polished(content, rewritten_body):
 
 # ---------- topic synthesis ----------
 
-def cluster_notes(plan):
-    """Assign each note to a topic cluster by matching title/description words."""
-    clusters = {topic: [] for topic in TOPIC_CLUSTERS}
-    unclustered = []
+def load_or_generate_clusters(plan, target):
+    """Load cached clusters from .clusters.json or generate via LLM."""
+    cache_path = os.path.join(target, ".clusters.json")
 
+    # Cache check: existence is authoritative (seed files use this path).
+    # Only fall through to LLM if cache is invalid JSON or empty.
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, encoding="utf-8") as f:
+                cached = json.load(f)
+            if isinstance(cached, list) and cached:
+                print("  Using cached clusters ({} topics)".format(len(cached)))
+                return cached
+        except Exception:
+            pass
+
+    print("  Generating topic clusters via LLM...", flush=True)
+    titles = []
     for item in plan:
-        title = (item.get("title", "") + " " + str(item["meta"].get("description", ""))).lower()
-        assigned = False
-        for topic, keywords in TOPIC_CLUSTERS.items():
-            if any(kw in title for kw in keywords):
-                clusters[topic].append(item)
-                assigned = True
-                break
-        if not assigned:
-            unclustered.append(item)
+        title = item.get("title", "")
+        desc = str(item.get("meta", {}).get("description", ""))[:80]
+        typ = item.get("vault_type", "")
+        proj = short_project(item.get("slug", ""))
+        titles.append("{} | {} | {} | {}".format(typ, proj, title, desc))
 
-    # Only keep clusters with 3+ notes
-    return {t: notes for t, notes in clusters.items() if len(notes) >= 3}, unclustered
+    prompt = """You are organizing a knowledge vault. Below are {} memory notes (type | project | name | description).
+
+Group them into 15-25 coherent topics. Rules:
+1. Each topic = ONE specific thing (not broad like "Database" or "Tools")
+2. DO NOT mix unrelated projects unless they share a concrete technique
+3. Minimum 3 notes per topic. Notes not fitting any topic = skip
+4. Topic names should be specific (e.g. "Gap Pipeline Niche Discovery" not "Pipeline")
+5. Output ONLY a JSON array: [{{"topic": "Name", "notes": ["note name 1", ...]}}]
+6. No commentary, just JSON.
+
+Notes:
+{}""".format(len(titles), "\n".join(titles))
+
+    if not shutil.which("claude-batch"):
+        print("  claude-batch not available, skipping clustering")
+        return []
+
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8")
+    try:
+        tmp.write(prompt)
+        tmp.close()
+        result = subprocess.run(
+            ["claude-batch", "--prompt-file", tmp.name, "--model", "claude-sonnet-4-6"],
+            capture_output=True, text=True, timeout=180,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            text = result.stdout.strip()
+            # Strip markdown code fence if present
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1]
+                if text.endswith("```"):
+                    text = text[:-3]
+            clusters = json.loads(text)
+            with open(cache_path + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(clusters, f, indent=2, ensure_ascii=False)
+            os.replace(cache_path + ".tmp", cache_path)
+            print("  Generated {} topics, cached to .clusters.json".format(len(clusters)))
+            return clusters
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, Exception) as e:
+        print("  Clustering failed: {}".format(e))
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+    return []
+
+
+def cluster_notes(plan, clusters_data):
+    """Match plan items to LLM-generated clusters by title."""
+    if not clusters_data:
+        return {}, plan
+
+    title_map = {}
+    for item in plan:
+        title_map[item.get("title", "").lower().strip()] = item
+        name = item.get("name_slug", "")
+        if name:
+            title_map[name.lower()] = item
+
+    clusters = {}
+    assigned = set()
+
+    for cluster in clusters_data:
+        topic = cluster.get("topic", "")
+        note_names = cluster.get("notes", [])
+        matched = []
+        for name in note_names:
+            key = name.lower().strip()
+            if key in title_map and id(title_map[key]) not in assigned:
+                matched.append(title_map[key])
+                assigned.add(id(title_map[key]))
+            else:
+                # Fuzzy: substring match
+                for t_key, t_item in title_map.items():
+                    if key in t_key and id(t_item) not in assigned:
+                        matched.append(t_item)
+                        assigned.add(id(t_item))
+                        break
+        if len(matched) >= 3:
+            clusters[topic] = matched
+
+    unclustered = [item for item in plan if id(item) not in assigned]
+    return clusters, unclustered
 
 
 def synthesize_topic(topic_name, notes, target_dir):
@@ -1336,7 +1416,8 @@ def export(target, project_filter=None, delta=False,
         if shutil.which("claude-batch") is None:
             print("  Skipping --synthesize: 'claude-batch' not found in PATH.", flush=True)
         else:
-            clusters, _unclustered = cluster_notes(plan)
+            clusters_data = load_or_generate_clusters(plan, target)
+            clusters, _unclustered = cluster_notes(plan, clusters_data)
             if clusters:
                 print("Synthesizing {} topic pages...".format(len(clusters)), flush=True)
                 topic_notes = write_topic_pages(target, clusters)
