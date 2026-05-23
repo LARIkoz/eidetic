@@ -273,14 +273,44 @@ def short_project(project_slug):
     return slugify("-".join(tail)) or "_global"
 
 
-def build_filename(name_slug, project_slug):
-    proj = short_project(project_slug) if project_slug else ""
-    base = slugify(name_slug) or "untitled"
-    if proj and proj != "_global":
-        stem = "{}-{}".format(proj, base)
-    else:
-        stem = base
-    return stem.lower()[:80] + ".md"
+def build_filename(title, name_slug, project_slug):
+    """Human-readable filename from title. Obsidian supports spaces."""
+    raw = (title or "").strip()
+    if not raw or raw.lower() == "untitled":
+        raw = (name_slug or "").replace("-", " ").strip()
+
+    # Replace filesystem-unsafe chars
+    raw = raw.replace("/", "-")
+    raw = re.sub(r'[\\:*?"<>|]', ' — ', raw)
+    raw = re.sub(r'\s+', ' ', raw).strip(' —')
+
+    if not raw:
+        raw = "Untitled"
+
+    name = title_case(raw)
+
+    if len(name) > 80:
+        truncated = name[:77]
+        sp = truncated.rfind(' ')
+        if sp > 40:
+            truncated = truncated[:sp]
+        name = truncated.rstrip(' .—-') + '…'
+
+    return name + ".md"
+
+
+def compute_title(meta, body, name_slug):
+    """Resolve display title — same logic used by render_template + build_filename."""
+    name = get_meta_field(meta, "name") or ""
+    description = get_meta_field(meta, "description") or ""
+    title = (
+        str(name).strip()
+        or str(description).strip()[:100]
+        or first_heading(body)
+        or (name_slug or "")
+        or "Untitled"
+    )
+    return title_case(title)
 
 
 def original_name_slug(meta, filepath):
@@ -400,13 +430,14 @@ def first_heading(body):
 
 
 def title_case(s):
-    # Preserve acronyms (all-caps words ≥2 chars) and tokens starting with -- or (
     words = s.split()
     result = []
     for w in words:
         if w.isupper() and len(w) > 1:
             result.append(w)
         elif w.startswith("--") or w.startswith("("):
+            result.append(w)
+        elif any(c.isupper() for c in w[1:]):
             result.append(w)
         else:
             result.append(w.capitalize())
@@ -921,15 +952,16 @@ def export(target, project_filter=None, delta=False,
             vault_type = "note"
 
         name_slug = original_name_slug(meta, filepath)
-        filename = build_filename(name_slug, slug)
+        title = compute_title(meta, body, name_slug)
+        filename = build_filename(title, name_slug, slug)
 
         key = (folder, filename)
         if key in used:
             base = filename[:-3]
             i = 2
-            while (folder, "{}-{}.md".format(base, i)) in used:
+            while (folder, "{} ({}).md".format(base, i)) in used:
                 i += 1
-            filename = "{}-{}.md".format(base, i)
+            filename = "{} ({}).md".format(base, i)
             key = (folder, filename)
         used[key] = True
 
@@ -950,6 +982,7 @@ def export(target, project_filter=None, delta=False,
             "vault_type": vault_type,
             "filename": filename,
             "name_slug": name_slug,
+            "title": title,
         })
 
     ensure_folders(target)
@@ -1001,7 +1034,12 @@ def export(target, project_filter=None, delta=False,
         if delta and rel_path in old_files and old_files[rel_path].get("sha256") == sha:
             continue
 
-        aliases = [item["name_slug"]] if item["name_slug"] else []
+        aliases = []
+        if item["name_slug"]:
+            aliases.append(item["name_slug"])
+        stem = item["filename"][:-3] if item["filename"].endswith(".md") else item["filename"]
+        if stem and stem != item["name_slug"]:
+            aliases.append(stem)
         content = render_template(
             item["meta"], item["body"], item["vault_type"], link_map, item["slug"], aliases,
             filename=item["filename"],
