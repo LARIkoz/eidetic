@@ -80,6 +80,20 @@ GRAPH_COLORS = {
     "projects": "#3498db",
     "references": "#95a5a6",
     "profile": "#f1c40f",
+    "topics": "#ff0000",
+}
+
+TOPIC_CLUSTERS = {
+    "Consilium & Review Pipeline": ["consilium", "consreview", "review", "synthesis", "voice", "audit"],
+    "Provider & Model Routing": ["model", "provider", "routing", "dashscope", "openrouter", "deepseek", "mistral", "gemini", "nvidia", "groq", "cohere"],
+    "Key Management & Security": ["key", "hunt", "secret", "penalty", "rotation", "security", "litellm"],
+    "Database & Performance": ["sqlite", "database", "bulk", "ram", "performance", "cache", "wal"],
+    "Scraping & Data Collection": ["scraper", "apptweak", "scraping", "cdp", "browser", "firecrawl", "jina"],
+    "Pipeline Architecture": ["pipeline", "niche", "classify", "split", "quality", "phase"],
+    "Research & Tools": ["research", "exa", "perplexity", "search", "max-research"],
+    "Handoff & Session Management": ["handoff", "session", "compact", "continuity", "state"],
+    "Smoke Testing & Quality": ["smoke", "test", "verify", "validate", "red team"],
+    "AI Agent Behavior": ["brainstorm", "explain", "decide", "concept", "feedback"],
 }
 
 
@@ -687,6 +701,157 @@ def apply_polished(content, rewritten_body):
     return "\n".join(parts).rstrip() + "\n"
 
 
+# ---------- topic synthesis ----------
+
+def cluster_notes(plan):
+    """Assign each note to a topic cluster by matching title/description words."""
+    clusters = {topic: [] for topic in TOPIC_CLUSTERS}
+    unclustered = []
+
+    for item in plan:
+        title = (item.get("title", "") + " " + str(item["meta"].get("description", ""))).lower()
+        assigned = False
+        for topic, keywords in TOPIC_CLUSTERS.items():
+            if any(kw in title for kw in keywords):
+                clusters[topic].append(item)
+                assigned = True
+                break
+        if not assigned:
+            unclustered.append(item)
+
+    # Only keep clusters with 3+ notes
+    return {t: notes for t, notes in clusters.items() if len(notes) >= 3}, unclustered
+
+
+def synthesize_topic(topic_name, notes, target_dir):
+    """Merge N notes into one wiki-style topic page via Sonnet."""
+    contents = []
+    for note in notes:
+        path = os.path.join(target_dir, note["folder"], note["filename"])
+        if os.path.exists(path):
+            with open(path, encoding="utf-8", errors="replace") as f:
+                contents.append("### Source: {}\n\n{}\n".format(note["title"], f.read()))
+
+    if not contents:
+        return None
+
+    combined = "\n---\n".join(contents)
+    if len(combined) > 15000:
+        combined = combined[:15000] + "\n\n[... truncated, {} more notes ...]".format(len(contents) - 5)
+
+    prompt = """Synthesize these {} related notes into ONE coherent wiki article about "{}".
+
+Rules:
+- Write a clear introduction (2-3 sentences) explaining what this topic covers
+- Use ## sections to organize by subtopic
+- Preserve ALL specific facts, numbers, dates, file paths, commands
+- Cross-reference individual notes with [[Note Title]] wikilinks
+- Add a "## Key Rules" section listing the most important rules/decisions
+- Add a "## Known Issues" section if any bugs/problems are mentioned
+- Max 1500 words. Be concise, not exhaustive.
+- Output ONLY the article body. No preamble.
+
+Notes:
+{}""".format(len(contents), topic_name, combined)
+
+    if not shutil.which("claude-batch"):
+        return None
+
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", prefix="eidetic-synth-", delete=False, encoding="utf-8"
+    )
+    try:
+        tmp.write(prompt)
+        tmp.close()
+        result = subprocess.run(
+            ["claude-batch", "--prompt-file", tmp.name, "--model", "claude-sonnet-4-6"],
+            capture_output=True, text=True, timeout=180,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    except Exception:
+        return None
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+    if result.returncode != 0:
+        return None
+    out = result.stdout.strip()
+    if len(out) <= 100:
+        return None
+    return out
+
+
+def write_topic_pages(target, clusters):
+    """Generate topic pages and write to topics/ folder."""
+    topics_dir = os.path.join(target, "topics")
+    os.makedirs(topics_dir, exist_ok=True)
+
+    topic_notes = []
+    for topic_name, notes in clusters.items():
+        print("  Synthesizing: {} ({} notes)...".format(topic_name, len(notes)), flush=True)
+
+        body = synthesize_topic(topic_name, notes, target)
+        if not body:
+            print("    Skipped (synthesis failed)")
+            continue
+
+        filename = topic_name.replace(" & ", " and ") + ".md"
+        filename = re.sub(r'[/\\:*?"<>|]', '-', filename)
+
+        member_links = "\n".join("- [[{}]]".format(n["filename"][:-3]) for n in notes)
+
+        content = """---
+type: topic
+title: "{topic}"
+tags: ["topic", "synthesis"]
+source: eidetic
+members: {count}
+---
+
+# {topic}
+
+{body}
+
+## Source Notes
+
+{links}
+
+---
+_Synthesized by Eidetic from {count} individual notes_
+""".format(topic=topic_name, count=len(notes), body=body, links=member_links)
+
+        path = os.path.join(topics_dir, filename)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp, path)
+
+        topic_notes.append({
+            "filename": filename,
+            "folder": "topics",
+            "title": topic_name,
+            "description": "Synthesized from {} notes".format(len(notes)),
+            "weight": 1.0,
+            "mtime": 0,
+        })
+
+    if topic_notes:
+        moc_lines = ["# Topics", ""]
+        for tn in topic_notes:
+            moc_lines.append("- [[{}]] — {}".format(tn["filename"][:-3], tn["description"]))
+        moc_lines.append("")
+        moc_path = os.path.join(topics_dir, "_MOC.md")
+        tmp = moc_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write("\n".join(moc_lines))
+        os.replace(tmp, moc_path)
+
+    return topic_notes
+
+
 # ---------- manifest ----------
 
 def sha256_file(path):
@@ -730,6 +895,9 @@ def ensure_folders(target):
         Path(target, sub).mkdir(parents=True, exist_ok=True)
 
 
+FOLDER_TITLE["topics"] = "Topics"
+
+
 def write_note(target, folder, filename, content):
     out = Path(target, folder, filename)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -764,7 +932,7 @@ def write_moc(target, folder, notes):
     write_note(target, folder, "_MOC.md", "\n".join(lines))
 
 
-def write_home(target, exported, total, by_type):
+def write_home(target, exported, total, by_type, topic_notes=None):
     parts = [
         "# Eidetic Knowledge Vault",
         "",
@@ -784,7 +952,16 @@ def write_home(target, exported, total, by_type):
     parts.append("- [[references/_MOC|References]]")
     parts.append("- [[profile/_MOC|Profile]]")
     parts.append("- [[_unsorted/_MOC|Unsorted]]")
+    if topic_notes:
+        parts.append("- [[topics/_MOC|Topics]]")
     parts.append("")
+    if topic_notes:
+        parts.append("## Topics (synthesized)")
+        parts.append("")
+        for tn in topic_notes:
+            stem = tn["filename"][:-3] if tn["filename"].endswith(".md") else tn["filename"]
+            parts.append("- [[topics/{}|{}]] — {}".format(stem, tn["title"], tn["description"]))
+        parts.append("")
     parts.append("## Recently updated")
     parts.append("")
     recent = sorted(exported, key=lambda n: n.get("mtime", 0), reverse=True)[:10]
@@ -871,7 +1048,8 @@ def resolve_project_filter(raw, available):
 
 def export(target, project_filter=None, delta=False,
            skip_gate=False, allow_existing=False,
-           polish=True, polish_count=0, polish_model="auto"):
+           polish=True, polish_count=0, polish_model="auto",
+           synthesize=True):
     target = os.path.abspath(os.path.expanduser(target))
     os.makedirs(target, exist_ok=True)
 
@@ -1144,10 +1322,22 @@ def export(target, project_filter=None, delta=False,
                 summary = "  No notes polished (claude CLI not available or all failed)."
             print(summary)
 
+    topic_notes = []
+    if synthesize and not skip_gate:
+        if shutil.which("claude-batch") is None:
+            print("  Skipping --synthesize: 'claude-batch' not found in PATH.", flush=True)
+        else:
+            clusters, _unclustered = cluster_notes(plan)
+            if clusters:
+                print("Synthesizing {} topic pages...".format(len(clusters)), flush=True)
+                topic_notes = write_topic_pages(target, clusters)
+                if topic_notes:
+                    folder_notes["topics"] = topic_notes
+
     for folder, notes in folder_notes.items():
         write_moc(target, folder, notes)
 
-    write_home(target, exported_notes, len(exported_notes), by_type_count)
+    write_home(target, exported_notes, len(exported_notes), by_type_count, topic_notes=topic_notes)
     write_obsidian_config(target)
     write_manifest(target, new_manifest)
 
@@ -1178,6 +1368,8 @@ def main():
                    help="Number of notes to polish (0=all, default: all)")
     p.add_argument("--polish-model", choices=["auto", "sonnet", "haiku"], default="auto",
                    help="Model for polish: auto (smart routing), sonnet, or haiku")
+    p.add_argument("--no-synthesize", action="store_true",
+                   help="Skip topic synthesis (faster, no API calls)")
     args = p.parse_args()
 
     # --all skips the per-note quality gate (export everything).
@@ -1193,7 +1385,8 @@ def main():
         export(args.target_dir, project_filter=args.project, delta=args.delta,
                skip_gate=skip_gate, allow_existing=allow_existing,
                polish=not args.no_polish, polish_count=polish_count,
-               polish_model=args.polish_model)
+               polish_model=args.polish_model,
+               synthesize=not args.no_synthesize)
     except KeyboardInterrupt:
         print("Aborted.", file=sys.stderr)
         sys.exit(1)
