@@ -16,7 +16,9 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -215,7 +217,19 @@ def load_db_weights():
     return out
 
 
-def compound_weight(meta, path, db_map):
+def wikilink_count(body):
+    return len(re.findall(r"\[\[([^\]]+)\]\]", body or ""))
+
+
+def body_weight_adjustment(body):
+    """Combined multiplier from wikilink density + body length."""
+    body = body or ""
+    link_bonus = 1.0 + min(wikilink_count(body), 5) * 0.05
+    length_score = max(0.5, min(1.0, len(body.strip()) / 500.0))
+    return link_bonus * length_score
+
+
+def compound_weight(meta, path, db_map, body=None):
     evidence = None
     source = None
     if path in db_map:
@@ -226,7 +240,10 @@ def compound_weight(meta, path, db_map):
         source = get_meta_field(meta, "source", "user-explicit")
     ev_w = EVIDENCE_WEIGHTS.get(evidence, 0.5)
     src_w = SOURCE_WEIGHTS.get(source, 0.5)
-    return ev_w * src_w
+    weight = ev_w * src_w
+    if body is not None:
+        weight *= body_weight_adjustment(body)
+    return weight
 
 
 # ---------- slug + naming ----------
@@ -444,6 +461,99 @@ def render_template(meta, body, vault_type, link_map, project_slug, aliases):
     return "\n".join(parts).rstrip() + "\n"
 
 
+# ---------- polish (Haiku rewrite) ----------
+
+POLISH_PROMPT = (
+    "You are reformatting an internal AI-agent memory note for a human reader. "
+    "Output ONLY the rewritten note body in Markdown. Do not add any preamble, "
+    "meta-commentary, status report, or sign-off (no 'Done.', no 'Here is...', "
+    "no summaries of what you changed). "
+    "Keep ALL facts exactly as written: numbers, names, paths, model IDs, error "
+    "codes, dates, links. Remove agent jargon like 'compound_weight', "
+    "'evidence tier', 'session signals'. Add ## section headings if there are "
+    "3+ distinct points. Preserve code blocks and tables verbatim. "
+    "Hard limit: {max_words} words."
+    "\n\n--- ORIGINAL NOTE ---\n{body}\n--- END ORIGINAL ---"
+    "\n\nRewritten body:"
+)
+
+
+def _split_frontmatter_body_footer(content):
+    """Returns (fm_block, body, footer_line) — fm_block includes leading/trailing '---'."""
+    if not content.startswith("---"):
+        return "", content, ""
+    end = content.find("\n---", 3)
+    if end == -1:
+        return "", content, ""
+    fm_block = content[:end + 4]
+    rest = content[end + 4:].lstrip("\n")
+    lines = rest.rstrip().split("\n")
+    footer_line = ""
+    body_lines = lines
+    # Footer is the last italic _..._ line written by footer()
+    if lines and lines[-1].startswith("_") and lines[-1].endswith("_"):
+        footer_line = lines[-1]
+        body_lines = lines[:-1]
+        # Drop trailing blank line before footer
+        while body_lines and not body_lines[-1].strip():
+            body_lines.pop()
+    return fm_block, "\n".join(body_lines).strip(), footer_line
+
+
+def polish_note(content, max_words=400, timeout=60):
+    """Rewrite note body via Haiku. Returns rewritten body or None on failure.
+
+    Uses `claude-batch --prompt-file` per claude-cli-runtime contract:
+    file-backed transport avoids argv truncation, wrapper telemetry goes to
+    stderr, model output is the sole stdout payload.
+    """
+    _, body, _ = _split_frontmatter_body_footer(content)
+    if not body:
+        return None
+    prompt = POLISH_PROMPT.format(max_words=max_words, body=body)
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", prefix="eidetic-polish-", delete=False, encoding="utf-8"
+    )
+    try:
+        tmp.write(prompt)
+        tmp.close()
+        result = subprocess.run(
+            ["claude-batch", "--prompt-file", tmp.name,
+             "--model", "claude-haiku-4-5-20251001"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    except Exception:
+        return None
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+    if result.returncode != 0:
+        return None
+    out = result.stdout.strip()
+    if len(out) <= 50:
+        return None
+    return out
+
+
+def apply_polished(content, rewritten_body):
+    """Rebuild content with polished body + polished:true flag in frontmatter."""
+    fm_block, _, footer_line = _split_frontmatter_body_footer(content)
+    if not fm_block:
+        return content
+    fm_inner = fm_block[3:-4].strip("\n")
+    fm_lines = [ln for ln in fm_inner.split("\n") if not ln.strip().startswith("polished:")]
+    fm_lines.append("polished: true")
+    new_fm = "---\n" + "\n".join(fm_lines) + "\n---"
+    parts = [new_fm, "", rewritten_body.rstrip()]
+    if footer_line:
+        parts.extend(["", footer_line])
+    return "\n".join(parts).rstrip() + "\n"
+
+
 # ---------- manifest ----------
 
 def sha256_file(path):
@@ -612,7 +722,8 @@ def resolve_project_filter(raw, available):
     sys.exit(1)
 
 
-def export(target, project_filter=None, delta=False, force=False):
+def export(target, project_filter=None, delta=False, force=False,
+           polish=False, polish_count=50):
     target = os.path.abspath(os.path.expanduser(target))
     os.makedirs(target, exist_ok=True)
 
@@ -729,7 +840,7 @@ def export(target, project_filter=None, delta=False, force=False):
         rel_path = "{}/{}".format(item["folder"], item["filename"])
         sha = sha256_file(item["filepath"])
 
-        weight = compound_weight(item["meta"], item["filepath"], db_map)
+        weight = compound_weight(item["meta"], item["filepath"], db_map, item["body"])
         desc = get_meta_field(item["meta"], "description", "") or ""
         title = (
             get_meta_field(item["meta"], "name")
@@ -769,6 +880,37 @@ def export(target, project_filter=None, delta=False, force=False):
             if rel not in new_manifest["files"] and os.path.exists(os.path.join(target, rel)):
                 new_manifest["files"][rel] = info
 
+    if polish:
+        ranked = sorted(
+            ((compound_weight(it["meta"], it["filepath"], db_map, it["body"]), it)
+             for it in plan),
+            key=lambda x: -x[0],
+        )
+        to_polish = ranked[:polish_count]
+        print("Polishing top {} notes via Haiku...".format(len(to_polish)), flush=True)
+        polished_count = 0
+        for _weight, item in to_polish:
+            note_path = os.path.join(target, item["folder"], item["filename"])
+            if not os.path.exists(note_path):
+                continue
+            with open(note_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            rewritten = polish_note(content)
+            if not rewritten:
+                continue
+            new_content = apply_polished(content, rewritten)
+            tmp = note_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(new_content)
+            os.replace(tmp, note_path)
+            polished_count += 1
+            sys.stdout.write("\r  Polished {}/{}".format(polished_count, len(to_polish)))
+            sys.stdout.flush()
+        if polished_count:
+            print("\n  {} notes polished.".format(polished_count))
+        else:
+            print("  No notes polished (claude CLI not available or all failed).")
+
     for folder, notes in folder_notes.items():
         write_moc(target, folder, notes)
 
@@ -797,11 +939,16 @@ def main():
     p.add_argument("--delta", action="store_true")
     p.add_argument("--all", action="store_true")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--polish", action="store_true",
+                   help="Rewrite top notes via Haiku for human readability")
+    p.add_argument("--polish-count", type=int, default=50,
+                   help="Number of notes to polish (default: 50)")
     args = p.parse_args()
 
     force = args.force and args.all
     try:
-        export(args.target_dir, project_filter=args.project, delta=args.delta, force=force)
+        export(args.target_dir, project_filter=args.project, delta=args.delta,
+               force=force, polish=args.polish, polish_count=args.polish_count)
     except KeyboardInterrupt:
         print("Aborted.", file=sys.stderr)
         sys.exit(1)
