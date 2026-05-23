@@ -191,7 +191,17 @@ def handle_export_vault(params):
         args.extend(["--project", str(project)])
     if params.get("delta"):
         args.append("--delta")
-    return run_script("export_vault.py", args, timeout=60)
+    cmd = [sys.executable, os.path.join(BIN, "export_vault.py")] + args
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return "ERROR: export_vault timed out"
+    except FileNotFoundError:
+        return "ERROR: Script not found: export_vault.py"
+    if result.returncode != 0:
+        err = result.stderr.strip() or result.stdout.strip() or "non-zero exit"
+        return "ERROR (exit {}): {}".format(result.returncode, err)
+    return result.stdout
 
 
 HANDLERS = {
