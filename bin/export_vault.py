@@ -523,6 +523,12 @@ POLISH_PROMPT = (
     "codes, dates, links. Remove agent jargon like 'compound_weight', "
     "'evidence tier', 'session signals'. Add ## section headings if there are "
     "3+ distinct points. Preserve code blocks and tables verbatim. "
+    "Do not emit a top-level '# Title' heading — the caller re-adds it. "
+    "Format rules:\n"
+    "- Use markdown headers (##) for sections, not bold text\n"
+    "- Keep tables in markdown table format\n"
+    "- Preserve all URLs, file paths, and command examples exactly\n"
+    "- If the note is already well-structured, make minimal changes\n"
     "Hard limit: {max_words} words."
     "\n\n--- ORIGINAL NOTE ---\n{body}\n--- END ORIGINAL ---"
     "\n\nRewritten body:"
@@ -579,7 +585,7 @@ def polish_note(content, max_words=400, timeout=60):
         tmp.close()
         result = subprocess.run(
             ["claude-batch", "--prompt-file", tmp.name,
-             "--model", "claude-haiku-4-5-20251001"],
+             "--model", "claude-sonnet-4-6"],
             capture_output=True, text=True, timeout=timeout,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -600,15 +606,36 @@ def polish_note(content, max_words=400, timeout=60):
 
 
 def apply_polished(content, rewritten_body):
-    """Rebuild content with polished body + polished:true flag in frontmatter."""
-    fm_block, _, footer_line = _split_frontmatter_body_footer(content)
+    """Rebuild content with polished body + polished:true flag in frontmatter.
+
+    Preserves original frontmatter and footer; re-applies the original '# Title'
+    heading (from frontmatter title or pre-polish heading) so Haiku/Sonnet
+    rewrites of the body don't drop or corrupt it.
+    """
+    fm_block, original_body, footer_line = _split_frontmatter_body_footer(content)
     if not fm_block:
         return content
     fm_inner = fm_block[3:-4].strip("\n")
+    # Resolve title: frontmatter `title:` field wins, else first '# ...' heading
+    meta, _ = parse_frontmatter(content)
+    title = (get_meta_field(meta, "title") or first_heading(original_body) or "").strip()
     fm_lines = [ln for ln in fm_inner.split("\n") if not ln.strip().startswith("polished:")]
     fm_lines.append("polished: true")
     new_fm = "---\n" + "\n".join(fm_lines) + "\n---"
-    parts = [new_fm, "", rewritten_body.rstrip()]
+
+    # Strip any leading '# ...' heading from rewritten body — we re-add the canonical one
+    body = rewritten_body.lstrip()
+    body_lines = body.split("\n")
+    if body_lines and body_lines[0].startswith("# "):
+        body_lines = body_lines[1:]
+        while body_lines and not body_lines[0].strip():
+            body_lines.pop(0)
+    body = "\n".join(body_lines).rstrip()
+
+    parts = [new_fm, ""]
+    if title:
+        parts.extend(["# {}".format(title), ""])
+    parts.append(body)
     if footer_line:
         parts.extend(["", footer_line])
     return "\n".join(parts).rstrip() + "\n"
@@ -798,7 +825,7 @@ def resolve_project_filter(raw, available):
 
 def export(target, project_filter=None, delta=False,
            skip_gate=False, allow_existing=False,
-           polish=True, polish_count=50):
+           polish=True, polish_count=0):
     target = os.path.abspath(os.path.expanduser(target))
     os.makedirs(target, exist_ok=True)
 
@@ -996,9 +1023,12 @@ def export(target, project_filter=None, delta=False,
                  for it in plan),
                 key=lambda x: -x[0],
             )
-            to_polish = ranked[:polish_count]
+            if polish_count == 0 or polish_count >= len(ranked):
+                to_polish = ranked
+            else:
+                to_polish = ranked[:polish_count]
             total_polish = len(to_polish)
-            print("Polishing top {} notes via Haiku...".format(total_polish), flush=True)
+            print("Polishing top {} notes via Sonnet...".format(total_polish), flush=True)
             polished_count = 0
             skipped_already = 0
             consecutive_failures = 0
@@ -1077,8 +1107,8 @@ def main():
     p.add_argument("--force", action="store_true")
     p.add_argument("--no-polish", action="store_true",
                    help="Skip Haiku polish (faster, no API calls)")
-    p.add_argument("--polish-count", type=int, default=50,
-                   help="Number of notes to polish (default: 50)")
+    p.add_argument("--polish-count", type=int, default=0,
+                   help="Number of notes to polish (0=all, default: all)")
     args = p.parse_args()
 
     # --all skips the per-note quality gate (export everything).
@@ -1089,7 +1119,7 @@ def main():
         sys.exit(1)
     skip_gate = args.all
     allow_existing = args.force
-    polish_count = max(1, min(args.polish_count, 200))
+    polish_count = min(max(args.polish_count, 0), 500)
     try:
         export(args.target_dir, project_filter=args.project, delta=args.delta,
                skip_gate=skip_gate, allow_existing=allow_existing,
