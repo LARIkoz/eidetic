@@ -725,8 +725,11 @@ def cluster_notes(plan):
 
 def synthesize_topic(topic_name, notes, target_dir):
     """Merge N notes into one wiki-style topic page via Sonnet."""
+    # Sort by weight descending, take top 20 for context
+    sorted_notes = sorted(notes, key=lambda n: n.get("weight", 0), reverse=True)
+    top_notes = sorted_notes[:20]
     contents = []
-    for note in notes:
+    for note in top_notes:
         path = os.path.join(target_dir, note["folder"], note["filename"])
         if os.path.exists(path):
             with open(path, encoding="utf-8", errors="replace") as f:
@@ -737,7 +740,13 @@ def synthesize_topic(topic_name, notes, target_dir):
 
     combined = "\n---\n".join(contents)
     if len(combined) > 15000:
-        combined = combined[:15000] + "\n\n[... truncated, {} more notes ...]".format(len(contents) - 5)
+        # Keep only top notes by weight to fit context
+        contents = contents[:20]
+        combined = "\n---\n".join(contents)
+        if len(combined) > 12000:
+            combined = combined[:12000] + "\n\n[... {} more notes omitted ...]".format(
+                len(notes) - 20
+            )
 
     prompt = """Synthesize these {} related notes into ONE coherent wiki article about "{}".
 
