@@ -566,7 +566,22 @@ def _split_frontmatter_body_footer(content):
     return fm_block, "\n".join(body_lines).strip(), footer_line
 
 
-def polish_note(content, max_words=400, timeout=60):
+def choose_polish_model(body):
+    """Route to Sonnet for complex notes, Haiku for simple ones."""
+    lines = body.strip().split('\n')
+    has_table = any('|' in l and l.count('|') >= 3 for l in lines)
+    has_code = '```' in body
+    section_count = sum(1 for l in lines if l.startswith('## ') or l.startswith('### '))
+    body_len = len(body.strip())
+
+    # Sonnet for: tables, code blocks, 3+ sections, long notes
+    if has_table or has_code or section_count >= 3 or body_len > 2000:
+        return "claude-sonnet-4-6"
+    # Haiku for: simple short notes
+    return "claude-haiku-4-5-20251001"
+
+
+def polish_note(content, max_words=400, timeout=60, model="claude-sonnet-4-6"):
     """Rewrite note body via Haiku. Returns rewritten body or None on failure.
 
     Uses `claude-batch --prompt-file` per claude-cli-runtime contract:
@@ -585,7 +600,7 @@ def polish_note(content, max_words=400, timeout=60):
         tmp.close()
         result = subprocess.run(
             ["claude-batch", "--prompt-file", tmp.name,
-             "--model", "claude-sonnet-4-6"],
+             "--model", model],
             capture_output=True, text=True, timeout=timeout,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -825,7 +840,7 @@ def resolve_project_filter(raw, available):
 
 def export(target, project_filter=None, delta=False,
            skip_gate=False, allow_existing=False,
-           polish=True, polish_count=0):
+           polish=True, polish_count=0, polish_model="auto"):
     target = os.path.abspath(os.path.expanduser(target))
     os.makedirs(target, exist_ok=True)
 
@@ -1028,11 +1043,13 @@ def export(target, project_filter=None, delta=False,
             else:
                 to_polish = ranked[:polish_count]
             total_polish = len(to_polish)
-            print("Polishing top {} notes via Sonnet...".format(total_polish), flush=True)
+            print("Polishing top {} notes (model={})...".format(total_polish, polish_model), flush=True)
             polished_count = 0
             skipped_already = 0
             consecutive_failures = 0
             aborted = False
+            sonnet_count = 0
+            haiku_count = 0
             for idx, (_weight, item) in enumerate(to_polish, 1):
                 note_path = os.path.join(target, item["folder"], item["filename"])
                 if not os.path.exists(note_path):
@@ -1040,14 +1057,20 @@ def export(target, project_filter=None, delta=False,
                 with open(note_path, "r", encoding="utf-8") as f:
                     content = f.read()
                 # H4: skip if already polished (re-runs become idempotent)
-                meta, _body = parse_frontmatter(content)
+                meta, body_text = parse_frontmatter(content)
                 if str(meta.get("polished", "")).lower() == "true":
                     skipped_already += 1
                     continue
-                print("  Polishing {}/{}...".format(idx, total_polish), flush=True)
+                if polish_model == "auto":
+                    model = choose_polish_model(body_text)
+                elif polish_model == "sonnet":
+                    model = "claude-sonnet-4-6"
+                else:
+                    model = "claude-haiku-4-5-20251001"
+                print("  Polishing {}/{} ({})...".format(idx, total_polish, model), flush=True)
                 # B1: isolate per-note failures so one crash doesn't kill the loop
                 try:
-                    rewritten = polish_note(content)
+                    rewritten = polish_note(content, model=model)
                 except Exception as e:
                     print("    WARN: polish raised {}: {}".format(type(e).__name__, e),
                           file=sys.stderr)
@@ -1068,9 +1091,15 @@ def export(target, project_filter=None, delta=False,
                     f.write(new_content)
                 os.replace(tmp, note_path)
                 polished_count += 1
+                if "sonnet" in model:
+                    sonnet_count += 1
+                else:
+                    haiku_count += 1
             summary = "  {} polished, {} already polished (skipped).".format(
                 polished_count, skipped_already
             )
+            if polished_count:
+                summary += "\n  Model split: {} Sonnet, {} Haiku".format(sonnet_count, haiku_count)
             if aborted:
                 summary += " ABORTED early."
             elif polished_count == 0 and skipped_already == 0:
@@ -1109,6 +1138,8 @@ def main():
                    help="Skip Haiku polish (faster, no API calls)")
     p.add_argument("--polish-count", type=int, default=0,
                    help="Number of notes to polish (0=all, default: all)")
+    p.add_argument("--polish-model", choices=["auto", "sonnet", "haiku"], default="auto",
+                   help="Model for polish: auto (smart routing), sonnet, or haiku")
     args = p.parse_args()
 
     # --all skips the per-note quality gate (export everything).
@@ -1123,7 +1154,8 @@ def main():
     try:
         export(args.target_dir, project_filter=args.project, delta=args.delta,
                skip_gate=skip_gate, allow_existing=allow_existing,
-               polish=not args.no_polish, polish_count=polish_count)
+               polish=not args.no_polish, polish_count=polish_count,
+               polish_model=args.polish_model)
     except KeyboardInterrupt:
         print("Aborted.", file=sys.stderr)
         sys.exit(1)
