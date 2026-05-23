@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.5.0-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.0.0-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -172,6 +172,37 @@ After a search, Eidetic looks for unexpected cross-project connections via wikil
 | Standard | 10-30    | Standard mode                                 |
 | Veteran  | 30+      | Proactive, skips established patterns         |
 
+### Obsidian Vault Export (v4.0)
+
+Your AI worked 50 sessions. It learned 500 things. Now see them.
+
+```bash
+eidetic export-vault ~/my-vault/
+# Exported 120 notes to ~/my-vault/ (48 rules, 52 projects, 16 references, 4 profile)
+```
+
+Opens in Obsidian with pre-configured graph colors, backlinks, and Maps of Content.
+
+**What makes this different from "open memory folder in Obsidian":**
+
+| Raw memory dump                 | Eidetic export                         |
+| ------------------------------- | -------------------------------------- |
+| 500+ files including debug logs | ~120 curated, validated notes          |
+| Agent jargon, terse one-liners  | Human-readable cards with Why/How      |
+| Flat list, no structure         | Folders by type + auto-MOC per folder  |
+| Dangling wikilinks everywhere   | Links verified against export set      |
+| No graph sense                  | Color-coded by type, hub nodes visible |
+
+```bash
+# Single project only
+eidetic export-vault ~/my-vault/ --project gap-pipeline
+
+# Incremental update (only changed files)
+eidetic export-vault ~/my-vault/ --delta
+```
+
+The quality gate filters out operational files (handoff states, synth failures), files without metadata, and oversized monoliths. What passes: user-written rules, validated decisions, reference cards, project findings.
+
 ---
 
 ## Performance
@@ -303,6 +334,7 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 | Rollback                     | **1 cmd, 5s**                      | manual                                                 | —                                                         | manual                                               | manual                                                                 |
 | Drift detection              | **wikilink + age + confidence**    | —                                                      | —                                                         | —                                                    | —                                                                      |
 | Token compression            | **2.17x** (57→124 rules)           | —                                                      | —                                                         | —                                                    | 71x (claimed)                                                          |
+| Obsidian vault export        | **quality-filtered + templates**   | —                                                      | —                                                         | —                                                    | raw chat import                                                        |
 
 ### When to use what
 
@@ -351,9 +383,7 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 | [claude-soul](https://github.com/DomDemetz/claude-soul)                                 | Evidence tiers, 0.5x self-ref discount, signals   | Integrated into hooks, not a separate SDK             |
 | [memsearch](https://github.com/zilliztech/memsearch)                                    | FTS5, context:fork isolation                      | + vector hybrid, no Milvus, no file-lock bugs         |
 
-**Obsidian-compatible today:** Memory files are markdown + `[[wikilinks]]` + YAML frontmatter. You can open `~/.claude/projects/` as an Obsidian vault for graph view, backlinks, and search.
-
-**Obsidian projection is roadmap:** A real human-facing second brain needs a curated projection layer, not just raw memory files. Eidetic should export selected, evidence-backed memories into Obsidian-style `topics/`, `projects/`, `decisions/`, `tools/`, `daily/`, and `MOC/` notes with frontmatter, backlinks, and diff-first writes.
+**Obsidian-compatible today:** Memory files are markdown + `[[wikilinks]]` + YAML frontmatter. You can open `~/.claude/projects/` as an Obsidian vault, or use `eidetic export-vault` (v4.0) for a quality-filtered, template-formatted vault with auto-MOC and verified wikilinks.
 
 ---
 
@@ -369,23 +399,35 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v2.2** — Code-aware parsing (tree-sitter, 338 entities from 143 files)
 - [x] **v2.2.2** — Auto-update system, search recall 12→18/20 (vector boost + dedup)
 - [x] **v2.5** — Drift detection: wikilink validation, age-based staleness, confidence escalation. No competitor does this.
+- [x] **v4.0** — Obsidian vault export: quality gate, template formatting, auto-MOC, wikilink resolution, delta tracking
 
 ### Next
 
-- [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Inject open tasks into session context. Pluggable adapter.
-- [ ] **v4.0 — Obsidian Projection + Human Wiki Layer** — project selected Eidetic memories into a human-readable Obsidian vault with curated backlinks and source/evidence links.
+- [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter.
+- [ ] **v4.1** — `--polish` (LLM rewrite), enriched quality gate, content dedup
 
 ### v5.0 (deferred)
 
-- Auto-handoff on long sessions, cross-session thread tracking (v2.6 partial — cold-start shipped)
-- Progressive summarization — memories mature via LLM distillation (Tiago Forte layers)
-- Session digest — periodic review of what changed across sessions (Forte weekly review)
 - Soul layer — personality profile, tension detection, decision style adaptation
 - HTML dashboard — single-file knowledge graph (D3.js)
+- Progressive summarization — memories mature via LLM distillation
+- Bi-directional vault sync
 
 ---
 
 ## Changelog
+
+### v4.0.0 (2026-05-23)
+
+- **Obsidian vault export** — `eidetic export-vault ~/my-vault/`
+- Quality gate: filters 500+ files down to ~120 validated knowledge notes
+- Template formatting: Rule Cards, Status Cards, Quick References, Profile Cards + passthrough fallback
+- Wikilink resolution: links verified against export set, dangling stripped, auto-aliases
+- Auto-MOC per folder + HOME.md root index
+- `.obsidian/` pre-config with graph colors (first export only, never overwrites)
+- Delta mode: `.manifest.json` tracks SHA256, `--delta` skips unchanged
+- `--project` with fuzzy match, `--all --force` for raw dump
+- Reviewed: Murphy (M1-M21), Adversarial, Consilium (6 voices), Consreview (5 voices)
 
 ### v2.5.0 (2026-05-22)
 
