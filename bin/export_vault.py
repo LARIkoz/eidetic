@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -251,8 +252,9 @@ def compound_weight(meta, path, db_map, body=None):
 def slugify(value):
     if not value:
         return ""
-    value = str(value).lower()
-    value = re.sub(r"[^a-z0-9]+", "-", value)
+    value = str(value).lower().strip()
+    # Keep ASCII alnum + Cyrillic (U+0400-U+04FF); replace everything else with '-'
+    value = re.sub(r"[^a-z0-9Ѐ-ӿ]+", "-", value)
     value = re.sub(r"-+", "-", value).strip("-")
     return value
 
@@ -262,11 +264,14 @@ def short_project(project_slug):
     if not project_slug:
         return "_global"
     # Project slugs look like "-Users-mikhailkozlov-Documents-cursore-foo".
-    # Take the last meaningful segment.
-    parts = [p for p in project_slug.split("-") if p]
+    # Drop boilerplate path segments and take the last 2 meaningful ones to
+    # avoid collisions like gap-pipeline/data-pipeline → 'pipeline'.
+    boilerplate = {"users", "mikhailkozlov", "documents", "cursore"}
+    parts = [p for p in project_slug.split("-") if p and p.lower() not in boilerplate]
     if not parts:
         return "_global"
-    return slugify(parts[-1]) or "_global"
+    tail = parts[-2:] if len(parts) >= 2 else parts
+    return slugify("-".join(tail)) or "_global"
 
 
 def build_filename(name_slug, project_slug):
@@ -478,6 +483,15 @@ POLISH_PROMPT = (
 )
 
 
+def _build_polish_prompt(body, max_words):
+    # str.replace avoids KeyError when body contains '{...}' / JSON / dict literals
+    return (
+        POLISH_PROMPT
+        .replace("{max_words}", str(max_words))
+        .replace("{body}", body)
+    )
+
+
 def _split_frontmatter_body_footer(content):
     """Returns (fm_block, body, footer_line) — fm_block includes leading/trailing '---'."""
     if not content.startswith("---"):
@@ -510,7 +524,7 @@ def polish_note(content, max_words=400, timeout=60):
     _, body, _ = _split_frontmatter_body_footer(content)
     if not body:
         return None
-    prompt = POLISH_PROMPT.format(max_words=max_words, body=body)
+    prompt = _build_polish_prompt(body, max_words)
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".txt", prefix="eidetic-polish-", delete=False, encoding="utf-8"
     )
@@ -722,7 +736,8 @@ def resolve_project_filter(raw, available):
     sys.exit(1)
 
 
-def export(target, project_filter=None, delta=False, force=False,
+def export(target, project_filter=None, delta=False,
+           skip_gate=False, allow_existing=False,
            polish=False, polish_count=50):
     target = os.path.abspath(os.path.expanduser(target))
     os.makedirs(target, exist_ok=True)
@@ -732,7 +747,7 @@ def export(target, project_filter=None, delta=False, force=False,
         x for x in os.listdir(target)
         if x not in (".manifest.json", ".manifest.json.tmp")
     ]
-    if dir_listing and existing_manifest is None and not force:
+    if dir_listing and existing_manifest is None and not allow_existing:
         print(
             "ERROR: Target directory exists but was not created by Eidetic. "
             "Use a new directory or add --force.",
@@ -752,6 +767,7 @@ def export(target, project_filter=None, delta=False, force=False,
     print("Found {} files.".format(len(candidates)), flush=True)
 
     parsed = []
+    skip_reasons = {}
     for filepath, slug in candidates:
         try:
             with open(filepath, "r", encoding="utf-8", errors="replace") as f:
@@ -765,12 +781,18 @@ def export(target, project_filter=None, delta=False, force=False,
             print("WARN: frontmatter parse failed for {}: {}".format(filepath, e),
                   file=sys.stderr)
             continue
-        ok, _reason = passes_gate(filepath, meta, force=force)
+        ok, reason = passes_gate(filepath, meta, force=skip_gate)
         if not ok:
+            skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
             continue
         parsed.append((filepath, slug, meta, body))
 
     print("Gate passed: {}.".format(len(parsed)), flush=True)
+    if skip_reasons:
+        breakdown = ", ".join(
+            "{}={}".format(r, n) for r, n in sorted(skip_reasons.items())
+        )
+        print("  Skipped: {}".format(breakdown), flush=True)
 
     if len(parsed) < MIN_NOTES_WARNING:
         print(
@@ -809,7 +831,13 @@ def export(target, project_filter=None, delta=False, force=False,
             key = (folder, filename)
         used[key] = True
 
-        link_map[name_slug] = filename
+        # Collision across projects (same name_slug, different source) ⇒ ambiguous.
+        # Mark as None so rewrite_wikilinks falls back to plain text instead of
+        # silently pointing to the wrong target.
+        if name_slug in link_map:
+            link_map[name_slug] = None
+        else:
+            link_map[name_slug] = filename
         plan.append({
             "filepath": filepath,
             "slug": slug,
@@ -881,35 +909,65 @@ def export(target, project_filter=None, delta=False, force=False,
                 new_manifest["files"][rel] = info
 
     if polish:
-        ranked = sorted(
-            ((compound_weight(it["meta"], it["filepath"], db_map, it["body"]), it)
-             for it in plan),
-            key=lambda x: -x[0],
-        )
-        to_polish = ranked[:polish_count]
-        print("Polishing top {} notes via Haiku...".format(len(to_polish)), flush=True)
-        polished_count = 0
-        for _weight, item in to_polish:
-            note_path = os.path.join(target, item["folder"], item["filename"])
-            if not os.path.exists(note_path):
-                continue
-            with open(note_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            rewritten = polish_note(content)
-            if not rewritten:
-                continue
-            new_content = apply_polished(content, rewritten)
-            tmp = note_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                f.write(new_content)
-            os.replace(tmp, note_path)
-            polished_count += 1
-            sys.stdout.write("\r  Polished {}/{}".format(polished_count, len(to_polish)))
-            sys.stdout.flush()
-        if polished_count:
-            print("\n  {} notes polished.".format(polished_count))
+        # H3: pre-check CLI availability before iterating
+        if shutil.which("claude-batch") is None:
+            print("  Skipping --polish: 'claude-batch' not found in PATH.", flush=True)
         else:
-            print("  No notes polished (claude CLI not available or all failed).")
+            ranked = sorted(
+                ((compound_weight(it["meta"], it["filepath"], db_map, it["body"]), it)
+                 for it in plan),
+                key=lambda x: -x[0],
+            )
+            to_polish = ranked[:polish_count]
+            total_polish = len(to_polish)
+            print("Polishing top {} notes via Haiku...".format(total_polish), flush=True)
+            polished_count = 0
+            skipped_already = 0
+            consecutive_failures = 0
+            aborted = False
+            for idx, (_weight, item) in enumerate(to_polish, 1):
+                note_path = os.path.join(target, item["folder"], item["filename"])
+                if not os.path.exists(note_path):
+                    continue
+                with open(note_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                # H4: skip if already polished (re-runs become idempotent)
+                meta, _body = parse_frontmatter(content)
+                if str(meta.get("polished", "")).lower() == "true":
+                    skipped_already += 1
+                    continue
+                print("  Polishing {}/{}...".format(idx, total_polish), flush=True)
+                # B1: isolate per-note failures so one crash doesn't kill the loop
+                try:
+                    rewritten = polish_note(content)
+                except Exception as e:
+                    print("    WARN: polish raised {}: {}".format(type(e).__name__, e),
+                          file=sys.stderr)
+                    rewritten = None
+                if not rewritten:
+                    consecutive_failures += 1
+                    # H3: abort after 3 consecutive failures (likely CLI is down)
+                    if consecutive_failures >= 3:
+                        print("  ABORT: 3 consecutive polish failures — claude-batch "
+                              "likely unavailable.", file=sys.stderr)
+                        aborted = True
+                        break
+                    continue
+                consecutive_failures = 0
+                new_content = apply_polished(content, rewritten)
+                tmp = note_path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+                os.replace(tmp, note_path)
+                polished_count += 1
+            summary = "  {} polished, {} already polished (skipped).".format(
+                polished_count, skipped_already
+            )
+            if aborted:
+                summary += " ABORTED early."
+            elif polished_count == 0 and skipped_already == 0:
+                summary = "  No notes polished (claude CLI not available or all failed)."
+            print(summary)
 
     for folder, notes in folder_notes.items():
         write_moc(target, folder, notes)
@@ -945,10 +1003,18 @@ def main():
                    help="Number of notes to polish (default: 50)")
     args = p.parse_args()
 
-    force = args.force and args.all
+    # --all skips the per-note quality gate (export everything).
+    # --force allows writing into a non-Eidetic directory.
+    # These are independent; --all requires --force as a safety confirmation.
+    if args.all and not args.force:
+        print("ERROR: --all requires --force to confirm.", file=sys.stderr)
+        sys.exit(1)
+    skip_gate = args.all
+    allow_existing = args.force
     try:
         export(args.target_dir, project_filter=args.project, delta=args.delta,
-               force=force, polish=args.polish, polish_count=args.polish_count)
+               skip_gate=skip_gate, allow_existing=allow_existing,
+               polish=args.polish, polish_count=args.polish_count)
     except KeyboardInterrupt:
         print("Aborted.", file=sys.stderr)
         sys.exit(1)
