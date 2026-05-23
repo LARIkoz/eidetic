@@ -274,9 +274,13 @@ def short_project(project_slug):
 
 
 def build_filename(name_slug, project_slug):
-    proj = short_project(project_slug)
+    proj = short_project(project_slug) if project_slug else ""
     base = slugify(name_slug) or "untitled"
-    return "{}--{}.md".format(proj, base)
+    if proj and proj != "_global":
+        stem = "{}-{}".format(proj, base)
+    else:
+        stem = base
+    return stem.lower()[:80] + ".md"
 
 
 def original_name_slug(meta, filepath):
@@ -395,19 +399,45 @@ def first_heading(body):
     return ""
 
 
-def render_template(meta, body, vault_type, link_map, project_slug, aliases):
+def title_case(s):
+    # Preserve acronyms (all-caps words ≥2 chars) and tokens starting with -- or (
+    words = s.split()
+    result = []
+    for w in words:
+        if w.isupper() and len(w) > 1:
+            result.append(w)
+        elif w.startswith("--") or w.startswith("("):
+            result.append(w)
+        else:
+            result.append(w.capitalize())
+    return " ".join(result)
+
+
+def render_template(meta, body, vault_type, link_map, project_slug, aliases, filename=""):
     """Returns formatted vault note content."""
     name = get_meta_field(meta, "name") or ""
     description = get_meta_field(meta, "description") or ""
-    title = str(name).strip() or str(description).strip() or first_heading(body) or "Untitled"
+    stem_fallback = filename[:-3] if filename.endswith(".md") else filename
+    title = (
+        str(name).strip()
+        or str(description).strip()[:100]
+        or first_heading(body)
+        or stem_fallback
+        or "Untitled"
+    )
+    title = title_case(title)
     confidence = get_meta_field(meta, "confidence", "")
     tags = []
     if vault_type:
         tags.append(vault_type)
+    eidetic_project = short_project(project_slug) if project_slug else "global"
+    if eidetic_project == "_global":
+        eidetic_project = "global"
 
     fm_fields = {
         "type": vault_type or "note",
         "title": title,
+        "eidetic_project": eidetic_project,
         "aliases": [a for a in aliases if a],
         "tags": tags,
     }
@@ -768,7 +798,7 @@ def resolve_project_filter(raw, available):
 
 def export(target, project_filter=None, delta=False,
            skip_gate=False, allow_existing=False,
-           polish=False, polish_count=50):
+           polish=True, polish_count=50):
     target = os.path.abspath(os.path.expanduser(target))
     os.makedirs(target, exist_ok=True)
 
@@ -931,7 +961,8 @@ def export(target, project_filter=None, delta=False,
 
         aliases = [item["name_slug"]] if item["name_slug"] else []
         content = render_template(
-            item["meta"], item["body"], item["vault_type"], link_map, item["slug"], aliases
+            item["meta"], item["body"], item["vault_type"], link_map, item["slug"], aliases,
+            filename=item["filename"],
         )
         write_note(target, item["folder"], item["filename"], content)
 
@@ -1044,8 +1075,8 @@ def main():
     p.add_argument("--delta", action="store_true")
     p.add_argument("--all", action="store_true")
     p.add_argument("--force", action="store_true")
-    p.add_argument("--polish", action="store_true",
-                   help="Rewrite top notes via Haiku for human readability")
+    p.add_argument("--no-polish", action="store_true",
+                   help="Skip Haiku polish (faster, no API calls)")
     p.add_argument("--polish-count", type=int, default=50,
                    help="Number of notes to polish (default: 50)")
     args = p.parse_args()
@@ -1062,7 +1093,7 @@ def main():
     try:
         export(args.target_dir, project_filter=args.project, delta=args.delta,
                skip_gate=skip_gate, allow_existing=allow_existing,
-               polish=args.polish, polish_count=polish_count)
+               polish=not args.no_polish, polish_count=polish_count)
     except KeyboardInterrupt:
         print("Aborted.", file=sys.stderr)
         sys.exit(1)
