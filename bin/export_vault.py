@@ -853,8 +853,8 @@ Notes:
         tmp.write(prompt)
         tmp.close()
         result = subprocess.run(
-            ["claude-batch", "--prompt-file", tmp.name, "--model", "claude-sonnet-4-6"],
-            capture_output=True, text=True, timeout=180,
+            ["claude-batch", "--prompt-file", tmp.name, "--model", "claude-opus-4-6"],
+            capture_output=True, text=True, timeout=300,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
