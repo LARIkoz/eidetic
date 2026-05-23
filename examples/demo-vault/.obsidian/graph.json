@@ -1,0 +1,48 @@
+{
+  "colorGroups": [
+    {
+      "query": "path:rules/",
+      "color": {
+        "a": 1,
+        "rgb": 15106860
+      }
+    },
+    {
+      "query": "path:projects/",
+      "color": {
+        "a": 1,
+        "rgb": 3447003
+      }
+    },
+    {
+      "query": "path:references/",
+      "color": {
+        "a": 1,
+        "rgb": 9807270
+      }
+    },
+    {
+      "query": "path:profile/",
+      "color": {
+        "a": 1,
+        "rgb": 15844160
+      }
+    }
+  ],
+  "showTags": true,
+  "showAttachments": false,
+  "showOrphans": true,
+  "search": "",
+  "searchIsRegex": false,
+  "hideUnresolved": false,
+  "showArrow": false,
+  "textFadeMultiplier": 0,
+  "nodeSizeMultiplier": 1,
+  "lineSizeMultiplier": 1,
+  "centerStrength": 0.518713248970312,
+  "repelStrength": 10,
+  "linkStrength": 1,
+  "linkDistance": 250,
+  "scale": 1,
+  "close": true
+}
