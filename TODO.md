@@ -29,6 +29,7 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Add stale-context detection to `health.sh`: `memory-context.md` counts are compared against current `index.db`.
 - [x] Add operator recall regression set in `bin/recall_smoke.py` for large-prompt bug, Gap Pipeline concept, Obsidian best practices, and a weak negative query.
 - [x] Add `PROJECT_MAP.md` and link repo entrypoints to canonical brief/charter, installed runtime, source corpus, and human projection.
+- [x] Sync canonical Kurdyuk-run `state.md`, `todo.md`, `gate-log.md`, `brief.md`, and `charter.md` with v4.2.3/v2.6 status.
 
 ### v2.6 Agent Memory Quality Goals
 
