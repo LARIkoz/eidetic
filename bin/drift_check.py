@@ -225,18 +225,25 @@ def check_age_drift(index_conn):
         verified_dt = None
         if last_verified:
             try:
-                clean = last_verified.replace("Z", "").replace("+00:00", "")
+                clean = last_verified.replace("Z", "+00:00")
                 verified_dt = datetime.fromisoformat(clean)
             except (ValueError, AttributeError):
                 pass
 
         if verified_dt is None and mtime:
-            verified_dt = datetime.fromtimestamp(mtime)
+            try:
+                timestamp = float(mtime)
+                if timestamp > 10_000_000_000:
+                    timestamp = timestamp / 1_000_000_000
+                verified_dt = datetime.fromtimestamp(timestamp)
+            except (ValueError, OSError, OverflowError, TypeError):
+                verified_dt = None
 
         if verified_dt is None:
             continue
 
-        age_days = (now - verified_dt).days
+        compare_now = datetime.now(verified_dt.tzinfo) if verified_dt.tzinfo else now
+        age_days = (compare_now - verified_dt).days
         if age_days > threshold:
             findings.append((
                 path, mem_type, "age_stale",

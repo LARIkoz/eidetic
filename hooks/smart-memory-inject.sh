@@ -7,7 +7,14 @@ set -euo pipefail
 
 MEMORY_SYSTEM="$HOME/.claude/memory-system"
 
+if [ "${EIDETIC_LOCK_HELD:-}" != "1" ] && [ -f "$MEMORY_SYSTEM/bin/lock_runner.py" ]; then
+    exec env EIDETIC_LOCK_HELD=1 python3 "$MEMORY_SYSTEM/bin/lock_runner.py" "$MEMORY_SYSTEM/.memory.lockfile" "$0" "$@"
+fi
+
 acquire_memory_lock() {
+    if [ "${EIDETIC_LOCK_HELD:-}" = "1" ]; then
+        return 0
+    fi
     local lockdir="$MEMORY_SYSTEM/.memory.lock"
     mkdir -p "$MEMORY_SYSTEM"
     if mkdir "$lockdir" 2>/dev/null; then
@@ -22,13 +29,7 @@ acquire_memory_lock() {
         echo "Memory system busy (PID $old_pid alive), skipping"
         return 1
     fi
-    rm -rf "$lockdir"
-    if mkdir "$lockdir" 2>/dev/null; then
-        printf '%s\n' "$$" > "$lockdir/pid"
-        trap 'rm -rf "$MEMORY_SYSTEM/.memory.lock"' EXIT
-        return 0
-    fi
-    echo "Memory system busy, skipping"
+    echo "Memory system lock is stale or malformed; remove $lockdir manually after verifying no hook is running"
     return 1
 }
 

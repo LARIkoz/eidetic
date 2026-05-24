@@ -244,19 +244,25 @@ def search(vector_db_path, query, limit=5):
         vec_conn.close()
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 3:
+def main(argv=None):
+    argv = argv or sys.argv
+    if len(argv) < 3:
         print("Usage: embed.py <index.db> <vectors.db> [--full|--search <query>]")
-        sys.exit(1)
+        return 1
 
-    index_db = sys.argv[1]
-    vector_db = sys.argv[2]
+    index_db = argv[1]
+    vector_db = argv[2]
 
-    if len(sys.argv) > 3 and sys.argv[3] == "--full":
+    if len(argv) > 3 and argv[3] == "--full":
         run_full(index_db, vector_db)
-    elif len(sys.argv) > 4 and sys.argv[3] == "--search":
-        results = search(vector_db, sys.argv[4])
-        for sim, cid, path, name in results:
+    elif len(argv) > 4 and argv[3] == "--search":
+        results = search(vector_db, argv[4])
+        for sim, cid, path, name, *_ in results:
             print(f"  {sim:.3f}  {name or path}")
     else:
         run_incremental(index_db, vector_db)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

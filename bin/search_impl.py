@@ -491,12 +491,6 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=
     for sim, chunk_id, path, name, vector_heading, vector_hash in vec_results:
         if sim < VECTOR_MIN_SIM:
             continue
-        if path in best_per_path and best_per_path[path][0] >= sim:
-            continue
-        best_per_path[path] = (sim, chunk_id, name, vector_heading, vector_hash)
-
-    results = []
-    for path, (sim, chunk_id, name, vector_heading, vector_hash) in best_per_path.items():
         row = index_conn.execute("""
             SELECT path, type, evidence, source, last_verified, content, section_heading,
                    description,
@@ -529,7 +523,7 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=
         if content and len(content) > 200:
             snippet += "..."
 
-        results.append({
+        result = {
             "path": path,
             "project": project or "",
             "name": name or "",
@@ -553,7 +547,12 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=
             "vector_score": round(sim, 4),
             "match": "vector",
             "match_quality": round(sim, 3),
-        })
+        }
+        previous = best_per_path.get(path)
+        if previous and previous["score"] >= result["score"]:
+            continue
+        best_per_path[path] = result
+    results = list(best_per_path.values())
     results.sort(key=lambda x: x["score"], reverse=True)
     return results
 

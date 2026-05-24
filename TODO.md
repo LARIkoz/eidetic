@@ -77,6 +77,16 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Refresh code-aware recall for the whole installed runtime during update, including top-level `mcp_server.py`, before vector and `memory-context.md` refresh.
 - [x] Add CI regression coverage for multi-file code discovery.
 
+### Closed In v4.2.9
+
+- [x] Run clean consreview against v4.2.8. Pipeline was DEGRADED (`audit=UNKNOWN`, `mechanical=FAIL`, `redteam=WEAK`), so `SYNTHESIS.md` is not final, but raw voices/redteam exposed concrete hardening findings.
+- [x] Fix incremental indexing stale chunks when a memory file becomes frontmatter-only; switch index mtimes to nanosecond precision so rapid edits are not skipped.
+- [x] Make code-index replacement atomic at the project level: parse/build rows first, then replace old rows in one transaction.
+- [x] Validate vector identity before per-path deduplication.
+- [x] Replace hook stale-lock cleanup with shared `fcntl` lock runner.
+- [x] Fix timezone-aware drift age checks, archive destination collisions, `embed.py --search`, `export-vault.sh --project`, and false-green update refresh reporting.
+- [x] Add regression tests for the above.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
@@ -89,7 +99,7 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 ### Suggested Next Checks
 
-- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.8 agent recall behavior.
+- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.9 agent recall behavior.
 - [ ] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
 - [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.

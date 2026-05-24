@@ -64,14 +64,27 @@ if [ -d "$TMP_DIR/eidetic/skill" ]; then
 fi
 
 echo "Refreshing derived indexes..."
-"$MEMORY_SYSTEM/bin/index.sh" --incremental 2>&1 || true
+REFRESH_FAILED=0
+run_refresh_step() {
+    local label="$1"
+    shift
+    if "$@" 2>&1; then
+        return 0
+    fi
+    local rc=$?
+    echo "WARNING: refresh step failed ($label, exit $rc)"
+    REFRESH_FAILED=1
+    return 0
+}
+
+run_refresh_step "fts-index" "$MEMORY_SYSTEM/bin/index.sh" --incremental
 if python3 -c "import tree_sitter" 2>/dev/null; then
-    python3 "$MEMORY_SYSTEM/bin/code_index.py" "$MEMORY_SYSTEM/db/index.db" "$MEMORY_SYSTEM" --slug claude-memory-system 2>&1 || true
+    run_refresh_step "code-index" python3 "$MEMORY_SYSTEM/bin/code_index.py" "$MEMORY_SYSTEM/db/index.db" "$MEMORY_SYSTEM" --slug claude-memory-system
 fi
 if [ -f "$MEMORY_SYSTEM/db/vectors.db" ]; then
-    python3 "$MEMORY_SYSTEM/bin/embed.py" "$MEMORY_SYSTEM/db/index.db" "$MEMORY_SYSTEM/db/vectors.db" 2>&1 || true
+    run_refresh_step "vectors" python3 "$MEMORY_SYSTEM/bin/embed.py" "$MEMORY_SYSTEM/db/index.db" "$MEMORY_SYSTEM/db/vectors.db"
 fi
-python3 "$MEMORY_SYSTEM/bin/assemble_context.py" "$MEMORY_SYSTEM/db/index.db" "$HOME/.claude/rules/memory-context.md" "$(pwd)" 2>&1 || true
+run_refresh_step "memory-context" python3 "$MEMORY_SYSTEM/bin/assemble_context.py" "$MEMORY_SYSTEM/db/index.db" "$HOME/.claude/rules/memory-context.md" "$(pwd)"
 
 python3 -c "
 import json, time
@@ -92,4 +105,10 @@ rm -f "$MEMORY_SYSTEM/.update-available"
 echo ""
 echo "=== Updated to v$NEW_VER ==="
 echo "Preserved: db/ (index + vectors), rules/memory-context.md, settings.json hooks"
-echo "Derived indexes and memory context refreshed. Run ~/.claude/memory-system/bin/index.sh --full only if you need a full rebuild."
+if [ "$REFRESH_FAILED" -eq 0 ]; then
+    echo "Derived indexes and memory context refreshed. Run ~/.claude/memory-system/bin/index.sh --full only if you need a full rebuild."
+else
+    echo "WARNING: Runtime files updated, but one or more derived refresh steps failed."
+    echo "Run ~/.claude/memory-system/bin/health.sh and refresh the failing derived artifact before trusting recall."
+    exit 2
+fi

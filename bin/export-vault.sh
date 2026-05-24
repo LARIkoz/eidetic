@@ -34,20 +34,48 @@ EOF
     exit 0
 fi
 
-# Parse: first non-flag arg is target_dir, rest passed through
+# Parse: first non-option arg is target_dir; option values stay with options.
 TARGET=""
 PASS_ARGS=()
 NO_OPEN=false
-for arg in "$@"; do
-    if [ "$arg" = "--no-open" ]; then
+while [ "$#" -gt 0 ]; do
+    arg="$1"
+    case "$arg" in
+    --no-open)
         NO_OPEN=true
-    elif [ -z "$TARGET" ] && [[ ! "$arg" == --* ]]; then
-        TARGET="$arg"
-    else
         PASS_ARGS+=("$arg")
-    fi
+        shift
+        ;;
+    --project|--polish-count|--polish-model)
+        if [ "$#" -lt 2 ]; then
+            echo "Missing value for $arg" >&2
+            exit 2
+        fi
+        PASS_ARGS+=("$arg" "$2")
+        shift 2
+        ;;
+    --*)
+        PASS_ARGS+=("$arg")
+        shift
+        ;;
+    *)
+        if [ -z "$TARGET" ]; then
+            TARGET="$arg"
+        else
+            PASS_ARGS+=("$arg")
+        fi
+        shift
+        ;;
+    esac
 done
 [ -z "$TARGET" ] && TARGET="$DEFAULT_VAULT"
+
+if [ "${EIDETIC_EXPORT_PARSE_ONLY:-}" = "1" ]; then
+    printf 'TARGET=%s\n' "$TARGET"
+    printf 'ARGS='
+    printf '%s\n' "${PASS_ARGS[*]}"
+    exit 0
+fi
 
 # Export
 python3 "$SCRIPT_DIR/export_vault.py" "$TARGET" "${PASS_ARGS[@]+"${PASS_ARGS[@]}"}"

@@ -260,6 +260,30 @@ jobs:
             | grep -q '^bug|resolved$'
           [ "$(sqlite3 "$HOME/.claude/memory-system/db/index.db" "SELECT COUNT(*) FROM memory_chunks WHERE name = 'deleted-memory'")" = "0" ]
 
+      - name: Test incremental clears emptied memory files
+        run: |
+          tmp_home=$(mktemp -d)
+          trap 'rm -rf "$tmp_home"' EXIT
+          export HOME="$tmp_home"
+          mkdir -p "$HOME/.claude/projects/test-project/memory" "$HOME/.claude/memory-system/db"
+          cat > "$HOME/.claude/projects/test-project/memory/empty-me.md" << 'EOF'
+          ---
+          name: empty-me
+          type: project
+          ---
+          # Empty Me
+          Old body
+          EOF
+          python3 bin/index_impl.py --full "$HOME/.claude/memory-system/db/index.db" >/dev/null
+          cat > "$HOME/.claude/projects/test-project/memory/empty-me.md" << 'EOF'
+          ---
+          name: empty-me
+          type: project
+          ---
+          EOF
+          python3 bin/index_impl.py --incremental "$HOME/.claude/memory-system/db/index.db" >/dev/null
+          [ "$(sqlite3 "$HOME/.claude/memory-system/db/index.db" "SELECT COUNT(*) FROM memory_chunks WHERE name = 'empty-me'")" = "0" ]
+
       - name: Test vector identity guards stale chunk ids
         run: |
           python3 - << 'PY'
@@ -309,6 +333,82 @@ jobs:
           assert row[2] == embed.content_hash("new", "desc", "fresh content", "Heading"), row
           assert row[3] == b"fresh-vector", row
           vec.close()
+          PY
+
+      - name: Test embed search CLI handles vector identity tuple
+        run: |
+          python3 - << 'PY'
+          import io
+          import sys
+          from contextlib import redirect_stdout
+          sys.path.insert(0, "bin")
+          import embed
+
+          old_search = embed.search
+          try:
+              embed.search = lambda vector_db, query: [(0.9, 1, "/tmp/a.md", "alpha", "Heading", "hash")]
+              buf = io.StringIO()
+              with redirect_stdout(buf):
+                  assert embed.main(["embed.py", "index.db", "vectors.db", "--search", "alpha"]) == 0
+              assert "alpha" in buf.getvalue()
+          finally:
+              embed.search = old_search
+          PY
+
+      - name: Test vector fallback validates before dedup
+        run: |
+          python3 - << 'PY'
+          import importlib.machinery
+          import sqlite3
+          import sys
+          sys.path.insert(0, "bin")
+          import search_impl
+
+          conn = sqlite3.connect(":memory:")
+          conn.execute("""
+              CREATE TABLE memory_chunks (
+                  id INTEGER PRIMARY KEY,
+                  path TEXT,
+                  type TEXT,
+                  evidence TEXT,
+                  source TEXT,
+                  last_verified TEXT,
+                  content TEXT,
+                  section_heading TEXT,
+                  description TEXT,
+                  project TEXT,
+                  card_kind TEXT,
+                  status TEXT,
+                  area TEXT,
+                  supersedes TEXT,
+                  superseded_by TEXT
+              )
+          """)
+          conn.execute("INSERT INTO memory_chunks VALUES (1, '/tmp/a.md', 'project', 'observed', 'user-explicit', '', 'stale body', 'Old', 'desc', 'p', 'finding', 'current', '', '', '')")
+          conn.execute("INSERT INTO memory_chunks VALUES (2, '/tmp/a.md', 'project', 'observed', 'user-explicit', '', 'valid body', 'New', 'desc', 'p', 'finding', 'current', '', '', '')")
+
+          class Loader:
+              def create_module(self, spec):
+                  return None
+
+              def exec_module(self, module):
+                  module.search = lambda vector_db, query, limit: [
+                      (0.99, 1, "/tmp/a.md", "stale", "Old", "wrong-hash"),
+                      (0.80, 2, "/tmp/a.md", "valid", "New", "valid-hash"),
+                  ]
+                  module.content_hash = lambda name, desc, content, heading: "valid-hash" if content == "valid body" else "other-hash"
+
+          class Spec:
+              loader = Loader()
+
+          old_spec = search_impl.importlib.util.spec_from_file_location
+          try:
+              search_impl.importlib.util.spec_from_file_location = lambda *a, **k: importlib.machinery.ModuleSpec("eidetic_embed", Loader())
+              results = search_impl._vector_search("vectors.db", conn, "query", 5, None)
+          finally:
+              search_impl.importlib.util.spec_from_file_location = old_spec
+          assert len(results) == 1, results
+          assert results[0]["name"] == "valid", results
           PY
 
       - name: Test feedback rules are never hidden
@@ -418,6 +518,55 @@ jobs:
           assert sorted(os.path.basename(path) for path in files) == ["a.py", "b.py"], files
           PY
 
+      - name: Test code index preserves old rows on parse failure
+        run: |
+          python3 - << 'PY'
+          import os
+          import sqlite3
+          import sys
+          import tempfile
+          sys.path.insert(0, "bin")
+          import code_index
+
+          tmp = tempfile.mkdtemp()
+          db = os.path.join(tmp, "index.db")
+          src = os.path.join(tmp, "x.py")
+          open(src, "w").write("def old():\n    return 1\n")
+          conn = sqlite3.connect(db)
+          conn.execute("""
+              CREATE TABLE memory_chunks (
+                  id INTEGER PRIMARY KEY,
+                  path TEXT,
+                  project TEXT,
+                  name TEXT,
+                  type TEXT,
+                  evidence TEXT,
+                  source TEXT,
+                  card_kind TEXT DEFAULT '',
+                  status TEXT DEFAULT 'current',
+                  area TEXT DEFAULT '',
+                  section_heading TEXT,
+                  content TEXT,
+                  description TEXT,
+                  mtime INTEGER
+              )
+          """)
+          conn.execute("INSERT INTO memory_chunks (path, project, name, type, source, content) VALUES (?, 'p', 'old', 'code', 'code-index', 'old')", (src,))
+          conn.commit()
+          code_index.LANGUAGE_MAP = {".py": object()}
+          old_extract = code_index.extract_entities
+          code_index.extract_entities = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+          try:
+              try:
+                  code_index.index_code(conn, tmp, "p")
+              except RuntimeError:
+                  pass
+              assert conn.execute("SELECT COUNT(*) FROM memory_chunks WHERE source = 'code-index'").fetchone()[0] == 1
+          finally:
+              code_index.extract_entities = old_extract
+              conn.close()
+          PY
+
       - name: Test cleanup handles basename collisions
         run: |
           tmp=$(mktemp -d)
@@ -437,6 +586,57 @@ jobs:
           inbound = cleanup.count_inbound(files)
           assert sorted(inbound.values()) == [1, 1], inbound
           PY
+
+      - name: Test cleanup archive destinations are unique
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          python3 - << 'PY' "$tmp"
+          import os
+          import sys
+          sys.path.insert(0, "bin")
+          import cleanup
+
+          cleanup.ARCHIVE_DIR = sys.argv[1]
+          os.makedirs(cleanup.ARCHIVE_DIR, exist_ok=True)
+          open(os.path.join(cleanup.ARCHIVE_DIR, "same.md"), "w").write("existing")
+          a = cleanup.unique_archive_dest("/tmp/a/same.md", "same")
+          open(a, "w").write("a")
+          b = cleanup.unique_archive_dest("/tmp/b/same.md", "same")
+          assert a != b
+          assert not os.path.exists(b)
+          PY
+
+      - name: Test drift age handles timezone-aware verification dates
+        run: |
+          python3 - << 'PY'
+          import sqlite3
+          import sys
+          sys.path.insert(0, "bin")
+          import drift_check
+
+          conn = sqlite3.connect(":memory:")
+          conn.execute("""
+              CREATE TABLE memory_chunks (
+                  id INTEGER PRIMARY KEY,
+                  path TEXT,
+                  type TEXT,
+                  evidence TEXT,
+                  last_verified TEXT,
+                  mtime INTEGER
+              )
+          """)
+          conn.execute("INSERT INTO memory_chunks (path, type, evidence, last_verified, mtime) VALUES ('/tmp/aware.md', 'project', 'observed', '2026-01-01T00:00:00+03:00', 0)")
+          findings = drift_check.check_age_drift(conn)
+          assert findings and findings[0][0] == "/tmp/aware.md"
+          PY
+
+      - name: Test export vault parser keeps option values
+        run: |
+          out=$(EIDETIC_EXPORT_PARSE_ONLY=1 bash bin/export-vault.sh --project sample-slug --no-open)
+          echo "$out"
+          echo "$out" | grep -q "TARGET=$HOME/Documents/eidetic-vault"
+          echo "$out" | grep -q "ARGS=--project sample-slug --no-open"
 
       - name: Test FTS5 special characters
         run: |

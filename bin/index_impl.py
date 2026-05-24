@@ -174,6 +174,11 @@ def parse_frontmatter(text):
     return meta, body
 
 
+def file_mtime(filepath):
+    """Use nanosecond mtime so rapid same-second edits are not skipped."""
+    return os.stat(filepath).st_mtime_ns
+
+
 def split_sections(body, filepath):
     """Split markdown body by ## headings into chunks."""
     sections = []
@@ -367,7 +372,7 @@ def index_file(conn, filepath, meta, body):
     card_kind = infer_card_kind(meta, filepath)
     status = infer_status(meta, filepath)
     area = infer_area(meta, filepath, project)
-    mtime = int(os.path.getmtime(filepath))
+    mtime = file_mtime(filepath)
     sections = split_sections(body, filepath)
 
     conn.execute("DELETE FROM memory_chunks WHERE path = ?", (filepath,))
@@ -388,6 +393,15 @@ def index_file(conn, filepath, meta, body):
             ),
         )
 
+    conn.execute(
+        "INSERT OR REPLACE INTO index_meta (path, mtime) VALUES (?, ?)",
+        (filepath, mtime),
+    )
+
+
+def clear_indexed_file(conn, filepath, mtime):
+    """Record an existing but now-empty memory file as having no indexable chunks."""
+    conn.execute("DELETE FROM memory_chunks WHERE path = ?", (filepath,))
     conn.execute(
         "INSERT OR REPLACE INTO index_meta (path, mtime) VALUES (?, ?)",
         (filepath, mtime),
@@ -452,7 +466,7 @@ def run_incremental(conn, files):
 
     for filepath in files:
         current_paths.add(filepath)
-        mtime = int(os.path.getmtime(filepath))
+        mtime = file_mtime(filepath)
 
         if filepath in skip_existing and skip_existing[filepath] == mtime:
             skipped += 1
@@ -464,6 +478,9 @@ def run_incremental(conn, files):
             meta, body = parse_frontmatter(text)
             if body.strip():
                 index_file(conn, filepath, meta, body)
+                indexed += 1
+            else:
+                clear_indexed_file(conn, filepath, mtime)
                 indexed += 1
         except Exception as e:
             print(f"WARN: skip {filepath}: {e}", file=sys.stderr)

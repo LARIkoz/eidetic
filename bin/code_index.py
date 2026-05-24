@@ -155,14 +155,8 @@ def index_code(conn, project_dir, project_slug=None):
         project_slug = project_dir.rstrip("/").replace("/", "-").lstrip("-")
 
     abs_dir = os.path.abspath(project_dir).rstrip("/") + "/"
-    conn.execute(
-        "DELETE FROM memory_chunks WHERE source = 'code-index' AND path LIKE ?",
-        (abs_dir + "%",)
-    )
-    conn.commit()
-
     files = find_code_files(project_dir, set(LANGUAGE_MAP.keys()))
-    total = 0
+    rows = []
     t0 = time.time()
 
     for filepath in files:
@@ -178,18 +172,11 @@ def index_code(conn, project_dir, project_slug=None):
             continue
 
         entities = extract_entities(filepath, source, lang)
-        mtime = int(os.path.getmtime(filepath))
+        mtime = os.stat(filepath).st_mtime_ns
 
         for ent in entities:
             section = f"{ent['language']}:{ent['name']} L{ent['start_line']}-{ent['end_line']}"
-            conn.execute("""
-                INSERT INTO memory_chunks
-                    (path, project, name, type, evidence, source,
-                     card_kind, status, area, section_heading, content,
-                     description, mtime)
-                VALUES (?, ?, ?, 'code', 'observed', 'code-index',
-                        'code', 'current', ?, ?, ?, ?, ?)
-            """, (
+            rows.append((
                 filepath,
                 project_slug,
                 ent["name"],
@@ -199,9 +186,27 @@ def index_code(conn, project_dir, project_slug=None):
                 f"{ent['type']} in {os.path.basename(filepath)}",
                 mtime,
             ))
-            total += 1
 
-    conn.commit()
+    try:
+        conn.execute("BEGIN")
+        conn.execute(
+            "DELETE FROM memory_chunks WHERE source = 'code-index' AND path LIKE ?",
+            (abs_dir + "%",)
+        )
+        conn.executemany("""
+            INSERT INTO memory_chunks
+                (path, project, name, type, evidence, source,
+                 card_kind, status, area, section_heading, content,
+                 description, mtime)
+            VALUES (?, ?, ?, 'code', 'observed', 'code-index',
+                    'code', 'current', ?, ?, ?, ?, ?)
+        """, rows)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    total = len(rows)
     elapsed = time.time() - t0
     print(f"Indexed {total} code entities from {len(files)} files in {elapsed:.1f}s")
     return total
