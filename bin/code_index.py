@@ -5,7 +5,7 @@ Extracts functions, classes, and top-level constructs from code files,
 indexes them as FTS5 chunks alongside memory files. Project-scoped:
 only indexes code in CWD project, not all projects.
 
-Supported: .py, .js, .ts, .sh
+Supported when matching grammars are installed: .py, .js, .ts, .tsx, .sh
 """
 
 import os
@@ -29,7 +29,13 @@ def _init_languages():
         from tree_sitter import Language
         import tree_sitter_javascript as tsjs
         LANGUAGE_MAP[".js"] = Language(tsjs.language())
-        LANGUAGE_MAP[".ts"] = Language(tsjs.language())
+    except ImportError:
+        pass
+    try:
+        from tree_sitter import Language
+        import tree_sitter_typescript as tstypescript
+        LANGUAGE_MAP[".ts"] = Language(tstypescript.language_typescript())
+        LANGUAGE_MAP[".tsx"] = Language(tstypescript.language_tsx())
     except ImportError:
         pass
     try:
@@ -43,7 +49,8 @@ def _init_languages():
 EXTRACT_TYPES = {
     ".py": ["function_definition", "class_definition"],
     ".js": ["function_declaration", "class_declaration", "arrow_function", "method_definition"],
-    ".ts": ["function_declaration", "class_declaration", "arrow_function", "method_definition"],
+    ".ts": ["function_declaration", "class_declaration", "arrow_function", "method_definition", "interface_declaration", "type_alias_declaration"],
+    ".tsx": ["function_declaration", "class_declaration", "arrow_function", "method_definition", "interface_declaration", "type_alias_declaration"],
     ".sh": ["function_definition"],
 }
 
@@ -77,13 +84,13 @@ def ensure_agent_columns(conn):
 
 def find_code_files(project_dir, extensions=None):
     if extensions is None:
-        extensions = {".py", ".js", ".ts", ".sh"}
+        extensions = {".py", ".js", ".ts", ".tsx", ".sh"}
     files = []
     for root, dirs, fnames in os.walk(project_dir):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
         for fname in fnames:
             ext = os.path.splitext(fname)[1]
-            if ext in extensions:
+        if ext in extensions:
                 path = os.path.join(root, fname)
                 if os.path.getsize(path) < MAX_FILE_SIZE:
                     files.append(path)
@@ -130,7 +137,7 @@ def _walk(node, target_types, source, filepath, entities, ext):
 
 def _extract_name(node, ext):
     for child in node.children:
-        if child.type == "identifier" or child.type == "property_identifier":
+        if child.type in {"identifier", "property_identifier", "type_identifier"}:
             return child.text.decode("utf-8", errors="replace")
         if child.type == "name":
             return child.text.decode("utf-8", errors="replace")

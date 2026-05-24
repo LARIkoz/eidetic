@@ -443,8 +443,8 @@ def run_incremental(conn, files):
         existing[row[0]] = row[1]
 
     force_backfill = needs_lifecycle_backfill(conn)
-    if force_backfill:
-        existing = {}
+    existing_for_cleanup = dict(existing)
+    skip_existing = {} if force_backfill else existing
 
     current_paths = set()
     indexed = 0
@@ -454,7 +454,7 @@ def run_incremental(conn, files):
         current_paths.add(filepath)
         mtime = int(os.path.getmtime(filepath))
 
-        if filepath in existing and existing[filepath] == mtime:
+        if filepath in skip_existing and skip_existing[filepath] == mtime:
             skipped += 1
             continue
 
@@ -469,7 +469,7 @@ def run_incremental(conn, files):
             print(f"WARN: skip {filepath}: {e}", file=sys.stderr)
 
     removed = 0
-    for old_path in existing:
+    for old_path in existing_for_cleanup:
         if old_path not in current_paths:
             conn.execute("DELETE FROM memory_chunks WHERE path = ?", (old_path,))
             conn.execute("DELETE FROM index_meta WHERE path = ?", (old_path,))

@@ -14,6 +14,7 @@ import shutil
 import sqlite3
 import sys
 import time
+from collections import defaultdict
 from datetime import datetime
 
 DB_PATH = os.path.expanduser("~/.claude/memory-system/db/index.db")
@@ -40,7 +41,11 @@ def collect_files():
                 continue
             for f in os.listdir(dirpath):
                 if f.endswith(".md") and f not in EXCLUDE and not f.endswith(".bak"):
-                    files[f.replace(".md", "")] = os.path.join(dirpath, f)
+                    path = os.path.join(dirpath, f)
+                    files[path] = {
+                        "name": f.replace(".md", ""),
+                        "path": path,
+                    }
     return files
 
 
@@ -64,14 +69,20 @@ def get_type(filepath):
 
 
 def count_inbound(files):
-    inbound = {name: 0 for name in files}
-    for name, path in files.items():
+    inbound = {key: 0 for key in files}
+    targets = defaultdict(list)
+    for key, info in files.items():
+        targets[info["name"]].append(key)
+
+    for info in files.values():
+        path = info["path"]
         try:
             with open(path, "r", errors="replace") as f:
                 text = f.read()
             for link in re.findall(r'\[\[([^\]]+)\]\]', text):
-                if link in inbound:
-                    inbound[link] += 1
+                target = link.split("|", 1)[0].split("#", 1)[0].strip()
+                for key in targets.get(target, []):
+                    inbound[key] += 1
         except Exception:
             pass
     return inbound
@@ -81,14 +92,16 @@ def find_candidates(files, inbound):
     now = time.time()
     candidates = []
 
-    for name, path in files.items():
+    for key, info in files.items():
+        name = info["name"]
+        path = info["path"]
         ftype = get_type(path)
         if ftype in PROTECTED_TYPES:
             continue
 
         age_days = (now - os.path.getmtime(path)) / 86400
         size = os.path.getsize(path)
-        links_in = inbound.get(name, 0)
+        links_in = inbound.get(key, 0)
 
         reasons = []
         score = 0

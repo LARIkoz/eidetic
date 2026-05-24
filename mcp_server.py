@@ -152,6 +152,23 @@ TOOLS = [
 ]
 
 
+def mcp_text(text, is_error=False, structured=None):
+    result = {
+        "_mcp_result": {
+            "content": [{"type": "text", "text": text}],
+        }
+    }
+    if structured is not None:
+        result["_mcp_result"]["structuredContent"] = structured
+    if is_error:
+        result["_mcp_result"]["isError"] = True
+    return result
+
+
+def mcp_error(message):
+    return mcp_text(f"ERROR: {message}", is_error=True)
+
+
 def run_script(script, args=None, timeout=10):
     cmd = [sys.executable, os.path.join(BIN, script)]
     if args:
@@ -160,11 +177,14 @@ def run_script(script, args=None, timeout=10):
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout
         )
-        return result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        if result.returncode != 0:
+            return mcp_error(output.strip() or f"{script} exited {result.returncode}")
+        return mcp_text(output)
     except subprocess.TimeoutExpired:
-        return "ERROR: Script timed out"
+        return mcp_error("Script timed out")
     except FileNotFoundError:
-        return f"ERROR: Script not found: {script}"
+        return mcp_error(f"Script not found: {script}")
 
 
 def clamp_limit(value, default=5, max_limit=50):
@@ -215,24 +235,7 @@ def handle_search(params):
         detail = result.stdout.strip()[:500] or result.stderr.strip()[:500]
         return mcp_error(f"memory_search returned invalid JSON: {exc}; output={detail}")
 
-    return {
-        "_mcp_result": {
-            "content": [{
-                "type": "text",
-                "text": json.dumps(payload, ensure_ascii=False, indent=2),
-            }],
-            "structuredContent": payload,
-        }
-    }
-
-
-def mcp_error(message):
-    return {
-        "_mcp_result": {
-            "content": [{"type": "text", "text": f"ERROR: {message}"}],
-            "isError": True,
-        }
-    }
+    return mcp_text(json.dumps(payload, ensure_ascii=False, indent=2), structured=payload)
 
 
 def handle_serendipity(params):
@@ -244,9 +247,12 @@ def handle_health(params):
     cmd = [os.path.join(BIN, "health.sh")]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        return result.stdout
+        output = result.stdout + result.stderr
+        if result.returncode != 0:
+            return mcp_error(output.strip() or f"health.sh exited {result.returncode}")
+        return mcp_text(output)
     except Exception as e:
-        return f"ERROR: {e}"
+        return mcp_error(str(e))
 
 
 def handle_reindex(params):
@@ -254,9 +260,12 @@ def handle_reindex(params):
     cmd = [os.path.join(BIN, "index.sh"), mode]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        return result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        if result.returncode != 0:
+            return mcp_error(output.strip() or f"index.sh exited {result.returncode}")
+        return mcp_text(output)
     except Exception as e:
-        return f"ERROR: {e}"
+        return mcp_error(str(e))
 
 
 def handle_lint(params):
@@ -266,7 +275,7 @@ def handle_lint(params):
 def handle_export_vault(params):
     target = str(params.get("target", "")).strip()
     if not target:
-        return "ERROR: target directory required"
+        return mcp_error("target directory required")
     args = [target]
     project = params.get("project")
     if project:
@@ -284,7 +293,7 @@ def handle_export_vault(params):
     if polish:
         polish_model = params.get("polish_model", "auto")
         if polish_model not in {"auto", "sonnet", "haiku"}:
-            return f"ERROR: unsupported polish_model: {polish_model}"
+            return mcp_error(f"unsupported polish_model: {polish_model}")
         args.extend(["--polish-model", str(polish_model)])
         polish_count = clamp_int(params.get("polish_count", 0), 0, 0, 500)
         if polish_count:
@@ -293,6 +302,8 @@ def handle_export_vault(params):
         args.append("--no-polish")
     if not synthesize:
         args.append("--no-synthesize")
+    else:
+        args.append("--synthesize")
 
     timeout_default = 600 if (polish or synthesize) else 60
     timeout = clamp_int(params.get("timeout", timeout_default), timeout_default, 30, 1800)
@@ -300,13 +311,13 @@ def handle_export_vault(params):
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return "ERROR: export_vault timed out"
+        return mcp_error("export_vault timed out")
     except FileNotFoundError:
-        return "ERROR: Script not found: export_vault.py"
+        return mcp_error("Script not found: export_vault.py")
     if result.returncode != 0:
         err = result.stderr.strip() or result.stdout.strip() or "non-zero exit"
-        return "ERROR (exit {}): {}".format(result.returncode, err)
-    return result.stdout
+        return mcp_error("export_vault exited {}: {}".format(result.returncode, err))
+    return mcp_text(result.stdout)
 
 
 HANDLERS = {
@@ -342,7 +353,7 @@ def handle_request(request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "eidetic",
-                "version": "4.2.6"
+                "version": "4.2.7"
             }
         })
 

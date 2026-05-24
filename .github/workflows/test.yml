@@ -246,12 +246,70 @@ jobs:
               (str(mem), mtime),
           )
           conn.execute("INSERT INTO index_meta (path, mtime) VALUES (?, ?)", (str(mem), mtime))
+          stale = str(Path.home() / ".claude/projects/test-project/memory/deleted.md")
+          conn.execute(
+              "INSERT INTO memory_chunks (path, project, name, type, evidence, source, section_heading, content, description, mtime) VALUES (?, 'test-project', 'deleted-memory', 'project', 'observed', 'user-explicit', 'deleted', 'Deleted.', 'Deleted file', ?)",
+              (stale, mtime),
+          )
+          conn.execute("INSERT INTO index_meta (path, mtime) VALUES (?, ?)", (stale, mtime))
           conn.commit()
           conn.close()
           PY
           python3 bin/index_impl.py --incremental "$HOME/.claude/memory-system/db/index.db"
           sqlite3 "$HOME/.claude/memory-system/db/index.db" "SELECT card_kind, status FROM memory_chunks WHERE name = 'old-bug-memory' LIMIT 1" \
             | grep -q '^bug|resolved$'
+          [ "$(sqlite3 "$HOME/.claude/memory-system/db/index.db" "SELECT COUNT(*) FROM memory_chunks WHERE name = 'deleted-memory'")" = "0" ]
+
+      - name: Test vector identity guards stale chunk ids
+        run: |
+          python3 - << 'PY'
+          import os
+          import sqlite3
+          import sys
+          import tempfile
+          sys.path.insert(0, "bin")
+          import embed
+
+          tmp = tempfile.mkdtemp()
+          index_db = os.path.join(tmp, "index.db")
+          vector_db = os.path.join(tmp, "vectors.db")
+          conn = sqlite3.connect(index_db)
+          conn.execute("""
+              CREATE TABLE memory_chunks (
+                  id INTEGER PRIMARY KEY,
+                  path TEXT,
+                  name TEXT,
+                  description TEXT,
+                  content TEXT,
+                  section_heading TEXT,
+                  mtime INTEGER
+              )
+          """)
+          conn.execute(
+              "INSERT INTO memory_chunks VALUES (1, '/tmp/new.md', 'new', 'desc', 'fresh content', 'Heading', 100)"
+          )
+          conn.commit()
+          conn.close()
+
+          vec = embed.init_vector_db(vector_db)
+          vec.execute(
+              "INSERT INTO vectors (chunk_id, path, name, section_heading, content_hash, embedding, mtime) VALUES (1, '/tmp/old.md', 'old', 'Old', 'stale', ?, 100)",
+              (b"stale-vector",),
+          )
+          vec.commit()
+          vec.close()
+
+          embed.embed_texts = lambda texts: [b"fresh-vector" for _ in texts]
+          embed.run_incremental(index_db, vector_db)
+
+          vec = sqlite3.connect(vector_db)
+          row = vec.execute("SELECT path, section_heading, content_hash, embedding FROM vectors WHERE chunk_id = 1").fetchone()
+          assert row[0] == "/tmp/new.md", row
+          assert row[1] == "Heading", row
+          assert row[2] == embed.content_hash("new", "desc", "fresh content", "Heading"), row
+          assert row[3] == b"fresh-vector", row
+          vec.close()
+          PY
 
       - name: Test feedback rules are never hidden
         run: |
@@ -297,10 +355,76 @@ jobs:
             | EIDETIC_MEMORY_SYSTEM="$PWD" python3 mcp_server.py \
             | python3 -c "import json,sys; resp=json.load(sys.stdin); result=resp['result']; assert 'structuredContent' in result; data=result['structuredContent']; assert data['no_confident_results'] is False; assert data['results']; json.loads(result['content'][0]['text'])"
 
+      - name: Test MCP error and export synthesis contract
+        run: |
+          python3 - << 'PY'
+          import sys
+          sys.path.insert(0, ".")
+          import mcp_server
+
+          err = mcp_server.handle_export_vault({})
+          assert err["_mcp_result"]["isError"] is True
+
+          captured = {}
+          class Result:
+              returncode = 0
+              stdout = "ok"
+              stderr = ""
+
+          def fake_run(cmd, **kwargs):
+              captured["cmd"] = cmd
+              return Result()
+
+          old_run = mcp_server.subprocess.run
+          try:
+              mcp_server.subprocess.run = fake_run
+              res = mcp_server.handle_export_vault({"target": "/tmp/vault", "synthesize": True, "timeout": 30})
+          finally:
+              mcp_server.subprocess.run = old_run
+          assert res["_mcp_result"]["content"][0]["text"] == "ok"
+          assert "--synthesize" in captured["cmd"], captured["cmd"]
+          assert "--no-synthesize" not in captured["cmd"], captured["cmd"]
+          PY
+
+      - name: Test code index TypeScript grammar routing
+        run: |
+          python3 - << 'PY'
+          import sys
+          sys.path.insert(0, "bin")
+          import code_index
+
+          code_index._init_languages()
+          if ".ts" in code_index.LANGUAGE_MAP:
+              assert ".js" not in code_index.LANGUAGE_MAP or code_index.LANGUAGE_MAP[".ts"] != code_index.LANGUAGE_MAP[".js"]
+              assert ".tsx" in code_index.LANGUAGE_MAP
+          else:
+              assert ".tsx" not in code_index.LANGUAGE_MAP
+          PY
+
+      - name: Test cleanup handles basename collisions
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          mkdir -p "$tmp/a" "$tmp/b"
+          printf '%s\n' '---' 'name: same' 'type: project' '---' 'Same A [[same]]' > "$tmp/a/same.md"
+          printf '%s\n' '---' 'name: same' 'type: project' '---' 'Same B' > "$tmp/b/same.md"
+          python3 - << 'PY' "$tmp"
+          import sys
+          sys.path.insert(0, "bin")
+          import cleanup
+
+          root = sys.argv[1]
+          cleanup.SCAN_DIRS = [root + "/a/", root + "/b/"]
+          files = cleanup.collect_files()
+          assert len(files) == 2, files
+          inbound = cleanup.count_inbound(files)
+          assert sorted(inbound.values()) == [1, 1], inbound
+          PY
+
       - name: Test FTS5 special characters
         run: |
-          bash bin/search.sh "C++" --limit 1 2>&1 || true
-          bash bin/search.sh "key-rotation" --limit 1 2>&1 || true
+          bash bin/search.sh "C++" --limit 1 2>&1
+          bash bin/search.sh "key-rotation" --limit 1 2>&1
           echo "Special chars handled OK"
 
       - name: Test index rebuild idempotency

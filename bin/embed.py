@@ -6,6 +6,7 @@ Stores in vectors.db alongside index.db. Used as fallback when FTS5 returns < 3 
 """
 
 import json
+import hashlib
 import os
 import sqlite3
 import sys
@@ -35,13 +36,33 @@ def init_vector_db(db_path):
             chunk_id INTEGER PRIMARY KEY,
             path TEXT NOT NULL,
             name TEXT,
+            section_heading TEXT DEFAULT '',
+            content_hash TEXT DEFAULT '',
             embedding BLOB NOT NULL,
             mtime INTEGER
         )
     """)
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(vectors)")}
+    for column, statement in {
+        "section_heading": "ALTER TABLE vectors ADD COLUMN section_heading TEXT DEFAULT ''",
+        "content_hash": "ALTER TABLE vectors ADD COLUMN content_hash TEXT DEFAULT ''",
+    }.items():
+        if column not in existing:
+            conn.execute(statement)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vectors_path ON vectors(path)")
     conn.commit()
     return conn
+
+
+def embedding_text(name, desc, content, heading):
+    parts = [name or "", desc or "", heading or ""]
+    body = (content or "")[:500]
+    return " ".join(p for p in parts + [body] if p).strip() or "empty"
+
+
+def content_hash(name, desc, content, heading):
+    payload = "\0".join([name or "", desc or "", heading or "", content or ""])
+    return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()
 
 
 def embed_texts(texts):
@@ -82,16 +103,17 @@ def run_full(index_db_path, vector_db_path):
             batch = rows[i:i + batch_size]
             texts = []
             for _, path, name, desc, content, heading, mtime in batch:
-                parts = [name or "", desc or "", heading or ""]
-                body = (content or "")[:500]
-                texts.append(" ".join(p for p in parts + [body] if p).strip() or "empty")
+                texts.append(embedding_text(name, desc, content, heading))
 
             blobs = embed_texts(texts)
 
             for j, (chunk_id, path, name, desc, content, heading, mtime) in enumerate(batch):
+                digest = content_hash(name, desc, content, heading)
                 vec_conn.execute(
-                    "INSERT OR REPLACE INTO vectors (chunk_id, path, name, embedding, mtime) VALUES (?, ?, ?, ?, ?)",
-                    (chunk_id, path, name, blobs[j], mtime)
+                    """INSERT OR REPLACE INTO vectors
+                       (chunk_id, path, name, section_heading, content_hash, embedding, mtime)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (chunk_id, path, name, heading or "", digest, blobs[j], mtime)
                 )
             vec_conn.commit()
             total += len(batch)
@@ -124,8 +146,13 @@ def run_incremental(index_db_path, vector_db_path):
         vec_conn = init_vector_db(vector_db_path)
 
         existing = {}
-        for row in vec_conn.execute("SELECT chunk_id, mtime FROM vectors"):
-            existing[row[0]] = row[1]
+        for row in vec_conn.execute("SELECT chunk_id, path, section_heading, content_hash, mtime FROM vectors"):
+            existing[row[0]] = {
+                "path": row[1],
+                "section_heading": row[2] or "",
+                "content_hash": row[3] or "",
+                "mtime": row[4],
+            }
 
         rows = index_conn.execute("""
             SELECT id, path, name, description, content, section_heading, mtime
@@ -137,7 +164,15 @@ def run_incremental(index_db_path, vector_db_path):
 
         for chunk_id, path, name, desc, content, heading, mtime in rows:
             current_ids.add(chunk_id)
-            if chunk_id not in existing or existing[chunk_id] != mtime:
+            digest = content_hash(name, desc, content, heading)
+            prev = existing.get(chunk_id)
+            if (
+                prev is None
+                or prev["path"] != path
+                or prev["section_heading"] != (heading or "")
+                or prev["content_hash"] != digest
+                or prev["mtime"] != mtime
+            ):
                 to_embed.append((chunk_id, path, name, desc, content, heading, mtime))
 
         deleted = set(existing.keys()) - current_ids
@@ -158,16 +193,17 @@ def run_incremental(index_db_path, vector_db_path):
             batch = to_embed[i:i + batch_size]
             texts = []
             for _, path, name, desc, content, heading, mtime in batch:
-                parts = [name or "", desc or "", heading or ""]
-                body = (content or "")[:500]
-                texts.append(" ".join(p for p in parts + [body] if p).strip() or "empty")
+                texts.append(embedding_text(name, desc, content, heading))
 
             blobs = embed_texts(texts)
 
             for j, (chunk_id, path, name, desc, content, heading, mtime) in enumerate(batch):
+                digest = content_hash(name, desc, content, heading)
                 vec_conn.execute(
-                    "INSERT OR REPLACE INTO vectors (chunk_id, path, name, embedding, mtime) VALUES (?, ?, ?, ?, ?)",
-                    (chunk_id, path, name, blobs[j], mtime)
+                    """INSERT OR REPLACE INTO vectors
+                       (chunk_id, path, name, section_heading, content_hash, embedding, mtime)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (chunk_id, path, name, heading or "", digest, blobs[j], mtime)
                 )
             vec_conn.commit()
             total += len(batch)
@@ -182,23 +218,22 @@ def run_incremental(index_db_path, vector_db_path):
 
 
 def search(vector_db_path, query, limit=5):
-    vec_conn = sqlite3.connect(vector_db_path)
+    vec_conn = init_vector_db(vector_db_path)
     try:
-        vec_conn.execute("PRAGMA journal_mode=WAL")
-        vec_conn.execute("PRAGMA busy_timeout=5000")
-
         model = get_model()
         q_vec = np.array(list(model.embed([query]))[0], dtype=np.float32)
 
-        rows = vec_conn.execute("SELECT chunk_id, path, name, embedding FROM vectors").fetchall()
+        rows = vec_conn.execute(
+            "SELECT chunk_id, path, name, section_heading, content_hash, embedding FROM vectors"
+        ).fetchall()
 
         scores = []
-        for chunk_id, path, name, blob in rows:
+        for chunk_id, path, name, heading, digest, blob in rows:
             vec = np.frombuffer(blob, dtype=np.float32)
             if vec.shape != q_vec.shape:
                 continue
             sim = float(np.dot(q_vec, vec) / (np.linalg.norm(q_vec) * np.linalg.norm(vec) + 1e-8))
-            scores.append((sim, chunk_id, path, name))
+            scores.append((sim, chunk_id, path, name, heading or "", digest or ""))
 
         scores.sort(reverse=True)
         return scores[:limit]

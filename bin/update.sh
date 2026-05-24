@@ -63,6 +63,12 @@ if [ -d "$TMP_DIR/eidetic/skill" ]; then
     echo "Skill updated"
 fi
 
+echo "Refreshing derived indexes..."
+"$MEMORY_SYSTEM/bin/index.sh" --incremental 2>&1 || true
+if [ -f "$MEMORY_SYSTEM/db/vectors.db" ]; then
+    python3 "$MEMORY_SYSTEM/bin/embed.py" "$MEMORY_SYSTEM/db/index.db" "$MEMORY_SYSTEM/db/vectors.db" 2>&1 || true
+fi
+
 python3 -c "
 import json, time
 meta = {
@@ -82,4 +88,4 @@ rm -f "$MEMORY_SYSTEM/.update-available"
 echo ""
 echo "=== Updated to v$NEW_VER ==="
 echo "Preserved: db/ (index + vectors), rules/memory-context.md, settings.json hooks"
-echo "Reindex recommended: ~/.claude/memory-system/bin/index.sh --full"
+echo "Derived indexes refreshed. Run ~/.claude/memory-system/bin/index.sh --full only if you need a full rebuild."

@@ -488,24 +488,32 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=
         return []
 
     best_per_path = {}
-    for sim, chunk_id, path, name in vec_results:
+    for sim, chunk_id, path, name, vector_heading, vector_hash in vec_results:
         if sim < VECTOR_MIN_SIM:
             continue
         if path in best_per_path and best_per_path[path][0] >= sim:
             continue
-        best_per_path[path] = (sim, chunk_id, name)
+        best_per_path[path] = (sim, chunk_id, name, vector_heading, vector_hash)
 
     results = []
-    for path, (sim, chunk_id, name) in best_per_path.items():
+    for path, (sim, chunk_id, name, vector_heading, vector_hash) in best_per_path.items():
         row = index_conn.execute("""
-            SELECT type, evidence, source, last_verified, content, section_heading,
+            SELECT path, type, evidence, source, last_verified, content, section_heading,
+                   description,
                    project, card_kind, status, area, supersedes, superseded_by
             FROM memory_chunks WHERE id = ?
         """, (chunk_id,)).fetchone()
         if not row:
             continue
-        (typ, evidence, source, lv, content, heading, project, card_kind,
+        (row_path, typ, evidence, source, lv, content, heading, desc, project, card_kind,
          status, area, supersedes, superseded_by) = row
+        if row_path != path or (heading or "") != vector_heading:
+            continue
+        if not vector_hash:
+            continue
+        digest = embed.content_hash(name, desc, content, heading)
+        if digest != vector_hash:
+            continue
         if type_filter and typ != type_filter:
             continue
 
