@@ -94,6 +94,17 @@ jobs:
       - name: Test lint
         run: bash bin/lint.sh
 
+      - name: Test Obsidian vault export without LLM
+        run: |
+          VAULT=$(mktemp -d)
+          python3 bin/export_vault.py "$VAULT" --no-polish --no-synthesize
+          test -f "$VAULT/HOME.md"
+          test -f "$VAULT/rules/_MOC.md"
+          test -f "$VAULT/projects/_MOC.md"
+          COUNT=$(find "$VAULT" -name '*.md' | wc -l | tr -d ' ')
+          echo "Exported markdown files: $COUNT"
+          [ "$COUNT" -ge 4 ] || exit 1
+
       - name: Test cleanup report
         run: python3 bin/cleanup.py --report
 

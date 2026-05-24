@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.0.0-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.2.1-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -172,24 +172,27 @@ After a search, Eidetic looks for unexpected cross-project connections via wikil
 | Standard | 10-30    | Standard mode                                 |
 | Veteran  | 30+      | Proactive, skips established patterns         |
 
-### Obsidian Vault Export (v4.0)
+### Obsidian Vault Export (v4.2)
 
 Your AI worked 50 sessions. It learned 500 things. Now see them.
 
 ```bash
 eidetic export-vault ~/my-vault/
-# Exported 120 notes to ~/my-vault/ (48 rules, 52 projects, 16 references, 4 profile)
+# Export + LLM polish/topic synthesis + open in Obsidian
+
+eidetic export-vault ~/my-vault/ --no-polish --no-synthesize
+# Fast export, no API calls
 ```
 
-Opens in Obsidian with pre-configured graph colors, backlinks, and Maps of Content.
+Opens in Obsidian with pre-configured graph colors, backlinks, Maps of Content, and synthesized topic pages when `claude-batch` is available.
 
 **What makes this different from "open memory folder in Obsidian":**
 
 | Raw memory dump                 | Eidetic export                         |
 | ------------------------------- | -------------------------------------- |
 | 500+ files including debug logs | ~120 curated, validated notes          |
-| Agent jargon, terse one-liners  | Human-readable cards with Why/How      |
-| Flat list, no structure         | Folders by type + auto-MOC per folder  |
+| Agent jargon, terse one-liners  | Human-readable cards + optional LLM polish |
+| Flat list, no structure         | Folders by type + auto-MOC + synthesized topics |
 | Dangling wikilinks everywhere   | Links verified against export set      |
 | No graph sense                  | Color-coded by type, hub nodes visible |
 
@@ -199,6 +202,9 @@ eidetic export-vault ~/my-vault/ --project gap-pipeline
 
 # Incremental update (only changed files)
 eidetic export-vault ~/my-vault/ --delta
+
+# Fast scheduled/no-API update
+eidetic export-vault ~/my-vault/ --delta --no-polish --no-synthesize --no-open
 ```
 
 The quality gate filters out operational files (handoff states, synth failures), files without metadata, and oversized monoliths. What passes: user-written rules, validated decisions, reference cards, project findings.
@@ -231,6 +237,12 @@ bash install.sh
 ```
 
 **Requirements:** `bash`, `python3`, `sqlite3` (pre-installed on macOS/Linux).
+
+Optional daily vault export can be enabled during install with:
+
+```bash
+EIDETIC_SETUP_CRON=1 bash install.sh
+```
 
 **Optional upgrades:**
 
@@ -266,7 +278,9 @@ Works with Cursor, Windsurf, Cline, and any MCP-compatible agent:
 }
 ```
 
-5 tools: `memory_search`, `memory_serendipity`, `memory_health`, `memory_reindex`, `memory_lint`.
+6 tools: `memory_search`, `memory_serendipity`, `memory_health`, `memory_reindex`, `memory_lint`, `export_vault`.
+
+MCP `export_vault` defaults to no LLM calls to avoid surprise API usage and timeouts. Pass `polish=true` and/or `synthesize=true` when you want the v4.1/v4.2 enrichment path.
 
 ---
 
@@ -383,7 +397,7 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 | [claude-soul](https://github.com/DomDemetz/claude-soul)                                 | Evidence tiers, 0.5x self-ref discount, signals   | Integrated into hooks, not a separate SDK             |
 | [memsearch](https://github.com/zilliztech/memsearch)                                    | FTS5, context:fork isolation                      | + vector hybrid, no Milvus, no file-lock bugs         |
 
-**Obsidian-compatible today:** Memory files are markdown + `[[wikilinks]]` + YAML frontmatter. You can open `~/.claude/projects/` as an Obsidian vault, or use `eidetic export-vault` (v4.0) for a quality-filtered, template-formatted vault with auto-MOC and verified wikilinks.
+**Obsidian-compatible today:** Memory files are markdown + `[[wikilinks]]` + YAML frontmatter. You can open `~/.claude/projects/` as an Obsidian vault, or use `eidetic export-vault` (v4.2) for a quality-filtered vault with templates, auto-MOCs, verified wikilinks, optional LLM polish, and synthesized topic pages.
 
 ---
 
@@ -400,11 +414,14 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v2.2.2** — Auto-update system, search recall 12→18/20 (vector boost + dedup)
 - [x] **v2.5** — Drift detection: wikilink validation, age-based staleness, confidence escalation. No competitor does this.
 - [x] **v4.0** — Obsidian vault export: quality gate, template formatting, auto-MOC, wikilink resolution, delta tracking
+- [x] **v4.1** — LLM polish, smart Sonnet/Haiku routing, MCP `export_vault`, plug-and-play Obsidian open
+- [x] **v4.2** — LLM topic clustering and wiki-style topic synthesis
+- [x] **v4.2.1** — Runtime hardening: non-interactive install, MCP export flags/timeouts, docs/version sync, CI export smoke
 
 ### Next
 
 - [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter.
-- [ ] **v4.1** — `--polish` (LLM rewrite), enriched quality gate, content dedup
+- [ ] **v4.3** — Vault quality pass: filename edge cases, topic-source link validation, scheduled export UX
 
 ### v5.0 (deferred)
 
@@ -416,6 +433,29 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v4.2.1 (2026-05-24)
+
+- Installer stays non-interactive by default; daily vault export is opt-in via `EIDETIC_SETUP_CRON=1`
+- MCP `export_vault` now exposes `polish`, `synthesize`, `polish_count`, `polish_model`, `force`, `all`, and `timeout`
+- MCP export defaults to no LLM calls; CLI export keeps the enriched v4.2 path
+- Version/docs synchronized to v4.2.x and CI now smokes no-LLM vault export
+
+### v4.2.0 (2026-05-23)
+
+- **Topic synthesis** — clusters exported notes into wiki-style topic pages
+- LLM-based clustering replaced hardcoded topic keywords
+- Opus synthesis for better topic pages; large clusters use top notes by weight with context caps
+- `HOME.md` links synthesized topics when available
+
+### v4.1.0 (2026-05-23)
+
+- **LLM polish** — rewrites exported note bodies for human-readable Obsidian cards
+- Smart model routing: Sonnet for complex notes, Haiku for simple notes
+- MCP `export_vault` tool added
+- Plug-and-play Obsidian registration/open on macOS
+- Human-readable filenames with title preservation and collision handling
+- Polish circuit breaker and idempotent re-run guard
 
 ### v4.0.0 (2026-05-23)
 

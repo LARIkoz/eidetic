@@ -131,6 +131,21 @@ echo ""
 echo "8. Health check..."
 "$MEMORY_SYSTEM/bin/health.sh"
 
+# Optional daily vault export cron.
+# Keep install non-interactive; opt in with EIDETIC_SETUP_CRON=1.
+echo ""
+echo "9. Optional daily vault export (cron)..."
+if [ "${EIDETIC_SETUP_CRON:-0}" = "1" ]; then
+    VAULT_DIR="${VAULT_DIR:-$HOME/Documents/eidetic-vault}"
+    (
+        crontab -l 2>/dev/null | grep -Ev "memory-system/bin/export-vault\\.sh|eidetic-vault-cron\\.log" || true
+        echo "0 3 * * * bash $MEMORY_SYSTEM/bin/export-vault.sh $VAULT_DIR --delta --no-polish --no-synthesize --no-open >> /tmp/eidetic-vault-cron.log 2>&1"
+    ) | crontab -
+    echo "   Cron job added: daily at 3am -> $VAULT_DIR"
+else
+    echo "   Skipped. Enable with: EIDETIC_SETUP_CRON=1 bash install.sh"
+fi
+
 echo ""
 echo "=== Installation complete ==="
 echo ""
@@ -148,7 +163,7 @@ echo "  - Checks for updates every 6 hours (at session start, background)"
 echo "  - Shows a one-line notice when an update is available"
 echo "  - Run 'bash ~/.claude/memory-system/bin/update.sh' to apply"
 echo ""
-echo "Obsidian vault export (v4.0):"
+echo "Obsidian vault export (v4.2):"
 echo "  - Export: bash ~/.claude/memory-system/bin/export-vault.sh ~/my-vault/"
 echo "  - Delta:  bash ~/.claude/memory-system/bin/export-vault.sh ~/my-vault/ --delta"
 echo ""

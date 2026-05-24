@@ -1,42 +1,28 @@
 # Eidetic TODO
 
-## Next Session — v2.5 Drift Detection Stabilization
+## Next Session — v4.2 Vault Export Stabilization
 
-Context: v2.5 landed on `main` at `b992f81` after `26dffb8`. The original consreview blockers were addressed through `399b2e8`, then follow-up verification found and fixed a full-index CI regression plus two recall/drift edge cases. Keep this file as the regression checklist for future v2.5 changes.
+Context: v4.1/v4.2 moved Eidetic from "searchable AI memory" into a human-readable Obsidian export path: LLM polish, plug-and-play vault open, LLM clustering, and synthesized topic pages. The next work should protect that product surface, not reopen v2.5 drift detection unless a regression appears there.
 
-### Closed Blockers
+### Closed In v4.2.1
 
-- [x] Preserve the "index.db is derived" invariant. Drift observations now live in `~/.claude/memory-system/db/drift_state.db`.
-- [x] Fix baseline semantics. The first drift run creates findings with `first_seen=1`; penalty starts only after a later run.
-- [x] Make drift findings granular. Drift identity uses `(path, drift_type, detail)` so multiple broken links in one file can be tracked and auto-resolved independently.
-- [x] Fix wikilink false positives. Regex/code/placeholders like `[[^\\]]`, `[[{target}]]`, `[[...]]`, and shell snippets like `[[-f ~/.cargo/env]]` are ignored.
-- [x] Exclude `source='code-index'` from wikilink drift unless a future code-specific checker intentionally validates code references.
-- [x] Enforce the hook write-lock invariant for drift writes through the shared PID lock used by SessionStart/Stop hooks.
-- [x] Fix repeated code indexing. `code_index.py` deletes by path prefix, so changed project slugs no longer leave conflicting stale chunks.
-- [x] Fix full-index CI regression after crash-safe reindex. `run_full()` reopens the swapped DB before counting chunks.
-- [x] Keep vector fallback drift-aware and prevent vector results from displacing strong exact/code identifier FTS matches.
+- [x] Keep `install.sh` non-interactive by default. Daily vault export is opt-in through `EIDETIC_SETUP_CRON=1`.
+- [x] Add `.DS_Store` to `.gitignore` and remove generated Finder files from the working tree.
+- [x] Synchronize public docs/versioning from v4.0/v2.5 language to v4.2.x.
+- [x] Update MCP server version and expose v4 export controls instead of forcing the slow default path.
+- [x] Keep MCP export safe by default: no LLM polish/synthesis unless explicitly requested.
+- [x] Add CI smoke coverage for no-LLM Obsidian vault export.
 
-### Concept Checks
+### Current Residual Risks
 
-- [x] Keep drift as a quality/review layer, not a replacement for relevance. Old memory is not automatically false; age drift is a review/quality signal.
-- [x] Keep differential penalty non-stacking with freshness.
-- [x] Revisit confidence escalation. Current implementation remains conservative because live state has effectively no repeated agent-extracted memories.
-- [x] Add visible but low-noise drift diagnostics. Crash-guarding with `|| true` remains correct for SessionStart; failures are now covered by local/CI smokes.
+- [ ] LLM polish/synthesis full-path smoke was not run in CI because it requires `claude-batch` and API budget.
+- [ ] Filename quality still needs a focused pass for punctuation, truncation, and long title readability.
+- [ ] Topic-source wikilinks should be checked after a real synthesis run, not only after the fast no-LLM export.
+- [ ] Memory lint still reports corpus debt: broken links, orphans, and large files. Treat this as input-quality debt, not a core runtime failure.
 
-### Required Tests / Smokes
+### Suggested Next Checks
 
-- [x] Baseline run creates findings with no penalized `first_seen > 1`.
-- [x] Second run of the same unresolved findings enables penalty.
-- [x] Duplicate links/chunks inside one run do not increment `first_seen`.
-- [x] Fixing one broken link in a file resolves only that target, not unrelated targets.
-- [x] Code snippets/placeholders are ignored by wikilink drift.
-- [x] Repeated `code_index.py` on the same project succeeds and indexes `bin/drift_check.py`.
-- [x] Search smoke for `--type code "drift_check"` returns Eidetic `bin/drift_check.py` first.
-- [x] `health.sh`, `lint.sh`, `py_compile`, and local CI-equivalent smokes pass.
-
-### Evidence From Review
-
-- Live v2.5 state observed: `173 active` drift findings: `162 age_stale`, `11 broken_wikilink`, `0 confidence_escalation`.
-- Baseline-copy test showed `7 broken_wikilink` rows with `first_seen > 1` on the first run.
-- Code search smoke for `drift_check` did not return `bin/drift_check.py`; direct `code_index.py` rerun failed with `UNIQUE constraint failed`.
-- `health.sh` passed and installed runtime matched repo files, so this is a correctness/design follow-up, not a broken install.
+- [ ] Run one bounded LLM export smoke: `export-vault --polish-count 3` plus synthesis on a small project.
+- [ ] Validate the generated Obsidian vault visually: `HOME.md`, folder MOCs, topic pages, graph grouping, and backlinks.
+- [ ] Decide whether CLI export should keep LLM enrichment on by default or switch to fast/no-API default with explicit `--polish`.
+- [ ] Update GitHub repository description/topics if positioning should include Obsidian, AI wiki, and vault export.
