@@ -23,6 +23,9 @@ FRESHNESS_CUTOFF_DAYS = 30
 MAX_LIMIT = 50
 MAX_QUERY_TERMS = 8
 VECTOR_MIN_SIM = 0.55
+VECTOR_MEDIUM_CONFIDENCE = 0.78
+VECTOR_HIGH_CONFIDENCE = 0.88
+CONFIDENCE_ORDER = {"low": 0, "medium": 1, "high": 2}
 STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how",
     "i", "in", "is", "it", "me", "my", "of", "on", "or", "our", "the",
@@ -193,6 +196,85 @@ def _needs_vector(results, limit):
     return False
 
 
+def _cap_confidence(level, max_level):
+    if CONFIDENCE_ORDER[level] <= CONFIDENCE_ORDER[max_level]:
+        return level
+    return max_level
+
+
+def _classify_confidence(result):
+    """Classify retrieval confidence separately from ranking score.
+
+    RRF and compound scores are ranking mechanics, not user-facing certainty.
+    Keep this conservative: exact/all-term FTS can be high, vector-only needs
+    a much stronger similarity before it is treated as actionable recall.
+    """
+    match = result.get("match") or ""
+    match_quality = float(result.get("match_quality") or 0)
+    vector_score = float(result.get("vector_score") or 0)
+    source = result.get("source") or ""
+    freshness = float(result.get("freshness") or 0.7)
+
+    level = "low"
+    reason = "weak lexical/vector match"
+
+    if match == "phrase":
+        level = "high" if match_quality >= 1.0 else "medium"
+        reason = "exact phrase match"
+    elif match == "and":
+        if match_quality >= 1.0:
+            level = "high"
+            reason = "all query terms matched"
+        elif match_quality >= 0.7:
+            level = "medium"
+            reason = "most query terms matched"
+    elif match == "or":
+        if match_quality >= 0.9:
+            level = "medium"
+            reason = "broad keyword match"
+    elif match == "hybrid":
+        if match_quality >= 1.0 and vector_score >= VECTOR_MEDIUM_CONFIDENCE:
+            level = "high"
+            reason = "keyword and vector agree"
+        elif match_quality >= 0.7 or vector_score >= VECTOR_MEDIUM_CONFIDENCE:
+            level = "medium"
+            reason = "partial keyword/vector agreement"
+    elif match == "vector":
+        if vector_score >= VECTOR_HIGH_CONFIDENCE:
+            level = "high"
+            reason = "strong semantic match"
+        elif vector_score >= VECTOR_MEDIUM_CONFIDENCE:
+            level = "medium"
+            reason = "semantic match"
+
+    if source == "agent-extracted":
+        level = _cap_confidence(level, "medium")
+        reason += "; agent-extracted source"
+    if freshness < 0.6:
+        level = _cap_confidence(level, "medium")
+        reason += "; stale/drift-penalized"
+
+    return level, reason
+
+
+def _annotate_confidence(results):
+    for result in results:
+        level, reason = _classify_confidence(result)
+        result["confidence"] = level
+        result["confidence_reason"] = reason
+        result.setdefault("retrieval_score", result.get("score", 0))
+    return results
+
+
+def _best_confidence(results):
+    if not results:
+        return "low"
+    return max(
+        (r.get("confidence", "low") for r in results),
+        key=lambda level: CONFIDENCE_ORDER.get(level, 0),
+    )
+
+
 def search(db_path, query, limit=10, type_filter=None, output_json=False):
     """Search FTS5 index with compound ranking."""
     if not os.path.exists(db_path):
@@ -233,6 +315,7 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
             "source": row["source"] or "user-explicit",
             "freshness": fr_w,
             "score": round(compound, 4),
+            "retrieval_score": round(compound, 4),
             "fts_rank": round(raw_rank, 4),
             "match": strategy,
             "match_quality": round(match_quality, 3),
@@ -250,6 +333,8 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
         if vec_results:
             results = _rrf_merge(results, vec_results, limit, has_phrase=has_phrase)
 
+    results = _annotate_confidence(results)
+
     if output_json:
         print(json.dumps(results, indent=2, ensure_ascii=False))
     else:
@@ -257,10 +342,19 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
             print(f"No results for: {query}")
             return
 
+        if _best_confidence(results) == "low":
+            print(f"No confident results for: {query}")
+            print("Weak candidates suppressed. Rephrase, add --type, or use --json to inspect them.")
+            return
+
         for i, r in enumerate(results, 1):
             short_path = r["path"].replace(os.path.expanduser("~"), "~")
-            source_tag = "hybrid" if r.get("vector_score") else "fts5"
-            print(f"\n--- [{i}] score={r['score']} ({r['evidence']}/{r['source']}) [{source_tag}] ---")
+            source_tag = r.get("match") if r.get("match") in ("vector", "hybrid") else "fts5"
+            extra = ""
+            if r.get("retrieval_score") != r.get("score"):
+                extra = f" retrieval={r['retrieval_score']}"
+            print(f"\n--- [{i}] score={r['score']}{extra} confidence={r['confidence']} ({r['evidence']}/{r['source']}) [{source_tag}] ---")
+            print(f"  Confidence: {r['confidence_reason']}")
             print(f"  File: {short_path}")
             if r["name"]:
                 print(f"  Name: {r['name']}")
@@ -329,6 +423,7 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_map=N
             "source": source or "user-explicit",
             "freshness": fr_w,
             "score": round(compound, 4),
+            "retrieval_score": round(compound, 4),
             "fts_rank": 0,
             "vector_score": round(sim, 4),
             "match": "vector",
@@ -355,13 +450,25 @@ def _rrf_merge(fts_results, vec_results, limit, k=60, has_phrase=False):
         if key not in data:
             data[key] = r
         else:
-            data[key]["vector_score"] = r.get("vector_score", 0)
-            data[key]["match"] = "hybrid"
+            entry = data[key]
+            entry["vector_score"] = max(entry.get("vector_score", 0), r.get("vector_score", 0))
+            entry["match"] = "hybrid"
+            entry["match_quality"] = round(
+                max(entry.get("match_quality", 0), r.get("match_quality", 0)),
+                3,
+            )
+            entry["retrieval_score"] = round(
+                max(entry.get("retrieval_score", entry.get("score", 0)),
+                    r.get("retrieval_score", r.get("score", 0))),
+                4,
+            )
 
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     results = []
     for key, rrf_score in ranked[:limit]:
         entry = data[key]
+        entry.setdefault("retrieval_score", entry.get("score", 0))
+        entry["rrf_score"] = round(rrf_score, 4)
         entry["score"] = round(rrf_score, 4)
         results.append(entry)
     return results

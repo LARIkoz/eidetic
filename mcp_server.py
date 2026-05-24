@@ -21,7 +21,7 @@ BIN = os.path.join(MEMORY_SYSTEM, "bin")
 TOOLS = [
     {
         "name": "memory_search",
-        "description": "Search long-term memory across all projects. Returns ranked results with compound scoring (evidence × source × freshness). Use when you need past decisions, rules, context, or knowledge.",
+        "description": "Search long-term memory across all projects. Returns ranked results with compound scoring and confidence metadata. Use when you need past decisions, rules, context, or knowledge.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -303,7 +303,7 @@ def handle_request(request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "eidetic",
-                "version": "4.2.2"
+                "version": "4.2.3"
             }
         })
 

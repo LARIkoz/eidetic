@@ -67,6 +67,7 @@ jobs:
           RESULTS=$(bash bin/search.sh "test rule" --limit 3 2>&1)
           echo "$RESULTS"
           echo "$RESULTS" | grep -q "score=" || exit 1
+          echo "$RESULTS" | grep -q "confidence=high" || exit 1
 
       - name: Test search with type filter
         run: |
@@ -75,7 +76,7 @@ jobs:
 
       - name: Test search JSON output
         run: |
-          bash bin/search.sh "test" --json --limit 3 | python3 -c "import json,sys; json.load(sys.stdin)" || exit 1
+          bash bin/search.sh "test" --json --limit 3 | python3 -c "import json,sys; data=json.load(sys.stdin); assert data; assert all('confidence' in r and 'retrieval_score' in r for r in data)" || exit 1
 
       - name: Test FTS5 special characters
         run: |
