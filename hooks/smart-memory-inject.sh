@@ -5,17 +5,35 @@
 # P3: ALL feedback rules always included. P9: only relevant, not dump.
 set -euo pipefail
 
-LOCKFILE="$HOME/.claude/memory-system/.memory.pid"
-if [ -f "$LOCKFILE" ]; then
-    OLD_PID=$(cat "$LOCKFILE" 2>/dev/null)
-    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
-        echo "Memory system busy (PID $OLD_PID alive), skipping"; exit 0
-    fi
-fi
-echo $$ > "$LOCKFILE"
-trap 'rm -f "$LOCKFILE"' EXIT
-
 MEMORY_SYSTEM="$HOME/.claude/memory-system"
+
+acquire_memory_lock() {
+    local lockdir="$MEMORY_SYSTEM/.memory.lock"
+    mkdir -p "$MEMORY_SYSTEM"
+    if mkdir "$lockdir" 2>/dev/null; then
+        printf '%s\n' "$$" > "$lockdir/pid"
+        trap 'rm -rf "$MEMORY_SYSTEM/.memory.lock"' EXIT
+        return 0
+    fi
+
+    local old_pid=""
+    old_pid=$(cat "$lockdir/pid" 2>/dev/null || true)
+    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+        echo "Memory system busy (PID $old_pid alive), skipping"
+        return 1
+    fi
+    rm -rf "$lockdir"
+    if mkdir "$lockdir" 2>/dev/null; then
+        printf '%s\n' "$$" > "$lockdir/pid"
+        trap 'rm -rf "$MEMORY_SYSTEM/.memory.lock"' EXIT
+        return 0
+    fi
+    echo "Memory system busy, skipping"
+    return 1
+}
+
+acquire_memory_lock || exit 0
+
 DB="$MEMORY_SYSTEM/db/index.db"
 RULES_FILE="$HOME/.claude/rules/memory-context.md"
 SEARCH="$MEMORY_SYSTEM/bin/search.sh"

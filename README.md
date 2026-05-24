@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.2.6-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.2.7-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -149,7 +149,7 @@ Powered by [fastembed](https://github.com/qdrant/fastembed) (ONNX, 33MB model). 
 
 ### Code-Aware Search (v2.2)
 
-Tree-sitter parses `.py`, `.js`, `.ts`, `.sh` — every function and class becomes searchable.
+Tree-sitter parses `.py`, `.js`, `.ts`, `.tsx`, `.sh` when the matching grammar package is installed — every function and class becomes searchable.
 
 ```bash
 # Find a function by name or purpose
@@ -349,7 +349,7 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 
 | Capability                   | Eidetic                            | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
 | ---------------------------- | ---------------------------------- | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
-|                              | **v2.5.0**                         | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
+|                              | **v4.2.7**                         | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
 | Search                       | FTS5 + vector                      | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
 | Recall benchmark             | **100%**                           | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
 | Auto-inject on session start | **rules/ (no cap)**                | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
@@ -439,10 +439,11 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.2.4** — v2.6 agent recall contract: structured no-confident JSON/MCP, card/status schema, drift diagnostics, 21-case recall smoke
 - [x] **v4.2.5** — v2.7 recall hardening: structured MCP result, strict smoke contract, lifecycle inference fix, stable age drift identity
 - [x] **v4.2.6** — v2.7 Stage 3: old-DB lifecycle backfill, wikilink lint noise reduction, broken-link corpus cleanup
+- [x] **v4.2.7** — v2.8 review hardening: vector identity guards, atomic hook locks, MCP error contract, signal path portability
 
 ### Next
 
-- [ ] **v2.7 — Agent Memory Review Loop** — clean v2.x consreview, classify remaining recall misses, reduce lint debt
+- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.7
 - [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter.
 
 ### v5.0 (deferred)
@@ -456,6 +457,18 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v4.2.7 (2026-05-24)
+
+- Vector rows now include stable path/section/content-hash identity, and semantic search skips stale vector rows whose chunk IDs no longer match current index content
+- Incremental lifecycle backfill now still removes deleted files from old migrated indexes
+- SessionStart and Stop hooks now use an atomic lock directory instead of check-then-write PID files
+- Stop hook resolves `claude-batch` through `CLAUDE_BATCH`, `PATH`, or the maintainer fallback path instead of hardcoding one local install path only
+- MCP tool failures now return `isError: true` consistently; `export_vault` forwards `--synthesize` when requested
+- Code indexing no longer parses TypeScript with the JavaScript grammar; `.ts/.tsx` are enabled only when `tree_sitter_typescript` is installed
+- Cleanup reports now handle duplicate memory basenames across projects without dropping files
+- `bin/update.sh` now refreshes derived FTS/vector indexes after runtime updates so new vector identity metadata is populated immediately
+- CI now covers vector identity, old-DB deleted-row cleanup, MCP export/error contracts, TypeScript grammar routing, cleanup basename collisions, and FTS5 special-character command success
 
 ### v4.2.6 (2026-05-24)
 
@@ -545,7 +558,7 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - 24h throttle, auto-resolve when drift disappears, orphan pruning
 - Drift-aware ranking in both search and context assembly
 - Crash-safe full reindex via temp DB + `os.replace()`
-- PID-based lock replaces TTL-based mkdir (macOS compatible, no race)
+- Atomic lockdir replaces TTL/PID check-then-write locking (macOS compatible, no race)
 - 13 bugfixes from consilium (5 voices) + consreview (6 voices)
 - Constants deduplication (`constants.py`), compound.py project matching fix
 - Search recall improved to 18/20 (vector boost + per-path dedup + tiered FTS)

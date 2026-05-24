@@ -137,9 +137,10 @@ echo ""
 echo "9. Optional daily vault export (cron)..."
 if [ "${EIDETIC_SETUP_CRON:-0}" = "1" ]; then
     VAULT_DIR="${VAULT_DIR:-$HOME/Documents/eidetic-vault}"
+    CRON_EXPORT_CMD=$(printf 'bash %q %q --delta --no-polish --no-synthesize --no-open' "$MEMORY_SYSTEM/bin/export-vault.sh" "$VAULT_DIR")
     (
         crontab -l 2>/dev/null | grep -Ev "memory-system/bin/export-vault\\.sh|eidetic-vault-cron\\.log" || true
-        echo "0 3 * * * bash $MEMORY_SYSTEM/bin/export-vault.sh $VAULT_DIR --delta --no-polish --no-synthesize --no-open >> /tmp/eidetic-vault-cron.log 2>&1"
+        echo "0 3 * * * $CRON_EXPORT_CMD >> /tmp/eidetic-vault-cron.log 2>&1"
     ) | crontab -
     echo "   Cron job added: daily at 3am -> $VAULT_DIR"
 else

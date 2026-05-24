@@ -58,6 +58,19 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Reduce wikilink lint/drift false positives by ignoring fenced Markdown examples and placeholder links such as `[[filename]]`.
 - [x] Clean maintainer corpus broken wikilinks from 24 to 0 by fixing memory-to-memory targets and converting non-memory file references to Markdown links.
 
+### Closed In v4.2.7
+
+- [x] Run clean v2.x/v2.6 consreview against v4.2.6. Pipeline was DEGRADED (`audit=ISSUES`, `mechanical=FAIL`, `redteam=WEAK`), but raw voices exposed a concrete v2.8 hardening pack.
+- [x] Guard vector fallback against stale `vectors.db` rows after full index rebuild by storing and checking path, section, and content hash.
+- [x] Keep deleted-file cleanup active during old-DB lifecycle backfill.
+- [x] Replace hook check-then-write PID locks with atomic lock directories.
+- [x] Normalize MCP tool errors to `isError: true` and forward MCP `export_vault` synthesis requests.
+- [x] Make Stop-hook signal extraction portable by resolving `claude-batch` instead of hardcoding one maintainer path.
+- [x] Stop parsing TypeScript with the JavaScript grammar; use optional `tree_sitter_typescript` when available.
+- [x] Fix cleanup basename collisions across projects.
+- [x] Refresh derived FTS/vector indexes during update so vector identity migration does not temporarily suppress semantic recall.
+- [x] Add regression tests for the above plus FTS5 special-character command success.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
@@ -70,7 +83,7 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 ### Suggested Next Checks
 
-- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.6 agent recall behavior.
+- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.7 agent recall behavior.
 - [ ] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
 - [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.
