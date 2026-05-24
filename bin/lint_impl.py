@@ -72,21 +72,32 @@ def collect_files():
 def is_shell_test(link):
     return bool(
         "$" in link
+        or "{" in link
+        or "\\" in link
+        or "~/" in link
         or re.search(r'(^|\s)(==|!=|-eq|-ne|-gt|-lt|-ge|-le)(\s|$)', link)
     )
+
+
+def strip_fenced_code(text):
+    return re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+
+
+def is_placeholder_link(target):
+    return target in {"...", "filename", "folder/filename"} or len(target) < 2
 
 
 def extract_wikilinks(filepath):
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-            text = f.read()
+            text = strip_fenced_code(f.read())
     except Exception:
         return []
     raw = re.findall(r'\[\[([^\]]+)\]\]', text)
     links = []
     for link in raw:
         target = link.split("|")[0].split("#")[0].strip()
-        if target and not is_shell_test(target):
+        if target and not is_shell_test(target) and not is_placeholder_link(target):
             links.append(target)
     return links
 

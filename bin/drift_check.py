@@ -157,6 +157,7 @@ def build_known_names(index_conn):
 def extract_wikilinks_from_content(content):
     if not content:
         return []
+    content = re.sub(r"```.*?```", "", content, flags=re.DOTALL)
     raw = re.findall(r'\[\[([^\]]+)\]\]', content)
     links = []
     seen = set()
@@ -170,7 +171,7 @@ def extract_wikilinks_from_content(content):
             continue
         if re.search(r'(^|\s)(==|!=|-eq|-ne|-gt|-lt|-ge|-le)(\s|$)', target):
             continue
-        if target == "..." or len(target) < 2:
+        if target in {"...", "filename", "folder/filename"} or len(target) < 2:
             continue
         seen.add(target)
         links.append(target)
