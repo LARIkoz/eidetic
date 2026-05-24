@@ -1,8 +1,8 @@
 # Eidetic TODO
 
-## Next Session — v4.3 Vault IA
+## Next Session — v2.6 Agent Memory Quality
 
-Context: v4.1/v4.2 moved Eidetic from "searchable AI memory" into a human-readable Obsidian export path. The current flat vault folders (`projects`, `references`, `rules`, `topics`) are not yet a reliable information architecture. Topic synthesis is now opt-in until v4.3 replaces it with reviewed topic candidates.
+Context: pause Obsidian/human-facing vault work until the agent-facing memory layer is excellent. A clean vault is secondary; the core product is an agent that recalls the right rules, decisions, bugs, and project state, and refuses low-confidence retrieval instead of surfacing random near-matches.
 
 ### Closed In v4.2.1
 
@@ -20,18 +20,26 @@ Context: v4.1/v4.2 moved Eidetic from "searchable AI memory" into a human-readab
 - [x] Keep `--no-synthesize` accepted as a compatibility no-op.
 - [x] Mark topic synthesis as experimental in docs until v4.3 Vault IA lands.
 
-### v4.3 Vault IA Goals
+### v2.6 Agent Memory Quality Goals
 
-- [ ] Add `card_kind`: `decision`, `bug`, `finding`, `handoff`, `todo`, `status`, `reference`, `research`, `profile`, `rule`.
-- [ ] Add project/area identity from source path and metadata.
+- [ ] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
+- [ ] Replace overloaded `type: project` semantics with `card_kind`: `decision`, `bug`, `finding`, `handoff`, `todo`, `status`, `reference`, `research`, `profile`, `rule`.
+- [ ] Add status-aware ranking: active/current notes outrank resolved/superseded/archived notes.
+- [ ] Add confidence-aware search UX: when top results are weak/vector-only, report "no confident result" instead of returning random-looking matches.
+- [ ] Add agent recall regression set for real queries: routing rules, large-prompt bug, drift findings, current Eidetic version, Gap Pipeline concept, Obsidian topic decision.
+- [ ] Add stale-context detection: `health.sh` should report when `memory-context.md` was assembled from an older index or older git/runtime state.
+- [ ] Tighten drift handling for agent recall: broken/stale findings should be visible as diagnostics, not silently buried.
+
+### Suggested Next Checks
+
+- [ ] Rebuild context and verify `memory-context.md` counts match the current index.
+- [ ] Run 20-query recall benchmark and classify misses: stale, noisy, low-confidence vector fallback, wrong type, missing memory.
+- [ ] Design the minimal schema migration that improves agent recall without requiring human-vault IA.
+- [ ] Keep Obsidian export in maintenance mode only: no new human-facing IA until agent recall quality passes.
+
+### Deferred: v4.3 Vault IA
+
 - [ ] Replace flat `projects/` with deterministic `areas/<area>/_MOC.md` pages.
 - [ ] Split `references/` into stable library, research archive, tools/provider KB, and data inventory.
 - [ ] Rework topics as `topic_candidates`: generated, scored, reviewed, then promoted.
 - [ ] Add `_review/topic_quality_report.md` with rejected/mixed/coherent candidate groups.
-
-### Suggested Next Checks
-
-- [ ] Export normal vault and verify it does not create `topics/` unless `--synthesize` is passed.
-- [ ] Validate the generated Obsidian vault visually: `HOME.md`, folder MOCs, graph grouping, and backlinks.
-- [ ] Audit top duplicate-looking `projects/` cards and map them into candidate `card_kind` values.
-- [ ] Audit `references/` and define the first deterministic folder split.
