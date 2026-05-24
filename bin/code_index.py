@@ -90,7 +90,7 @@ def find_code_files(project_dir, extensions=None):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
         for fname in fnames:
             ext = os.path.splitext(fname)[1]
-        if ext in extensions:
+            if ext in extensions:
                 path = os.path.join(root, fname)
                 if os.path.getsize(path) < MAX_FILE_SIZE:
                     files.append(path)

@@ -401,6 +401,23 @@ jobs:
               assert ".tsx" not in code_index.LANGUAGE_MAP
           PY
 
+      - name: Test code index discovers every supported file
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          printf '%s\n' 'def alpha():' '    return 1' > "$tmp/a.py"
+          printf '%s\n' 'def beta():' '    return 2' > "$tmp/b.py"
+          python3 - << 'PY' "$tmp"
+          import os
+          import sys
+          sys.path.insert(0, "bin")
+          import code_index
+
+          root = sys.argv[1]
+          files = code_index.find_code_files(root, {".py"})
+          assert sorted(os.path.basename(path) for path in files) == ["a.py", "b.py"], files
+          PY
+
       - name: Test cleanup handles basename collisions
         run: |
           tmp=$(mktemp -d)
