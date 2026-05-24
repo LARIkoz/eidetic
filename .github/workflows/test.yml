@@ -97,10 +97,11 @@ jobs:
       - name: Test Obsidian vault export without LLM
         run: |
           VAULT=$(mktemp -d)
-          python3 bin/export_vault.py "$VAULT" --no-polish --no-synthesize
+          python3 bin/export_vault.py "$VAULT" --no-polish
           test -f "$VAULT/HOME.md"
           test -f "$VAULT/rules/_MOC.md"
           test -f "$VAULT/projects/_MOC.md"
+          test ! -d "$VAULT/topics"
           COUNT=$(find "$VAULT" -name '*.md' | wc -l | tr -d ' ')
           echo "Exported markdown files: $COUNT"
           [ "$COUNT" -ge 4 ] || exit 1

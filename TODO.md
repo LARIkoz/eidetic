@@ -1,8 +1,8 @@
 # Eidetic TODO
 
-## Next Session — v4.2 Vault Export Stabilization
+## Next Session — v4.3 Vault IA
 
-Context: v4.1/v4.2 moved Eidetic from "searchable AI memory" into a human-readable Obsidian export path: LLM polish, plug-and-play vault open, LLM clustering, and synthesized topic pages. The next work should protect that product surface, not reopen v2.5 drift detection unless a regression appears there.
+Context: v4.1/v4.2 moved Eidetic from "searchable AI memory" into a human-readable Obsidian export path. The current flat vault folders (`projects`, `references`, `rules`, `topics`) are not yet a reliable information architecture. Topic synthesis is now opt-in until v4.3 replaces it with reviewed topic candidates.
 
 ### Closed In v4.2.1
 
@@ -13,16 +13,25 @@ Context: v4.1/v4.2 moved Eidetic from "searchable AI memory" into a human-readab
 - [x] Keep MCP export safe by default: no LLM polish/synthesis unless explicitly requested.
 - [x] Add CI smoke coverage for no-LLM Obsidian vault export.
 
-### Current Residual Risks
+### Closed In v4.2.2
 
-- [ ] LLM polish/synthesis full-path smoke was not run in CI because it requires `claude-batch` and API budget.
-- [ ] Filename quality still needs a focused pass for punctuation, truncation, and long title readability.
-- [ ] Topic-source wikilinks should be checked after a real synthesis run, not only after the fast no-LLM export.
-- [ ] Memory lint still reports corpus debt: broken links, orphans, and large files. Treat this as input-quality debt, not a core runtime failure.
+- [x] Disable topic synthesis by default for CLI exports.
+- [x] Keep `--synthesize` as an explicit experimental flag.
+- [x] Keep `--no-synthesize` accepted as a compatibility no-op.
+- [x] Mark topic synthesis as experimental in docs until v4.3 Vault IA lands.
+
+### v4.3 Vault IA Goals
+
+- [ ] Add `card_kind`: `decision`, `bug`, `finding`, `handoff`, `todo`, `status`, `reference`, `research`, `profile`, `rule`.
+- [ ] Add project/area identity from source path and metadata.
+- [ ] Replace flat `projects/` with deterministic `areas/<area>/_MOC.md` pages.
+- [ ] Split `references/` into stable library, research archive, tools/provider KB, and data inventory.
+- [ ] Rework topics as `topic_candidates`: generated, scored, reviewed, then promoted.
+- [ ] Add `_review/topic_quality_report.md` with rejected/mixed/coherent candidate groups.
 
 ### Suggested Next Checks
 
-- [ ] Run one bounded LLM export smoke: `export-vault --polish-count 3` plus synthesis on a small project.
-- [ ] Validate the generated Obsidian vault visually: `HOME.md`, folder MOCs, topic pages, graph grouping, and backlinks.
-- [ ] Decide whether CLI export should keep LLM enrichment on by default or switch to fast/no-API default with explicit `--polish`.
-- [ ] Update GitHub repository description/topics if positioning should include Obsidian, AI wiki, and vault export.
+- [ ] Export normal vault and verify it does not create `topics/` unless `--synthesize` is passed.
+- [ ] Validate the generated Obsidian vault visually: `HOME.md`, folder MOCs, graph grouping, and backlinks.
+- [ ] Audit top duplicate-looking `projects/` cards and map them into candidate `card_kind` values.
+- [ ] Audit `references/` and define the first deterministic folder split.

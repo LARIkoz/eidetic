@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Eidetic v4.2.1 — Obsidian Vault Exporter.
+"""Eidetic v4.2.2 — Obsidian Vault Exporter.
 
 Reads memory files from ~/.claude/projects/*/memory/, filters by quality gate,
 applies template formatting, writes an Obsidian-compatible vault with MOC and
@@ -1138,7 +1138,7 @@ def resolve_project_filter(raw, available):
 def export(target, project_filter=None, delta=False,
            skip_gate=False, allow_existing=False,
            polish=True, polish_count=0, polish_model="auto",
-           synthesize=True):
+           synthesize=False):
     target = os.path.abspath(os.path.expanduser(target))
     os.makedirs(target, exist_ok=True)
 
@@ -1458,8 +1458,10 @@ def main():
                    help="Number of notes to polish (0=all, default: all)")
     p.add_argument("--polish-model", choices=["auto", "sonnet", "haiku"], default="auto",
                    help="Model for polish: auto (smart routing), sonnet, or haiku")
+    p.add_argument("--synthesize", action="store_true",
+                   help="Experimental: generate LLM topic pages (off by default)")
     p.add_argument("--no-synthesize", action="store_true",
-                   help="Skip topic synthesis (faster, no API calls)")
+                   help="Compatibility no-op; topic synthesis is off by default")
     args = p.parse_args()
 
     # --all skips the per-note quality gate (export everything).
@@ -1476,7 +1478,7 @@ def main():
                skip_gate=skip_gate, allow_existing=allow_existing,
                polish=not args.no_polish, polish_count=polish_count,
                polish_model=args.polish_model,
-               synthesize=not args.no_synthesize)
+               synthesize=args.synthesize and not args.no_synthesize)
     except KeyboardInterrupt:
         print("Aborted.", file=sys.stderr)
         sys.exit(1)
