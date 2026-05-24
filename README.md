@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.2.1-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.2.2-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -178,13 +178,16 @@ Your AI worked 50 sessions. It learned 500 things. Now see them.
 
 ```bash
 eidetic export-vault ~/my-vault/
-# Export + LLM polish/topic synthesis + open in Obsidian
+# Export + LLM polish + open in Obsidian
 
-eidetic export-vault ~/my-vault/ --no-polish --no-synthesize
+eidetic export-vault ~/my-vault/ --synthesize
+# Experimental: also generate topic pages
+
+eidetic export-vault ~/my-vault/ --no-polish
 # Fast export, no API calls
 ```
 
-Opens in Obsidian with pre-configured graph colors, backlinks, Maps of Content, and synthesized topic pages when `claude-batch` is available.
+Opens in Obsidian with pre-configured graph colors, backlinks, and Maps of Content. Topic synthesis is experimental and off by default until the v4.3 Vault IA pass replaces the current topic model.
 
 **What makes this different from "open memory folder in Obsidian":**
 
@@ -192,7 +195,7 @@ Opens in Obsidian with pre-configured graph colors, backlinks, Maps of Content, 
 | ------------------------------- | -------------------------------------- |
 | 500+ files including debug logs | ~120 curated, validated notes          |
 | Agent jargon, terse one-liners  | Human-readable cards + optional LLM polish |
-| Flat list, no structure         | Folders by type + auto-MOC + synthesized topics |
+| Flat list, no structure         | Folders by type + auto-MOC |
 | Dangling wikilinks everywhere   | Links verified against export set      |
 | No graph sense                  | Color-coded by type, hub nodes visible |
 
@@ -204,7 +207,7 @@ eidetic export-vault ~/my-vault/ --project gap-pipeline
 eidetic export-vault ~/my-vault/ --delta
 
 # Fast scheduled/no-API update
-eidetic export-vault ~/my-vault/ --delta --no-polish --no-synthesize --no-open
+eidetic export-vault ~/my-vault/ --delta --no-polish --no-open
 ```
 
 The quality gate filters out operational files (handoff states, synth failures), files without metadata, and oversized monoliths. What passes: user-written rules, validated decisions, reference cards, project findings.
@@ -280,7 +283,7 @@ Works with Cursor, Windsurf, Cline, and any MCP-compatible agent:
 
 6 tools: `memory_search`, `memory_serendipity`, `memory_health`, `memory_reindex`, `memory_lint`, `export_vault`.
 
-MCP `export_vault` defaults to no LLM calls to avoid surprise API usage and timeouts. Pass `polish=true` and/or `synthesize=true` when you want the v4.1/v4.2 enrichment path.
+MCP `export_vault` defaults to no LLM calls to avoid surprise API usage and timeouts. Pass `polish=true` when you want the v4.1 enrichment path. `synthesize=true` remains available as an experimental topic-candidate path, but it is not recommended for normal vault exports until v4.3 Vault IA lands.
 
 ---
 
@@ -397,7 +400,7 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 | [claude-soul](https://github.com/DomDemetz/claude-soul)                                 | Evidence tiers, 0.5x self-ref discount, signals   | Integrated into hooks, not a separate SDK             |
 | [memsearch](https://github.com/zilliztech/memsearch)                                    | FTS5, context:fork isolation                      | + vector hybrid, no Milvus, no file-lock bugs         |
 
-**Obsidian-compatible today:** Memory files are markdown + `[[wikilinks]]` + YAML frontmatter. You can open `~/.claude/projects/` as an Obsidian vault, or use `eidetic export-vault` (v4.2) for a quality-filtered vault with templates, auto-MOCs, verified wikilinks, optional LLM polish, and synthesized topic pages.
+**Obsidian-compatible today:** Memory files are markdown + `[[wikilinks]]` + YAML frontmatter. You can open `~/.claude/projects/` as an Obsidian vault, or use `eidetic export-vault` (v4.2) for a quality-filtered vault with templates, auto-MOCs, verified wikilinks, and optional LLM polish. Experimental topic synthesis is opt-in with `--synthesize`.
 
 ---
 
@@ -417,11 +420,12 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.1** — LLM polish, smart Sonnet/Haiku routing, MCP `export_vault`, plug-and-play Obsidian open
 - [x] **v4.2** — LLM topic clustering and wiki-style topic synthesis
 - [x] **v4.2.1** — Runtime hardening: non-interactive install, MCP export flags/timeouts, docs/version sync, CI export smoke
+- [x] **v4.2.2** — Disable topic synthesis by default; keep it explicit/experimental pending v4.3 IA
 
 ### Next
 
 - [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter.
-- [ ] **v4.3** — Vault quality pass: filename edge cases, topic-source link validation, scheduled export UX
+- [ ] **v4.3 — Vault IA** — replace flat projects/references/topics with areas, card kinds, deterministic MOCs, and topic-candidate review gates
 
 ### v5.0 (deferred)
 
@@ -433,6 +437,13 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v4.2.2 (2026-05-24)
+
+- Topic synthesis is now opt-in via `--synthesize`; normal CLI exports no longer create `topics/`
+- Existing `--no-synthesize` remains accepted as a compatibility no-op
+- Documentation marks current topic synthesis as experimental pending v4.3 Vault IA
+- MCP `synthesize=true` remains available for explicit experiments only
 
 ### v4.2.1 (2026-05-24)
 

@@ -113,7 +113,7 @@ TOOLS = [
                 },
                 "synthesize": {
                     "type": "boolean",
-                    "description": "Run LLM topic synthesis. Defaults to false for MCP to avoid surprise API calls/timeouts.",
+                    "description": "Experimental: run LLM topic synthesis. Defaults to false because v4.3 IA will replace the current topic model.",
                     "default": False
                 },
                 "polish_count": {
@@ -303,7 +303,7 @@ def handle_request(request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "eidetic",
-                "version": "4.2.1"
+                "version": "4.2.2"
             }
         })
 
