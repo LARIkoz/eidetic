@@ -5,7 +5,7 @@
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
-**A Second Brain for your AI coding agent.**
+**Second brain for AI agent.**
 
 Inspired by [Tiago Forte's Building a Second Brain](https://www.buildingasecondbrain.com/), [Luhmann's Zettelkasten](https://en.wikipedia.org/wiki/Zettelkasten) (90,000 linked notes over 37 years), and [Karpathy's AI wiki concept](https://gist.github.com/karpathy/1dd0294ef9567971c1e4348a90d69285). Eidetic applies these ideas to AI agents: atomic knowledge cards, automatic linking, compounding over time, and quality-weighted recall.
 
