@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.2.8-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.2.9-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -305,7 +305,7 @@ MCP `export_vault` defaults to no LLM calls to avoid surprise API usage and time
 
 - **Atomic writes** — `tempfile` + `os.replace()`. Crash mid-write = no corruption
 - **Backup/restore** — full reindex creates backup, restores on failure
-- **Lock serialization** — `mkdir`-based POSIX-atomic lock with stale cleanup
+- **Lock serialization** — shared `fcntl` lock file via `bin/lock_runner.py`
 - **Graceful degradation** — missing index? Falls back to `head -200 MEMORY.md`
 - **Anti-injection** — signal extraction prompt has safety rules against transcript content becoming memory
 - **FTS5 sanitization** — special characters stripped, queries quoted
@@ -349,7 +349,7 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 
 | Capability                   | Eidetic                            | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
 | ---------------------------- | ---------------------------------- | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
-|                              | **v4.2.8**                         | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
+|                              | **v4.2.9**                         | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
 | Search                       | FTS5 + vector                      | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
 | Recall benchmark             | **100%**                           | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
 | Auto-inject on session start | **rules/ (no cap)**                | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
@@ -441,10 +441,11 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.2.6** — v2.7 Stage 3: old-DB lifecycle backfill, wikilink lint noise reduction, broken-link corpus cleanup
 - [x] **v4.2.7** — v2.8 review hardening: vector identity guards, atomic hook locks, MCP error contract, signal path portability
 - [x] **v4.2.8** — code-index file discovery fix; update now refreshes FTS/code/vector/context for the installed runtime
+- [x] **v4.2.9** — degraded v4.2.8 review hardening: empty-file cleanup, code-index atomicity, fcntl hook lock, timezone drift, vector validation ordering
 
 ### Next
 
-- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.8
+- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.9
 - [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter.
 
 ### v5.0 (deferred)
@@ -458,6 +459,17 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v4.2.9 (2026-05-25)
+
+- Incremental indexing now uses nanosecond mtimes and deletes stale chunks when a memory file is emptied to frontmatter-only
+- Code indexing now builds rows before replacing old code-index chunks, preserving previous code recall on parse failures
+- Vector fallback validates path/section/content identity before per-path deduplication
+- Hooks now share an `fcntl` lock file through `bin/lock_runner.py`, replacing stale-lock cleanup races
+- Drift age checks now handle timezone-aware `last_verified` values
+- Cleanup archive destinations are collision-safe for duplicate basenames processed in the same second
+- `embed.py --search` now handles vector identity tuples, and `export-vault.sh` preserves option values before target inference
+- `bin/update.sh` now reports derived refresh failures as degraded instead of printing a false-green refresh message
 
 ### v4.2.8 (2026-05-24)
 
@@ -565,7 +577,7 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - 24h throttle, auto-resolve when drift disappears, orphan pruning
 - Drift-aware ranking in both search and context assembly
 - Crash-safe full reindex via temp DB + `os.replace()`
-- Atomic lockdir replaces TTL/PID check-then-write locking (macOS compatible, no race)
+- Initial atomic lockdir replaced TTL/PID check-then-write locking; v4.2.9 supersedes this with an `fcntl` lock file
 - 13 bugfixes from consilium (5 voices) + consreview (6 voices)
 - Constants deduplication (`constants.py`), compound.py project matching fix
 - Search recall improved to 18/20 (vector boost + per-path dedup + tiered FTS)

@@ -8,6 +8,7 @@ moves to archive/ and generates a review report for human confirmation.
 """
 
 import glob
+import hashlib
 import os
 import re
 import shutil
@@ -156,9 +157,7 @@ def do_archive(candidates, max_items=10):
     archived = 0
 
     for score, name, path, reasons, age, size in candidates[:max_items]:
-        dest = os.path.join(ARCHIVE_DIR, os.path.basename(path))
-        if os.path.exists(dest):
-            dest = os.path.join(ARCHIVE_DIR, f"{name}_{int(time.time())}.md")
+        dest = unique_archive_dest(path, name)
         try:
             shutil.move(path, dest)
             archived += 1
@@ -168,6 +167,24 @@ def do_archive(candidates, max_items=10):
 
     print(f"\nArchived {archived}/{min(max_items, len(candidates))} files")
     print(f"Run index.sh --full to update index")
+
+
+def unique_archive_dest(path, name):
+    dest = os.path.join(ARCHIVE_DIR, os.path.basename(path))
+    if not os.path.exists(dest):
+        return dest
+
+    stem, ext = os.path.splitext(name)
+    ext = ext or ".md"
+    digest = hashlib.sha1(path.encode("utf-8", errors="replace")).hexdigest()[:8]
+    for counter in range(1000):
+        suffix = f"{time.time_ns()}_{digest}"
+        if counter:
+            suffix = f"{suffix}_{counter}"
+        candidate = os.path.join(ARCHIVE_DIR, f"{stem}_{suffix}{ext}")
+        if not os.path.exists(candidate):
+            return candidate
+    raise RuntimeError(f"Could not allocate archive destination for {path}")
 
 
 def main():
