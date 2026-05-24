@@ -85,6 +85,113 @@ jobs:
         run: |
           bash bin/search.sh "zzzznotarealmemoryquery" --json-object --limit 3 | python3 -c "import json,sys; data=json.load(sys.stdin); assert data['no_confident_results'] is True; assert 'results' in data; assert data['best_confidence'] == 'low'" || exit 1
 
+      - name: Test lifecycle inference ignores storage paths
+        run: |
+          python3 - << 'PY'
+          import sys
+          sys.path.insert(0, "bin")
+          import index_impl
+
+          archive_path = "/tmp/archive/project/finding-active-rule.md"
+          assert index_impl.infer_status({"name": "active rule"}, archive_path) == "current"
+          assert index_impl.infer_card_kind({"type": "project", "name": "debug tips"}, "/tmp/memory/debug-tips.md") != "bug"
+          assert index_impl.infer_status({"name": "old rule", "status": "archived"}, "/tmp/active/old-rule.md") == "archived"
+          PY
+
+      - name: Test recall smoke contract assertions
+        run: |
+          python3 - << 'PY'
+          import sys
+          sys.path.insert(0, "bin")
+          import recall_smoke
+
+          positive = {"expect_any": ["needle"], "min_confidence": "medium"}
+          bad_positive = {
+              "no_confident_results": True,
+              "results": [{"path": "needle.md", "confidence": "high"}],
+          }
+          ok, detail = recall_smoke.evaluate(positive, bad_positive)
+          assert not ok and "no_confident_results=true" in detail
+
+          negative = {"expect_no_confident": True}
+          bad_negative = {"no_confident_results": False, "results": []}
+          ok, detail = recall_smoke.evaluate(negative, bad_negative)
+          assert not ok and "expected no_confident_results=true" in detail
+          PY
+
+      - name: Test stable age drift identity migration
+        run: |
+          python3 - << 'PY'
+          import os
+          import sqlite3
+          import sys
+          import tempfile
+          sys.path.insert(0, "bin")
+          import drift_check
+
+          fd, path = tempfile.mkstemp(suffix=".db")
+          os.close(fd)
+          try:
+              conn = drift_check.init_drift_db(path)
+              conn.execute(
+                  "INSERT INTO drift_findings (path, drift_type, detail, memory_type, detected_at, first_seen) VALUES (?, 'age_stale', ?, 'project', '2026-05-23T00:00:00Z', 4)",
+                  ("/tmp/project.md", "age=88d threshold=30d"),
+              )
+              conn.commit()
+              conn.close()
+
+              conn = drift_check.init_drift_db(path)
+              rows = conn.execute("SELECT detail, first_seen FROM drift_findings WHERE drift_type = 'age_stale'").fetchall()
+              assert rows == [("threshold=30d", 4)], rows
+              conn.close()
+          finally:
+              os.remove(path)
+          PY
+
+      - name: Test feedback rules are never hidden
+        run: |
+          python3 - << 'PY'
+          import sqlite3
+          import sys
+          sys.path.insert(0, "bin")
+          import assemble_context
+
+          conn = sqlite3.connect(":memory:")
+          conn.execute("""
+              CREATE TABLE memory_chunks (
+                  id INTEGER PRIMARY KEY,
+                  path TEXT,
+                  name TEXT,
+                  description TEXT,
+                  content TEXT,
+                  evidence TEXT,
+                  source TEXT,
+                  last_verified TEXT,
+                  status TEXT,
+                  superseded_by TEXT,
+                  type TEXT
+              )
+          """)
+          for i in range(20):
+              conn.execute(
+                  "INSERT INTO memory_chunks (path, name, description, content, evidence, source, status, type) VALUES (?, ?, ?, ?, 'observed', 'user-explicit', 'current', 'feedback')",
+                  (f"/tmp/rule-{i}.md", f"feedback-rule-{i}", "Long feedback description " * 5, "body"),
+              )
+          text, _, total = assemble_context.fetch_feedback(conn, 120)
+          assert total == 20
+          assert "...and" not in text
+          for i in range(20):
+              assert f"feedback-rule-{i}" in text
+          PY
+
+      - name: Test MCP structured memory_search
+        run: |
+          mkdir -p db
+          python3 bin/index_impl.py --full "$PWD/db/index.db"
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory_search","arguments":{"query":"test rule","limit":2}}}' \
+            | EIDETIC_MEMORY_SYSTEM="$PWD" python3 mcp_server.py \
+            | python3 -c "import json,sys; resp=json.load(sys.stdin); result=resp['result']; assert 'structuredContent' in result; data=result['structuredContent']; assert data['no_confident_results'] is False; assert data['results']; json.loads(result['content'][0]['text'])"
+
       - name: Test FTS5 special characters
         run: |
           bash bin/search.sh "C++" --limit 1 2>&1 || true

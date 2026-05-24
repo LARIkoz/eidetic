@@ -67,7 +67,11 @@ def ensure_agent_columns(conn):
     }
     for column, statement in migrations.items():
         if column not in existing:
-            conn.execute(statement)
+            try:
+                conn.execute(statement)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
     conn.commit()
 
 

@@ -1,6 +1,6 @@
 # Eidetic TODO
 
-## Next Session — v2.6 Agent Memory Quality
+## Current Track — v2.7 Agent Memory Review Loop
 
 Context: pause Obsidian/human-facing vault work until the agent-facing memory layer is excellent. A clean vault is secondary; the core product is an agent that recalls the right rules, decisions, bugs, and project state, and refuses low-confidence retrieval instead of surfacing random near-matches.
 
@@ -41,6 +41,16 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Expand operator recall smoke from 4 to 21 cases on the live corpus.
 - [x] Keep Obsidian/Vault IA untouched; v4.x projection remains maintenance/deferred.
 
+### Closed In v4.2.5
+
+- [x] Run v2.7 Stage 2 consreview. Pipeline was DEGRADED (`audit=ISSUES`, `mechanical=FAIL`, `redteam=WEAK`), so `SYNTHESIS.md` is not final; corrected findings are based on raw voices plus validator artifacts.
+- [x] Make MCP `memory_search` return parsed `structuredContent` plus JSON text fallback, with `isError` on subprocess/search failures.
+- [x] Remove storage paths from lifecycle/card-kind inference and use word-level matching to avoid archive/debug substring false positives.
+- [x] Make `recall_smoke.py` fail hard on broken `--json-object` contract and positive cases that return `no_confident_results=true`.
+- [x] Stabilize `age_stale` drift identity and migrate old `age=N threshold=M` rows to threshold-based detail.
+- [x] Keep feedback rules visible name-by-name even when the context budget is exceeded; no `...and N more feedback rules` hiding.
+- [x] Add CI checks for MCP structured search, recall-smoke contract assertions, lifecycle path false positives, age drift migration, and feedback visibility.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
@@ -53,9 +63,10 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 ### Suggested Next Checks
 
-- [ ] Re-run clean v2.x consreview against v4.2.4 agent recall behavior.
+- [ ] Re-run clean v2.x consreview against v4.2.5 agent recall behavior.
 - [ ] Triage residual lint debt into real fixes vs accepted standalone memories.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.
+- [ ] Verify schema migration/backfill with an old-DB reproducer before changing update behavior.
 - [ ] Keep Obsidian export in maintenance mode only: no new human-facing IA until agent recall quality stays stable after review.
 
 ### Deferred: v4.3 Vault IA

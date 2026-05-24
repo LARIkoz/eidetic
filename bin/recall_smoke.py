@@ -115,7 +115,7 @@ CASES = [
     },
     {
         "name": "drift_check_code",
-        "query": "drift_check first_seen auto resolve",
+        "query": "drift_check auto_resolve",
         "type": "code",
         "expect_any": ["drift_check.py", "auto_resolve"],
         "min_confidence": "medium",
@@ -133,6 +133,12 @@ CASES = [
         "type": "code",
         "expect_any": ["ensure_agent_columns", "card_kind"],
         "min_confidence": "high",
+    },
+    {
+        "name": "code_no_confident_result",
+        "query": "nonexistent_function_zzzz",
+        "type": "code",
+        "expect_no_confident": True,
     },
     {
         "name": "x_web_public_indexed_research",
@@ -165,12 +171,17 @@ def run_search(script_dir, db_path, case):
     if case.get("type"):
         cmd.extend(["--type", case["type"]])
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"search timed out after {exc.timeout}s") from exc
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout).strip())
     payload = json.loads(result.stdout)
-    if isinstance(payload, list):
-        return {"results": payload, "no_confident_results": False}
+    if not isinstance(payload, dict):
+        raise RuntimeError("--json-object returned non-object JSON")
+    if "results" not in payload or "no_confident_results" not in payload:
+        raise RuntimeError("--json-object missing required contract fields")
     return payload
 
 
@@ -187,15 +198,19 @@ def result_text(result):
 def evaluate(case, payload):
     results = payload.get("results", [])
     if case.get("expect_no_confident"):
-        if not payload.get("no_confident_results"):
-            confident = [
-                r for r in results
-                if CONFIDENCE_ORDER.get(r.get("confidence", "low"), 0) >= CONFIDENCE_ORDER["medium"]
-            ]
-            if confident:
-                top = confident[0]
-                return False, f"unexpected confident result: {top.get('path')} ({top.get('confidence')})"
+        if payload.get("no_confident_results") is not True:
+            return False, "expected no_confident_results=true"
+        confident = [
+            r for r in results
+            if CONFIDENCE_ORDER.get(r.get("confidence", "low"), 0) >= CONFIDENCE_ORDER["medium"]
+        ]
+        if confident:
+            top = confident[0]
+            return False, f"unexpected confident result: {top.get('path')} ({top.get('confidence')})"
         return True, "no confident result"
+
+    if payload.get("no_confident_results") is not False:
+        return False, "positive case returned no_confident_results=true"
 
     expected = [s.lower() for s in case["expect_any"]]
     min_confidence = case.get("min_confidence", "medium")

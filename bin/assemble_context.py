@@ -107,7 +107,11 @@ def ensure_agent_columns(conn):
     }
     for column, statement in migrations.items():
         if column not in existing:
-            conn.execute(statement)
+            try:
+                conn.execute(statement)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
     conn.commit()
 
 
@@ -208,10 +212,7 @@ def _format_cluster(cluster_def, member_names):
     """Format a cluster as a compact block with summary + member list."""
     lines = [f"- **[{cluster_def['label']}]** ({len(member_names)} rules): "
              f"{cluster_def['summary']}\n"]
-    names_line = "  _Rules: " + ", ".join(sorted(member_names)[:8])
-    if len(member_names) > 8:
-        names_line += f", +{len(member_names) - 8} more"
-    names_line += "_\n"
+    names_line = "  _Rules: " + ", ".join(sorted(member_names)) + "_\n"
     lines.append(names_line)
     return "".join(lines)
 
@@ -282,9 +283,10 @@ def fetch_feedback(conn, budget_chars):
             text = f"- {name}\n"
 
         if used + len(text) > budget_chars:
-            remaining = n - i
-            result.append(f"_...and {remaining} more feedback rules "
-                          f"(use /memory-recall to search)_\n")
+            result.append("<!-- feedback budget exceeded; remaining rules kept name-only by invariant -->\n")
+            for _, rest_name, _ in individual[i:]:
+                result.append(f"- {rest_name}\n")
+                used += len(rest_name) + 3
             break
         result.append(text)
         used += len(text)

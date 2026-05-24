@@ -19,7 +19,7 @@ Run the search command with a natural language query:
 
 - `--limit N` — number of results (default 10)
 - `--type feedback|project|user|reference|code` — filter by memory type
-- `--json` — JSON output for programmatic use
+- `--json` — legacy JSON list output for compatibility
 - `--json-object` — structured agent output with `no_confident_results`
 
 ### Examples
