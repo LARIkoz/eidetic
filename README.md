@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.2.3-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.2.4-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -56,7 +56,7 @@ Even if the limit were 10,000 lines — MEMORY.md is a flat file. A flat file ca
 | **Relevance** — show rules for THIS project, not all projects | Everything dumped together           | Filters by CWD, ranks by project relevance                              |
 | **Learning** — capture decisions from sessions automatically  | You manually edit after each session | Haiku extracts signals, compounds into existing memories                |
 | **Quality** — distinguish proven rules from agent guesses     | All lines have equal weight          | Evidence tiers: validated > observed > hypothesis. Agent-created = 0.5x |
-| **Freshness** — detect when a rule became outdated            | No way to know                       | Freshness decay: >30 days = lower rank. Drift detection (planned)       |
+| **Freshness** — detect when a rule became outdated            | No way to know                       | Freshness decay, drift diagnostics, lifecycle status ranking            |
 | **Code search** — "where is the rate limiter?"                | Not possible                         | Tree-sitter parses functions/classes into searchable chunks             |
 
 A bigger MEMORY.md is a longer sticky note. Eidetic is a searchable, self-updating knowledge base with quality tracking.
@@ -131,6 +131,12 @@ How: keyword clustering (24 related rules compressed into 1 block), tiered displ
 ### Hybrid Search (v2.0)
 
 FTS5 for keywords (50ms). Vector search as fallback when keyword quality is low. Results merged via Reciprocal Rank Fusion. Search output includes a conservative confidence label; if every candidate is weak, the CLI reports `No confident results` instead of surfacing random-looking vector neighbors as actionable memory.
+
+Structured agent consumers can use `--json-object` or MCP `memory_search`.
+Those responses include `no_confident_results`, `best_confidence`, lifecycle
+fields (`card_kind`, `status`, `area`, `supersedes`, `superseded_by`), and
+visible drift diagnostics. If `no_confident_results=true`, treat returned rows
+as weak candidates to inspect, not as usable memory.
 
 | Query type                  | FTS5 only   | Hybrid                   |
 | --------------------------- | ----------- | ------------------------ |
@@ -288,6 +294,9 @@ Works with Cursor, Windsurf, Cline, and any MCP-compatible agent:
 
 6 tools: `memory_search`, `memory_serendipity`, `memory_health`, `memory_reindex`, `memory_lint`, `export_vault`.
 
+`memory_search` returns a structured payload with `no_confident_results`. Agent
+clients should not act on weak candidates when that flag is true.
+
 MCP `export_vault` defaults to no LLM calls to avoid surprise API usage and timeouts. Pass `polish=true` when you want the v4.1 enrichment path. `synthesize=true` remains available as an experimental topic-candidate path, but it is not recommended for normal vault exports until v4.3 Vault IA lands.
 
 ---
@@ -427,10 +436,11 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.2.1** — Runtime hardening: non-interactive install, MCP export flags/timeouts, docs/version sync, CI export smoke
 - [x] **v4.2.2** — Disable topic synthesis by default; keep it explicit/experimental pending v4.3 IA
 - [x] **v4.2.3** — v2.6 foundations: confidence-aware search, stale-context health signal, operator recall smoke
+- [x] **v4.2.4** — v2.6 agent recall contract: structured no-confident JSON/MCP, card/status schema, drift diagnostics, 21-case recall smoke
 
 ### Next
 
-- [ ] **v2.6 — Agent Memory Quality** — schema/status/card-kind cleanup, confidence-aware search, stale-context detection, recall regression suite
+- [ ] **v2.7 — Agent Memory Review Loop** — clean v2.x consreview, classify remaining recall misses, reduce lint debt
 - [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter.
 
 ### v5.0 (deferred)
@@ -444,6 +454,18 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v4.2.4 (2026-05-24)
+
+- Added structured `--json-object` search output with `no_confident_results`, `best_confidence`, and result count metadata
+- MCP `memory_search` now uses the structured contract so agents cannot ignore all-low-confidence retrieval by accident
+- Added durable retrieval fields: `card_kind`, `status`, `area`, `supersedes`, and `superseded_by`
+- Added status-aware ranking so current/active cards outrank resolved, superseded, deprecated, obsolete, or archived cards
+- Search results expose drift findings and penalties; CLI prints drift diagnostics on affected rows
+- Context assembly includes a bounded `Memory Drift Diagnostics` block for active drift findings
+- `health.sh` reports active and penalized drift counts by drift type
+- Expanded operator recall smoke from 4 to 21 cases, including code-aware recall and negative no-confident recall
+- CI now asserts schema migration and structured no-confident JSON output
 
 ### v4.2.3 (2026-05-24)
 

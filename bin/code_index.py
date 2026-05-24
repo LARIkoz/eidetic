@@ -52,6 +52,25 @@ SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".kurdyuk-l
 MAX_FILE_SIZE = 500_000
 
 
+def ensure_agent_columns(conn):
+    """Keep code indexing compatible with DBs created before v2.6."""
+    try:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
+    except sqlite3.OperationalError:
+        return
+    migrations = {
+        "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
+        "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
+        "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
+        "supersedes": "ALTER TABLE memory_chunks ADD COLUMN supersedes TEXT DEFAULT ''",
+        "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
+    }
+    for column, statement in migrations.items():
+        if column not in existing:
+            conn.execute(statement)
+    conn.commit()
+
+
 def find_code_files(project_dir, extensions=None):
     if extensions is None:
         extensions = {".py", ".js", ".ts", ".sh"}
@@ -115,6 +134,7 @@ def _extract_name(node, ext):
 
 
 def index_code(conn, project_dir, project_slug=None):
+    ensure_agent_columns(conn)
     _init_languages()
     if not LANGUAGE_MAP:
         print("No tree-sitter languages available", file=sys.stderr)
@@ -154,13 +174,15 @@ def index_code(conn, project_dir, project_slug=None):
             conn.execute("""
                 INSERT INTO memory_chunks
                     (path, project, name, type, evidence, source,
-                     section_heading, content, description, mtime)
+                     card_kind, status, area, section_heading, content,
+                     description, mtime)
                 VALUES (?, ?, ?, 'code', 'observed', 'code-index',
-                        ?, ?, ?, ?)
+                        'code', 'current', ?, ?, ?, ?, ?)
             """, (
                 filepath,
                 project_slug,
                 ent["name"],
+                project_slug,
                 section,
                 ent["body"],
                 f"{ent['type']} in {os.path.basename(filepath)}",

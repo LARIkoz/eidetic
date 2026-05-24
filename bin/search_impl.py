@@ -19,6 +19,17 @@ from datetime import datetime, timedelta
 
 EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
 SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
+STATUS_WEIGHTS = {
+    "current": 1.0,
+    "active": 1.0,
+    "validated": 1.0,
+    "resolved": 0.75,
+    "fixed": 0.75,
+    "superseded": 0.35,
+    "deprecated": 0.35,
+    "obsolete": 0.35,
+    "archived": 0.25,
+}
 FRESHNESS_CUTOFF_DAYS = 30
 MAX_LIMIT = 50
 MAX_QUERY_TERMS = 8
@@ -41,7 +52,26 @@ except ImportError:
     DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3}
 
 
-def _load_drift_map(db_path):
+def ensure_agent_columns(conn):
+    """Add v2.6 derived columns when searching an older index.db."""
+    try:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
+    except sqlite3.OperationalError:
+        return
+    migrations = {
+        "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
+        "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
+        "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
+        "supersedes": "ALTER TABLE memory_chunks ADD COLUMN supersedes TEXT DEFAULT ''",
+        "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
+    }
+    for column, statement in migrations.items():
+        if column not in existing:
+            conn.execute(statement)
+    conn.commit()
+
+
+def _load_drift_data(db_path):
     drift_path = db_path.replace("index.db", "drift_state.db")
     if not os.path.exists(drift_path):
         return {}
@@ -49,18 +79,37 @@ def _load_drift_map(db_path):
         dc = sqlite3.connect(drift_path)
         dc.execute("PRAGMA busy_timeout=2000")
         rows = dc.execute("""
-            SELECT path, drift_type FROM drift_findings
-            WHERE resolved_at IS NULL AND first_seen > 1
+            SELECT path, drift_type, detail, first_seen, detected_at
+            FROM drift_findings
+            WHERE resolved_at IS NULL
         """).fetchall()
         dc.close()
     except sqlite3.OperationalError:
         return {}
     result = {}
-    for path, drift_type in rows:
+    for path, drift_type, detail, first_seen, detected_at in rows:
+        entry = result.setdefault(path, {"penalty": None, "findings": []})
+        penalized = int(first_seen or 0) > 1
         penalty = DRIFT_PENALTIES.get(drift_type, 0.5)
-        if path not in result or penalty < result[path]:
-            result[path] = penalty
+        if penalized and (entry["penalty"] is None or penalty < entry["penalty"]):
+            entry["penalty"] = penalty
+        entry["findings"].append({
+            "type": drift_type,
+            "detail": detail or "",
+            "first_seen": int(first_seen or 0),
+            "detected_at": detected_at or "",
+            "penalized": penalized,
+            "penalty": penalty if penalized else None,
+        })
     return result
+
+
+def _load_drift_map(db_path):
+    return {
+        path: data["penalty"]
+        for path, data in _load_drift_data(db_path).items()
+        if data.get("penalty") is not None
+    }
 
 
 def compute_freshness(last_verified):
@@ -74,6 +123,13 @@ def compute_freshness(last_verified):
         return 0.5
     except (ValueError, TypeError):
         return 0.7
+
+
+def compute_status_weight(status, superseded_by=""):
+    normalized = (status or "current").strip().lower()
+    if superseded_by:
+        return min(STATUS_WEIGHTS.get(normalized, 1.0), STATUS_WEIGHTS["superseded"])
+    return STATUS_WEIGHTS.get(normalized, 1.0)
 
 
 def _normalize_limit(limit):
@@ -122,6 +178,9 @@ def _row_match_quality(row, terms, strategy):
         row["path"] or "",
         row["name"] or "",
         row["type"] or "",
+        row["card_kind"] or "",
+        row["status"] or "",
+        row["area"] or "",
         row["section_heading"] or "",
         row["description"] or "",
         row["content"] or "",
@@ -136,6 +195,7 @@ def _fetch_fts_rows(conn, query, limit, type_filter):
         SELECT
             c.id, c.path, c.project, c.name, c.type,
             c.evidence, c.source, c.confidence, c.last_verified,
+            c.card_kind, c.status, c.area, c.supersedes, c.superseded_by,
             c.section_heading, c.content, c.description,
             memory_fts.rank AS fts_rank
         FROM memory_fts
@@ -214,6 +274,8 @@ def _classify_confidence(result):
     vector_score = float(result.get("vector_score") or 0)
     source = result.get("source") or ""
     freshness = float(result.get("freshness") or 0.7)
+    status = (result.get("status") or "current").lower()
+    superseded_by = result.get("superseded_by") or ""
 
     level = "low"
     reason = "weak lexical/vector match"
@@ -253,6 +315,9 @@ def _classify_confidence(result):
     if freshness < 0.6:
         level = _cap_confidence(level, "medium")
         reason += "; stale/drift-penalized"
+    if status in {"superseded", "deprecated", "obsolete", "archived"} or superseded_by:
+        level = _cap_confidence(level, "medium")
+        reason += f"; status={status or 'superseded'}"
 
     return level, reason
 
@@ -275,7 +340,22 @@ def _best_confidence(results):
     )
 
 
-def search(db_path, query, limit=10, type_filter=None, output_json=False):
+def _search_response(query, limit, type_filter, results):
+    best = _best_confidence(results)
+    no_confident = CONFIDENCE_ORDER.get(best, 0) < CONFIDENCE_ORDER["medium"]
+    return {
+        "query": query,
+        "type_filter": type_filter,
+        "limit": limit,
+        "result_count": len(results),
+        "best_confidence": best,
+        "no_confident_results": no_confident,
+        "message": "No confident results; inspect weak candidates before using as memory." if no_confident else "",
+        "results": results,
+    }
+
+
+def search(db_path, query, limit=10, type_filter=None, output_json=False, json_object=False):
     """Search FTS5 index with compound ranking."""
     if not os.path.exists(db_path):
         print("ERROR: Index not found. Run: ~/.claude/memory-system/bin/index.sh --full", file=sys.stderr)
@@ -287,18 +367,21 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.row_factory = sqlite3.Row
+    ensure_agent_columns(conn)
 
-    drift_map = _load_drift_map(db_path)
+    drift_data = _load_drift_data(db_path)
     rows = _fetch_fts_rows(conn, query, limit, type_filter)
 
     results = []
     for row, strategy, match_quality in rows:
         ev_w = EVIDENCE_WEIGHTS.get(row["evidence"], 0.7)
         src_w = SOURCE_WEIGHTS.get(row["source"], 1.0)
-        dp = drift_map.get(row["path"])
+        status_w = compute_status_weight(row["status"], row["superseded_by"])
+        drift_info = drift_data.get(row["path"], {})
+        dp = drift_info.get("penalty")
         fr_w = dp if dp is not None else compute_freshness(row["last_verified"])
         raw_rank = abs(row["fts_rank"])
-        compound = raw_rank * ev_w * src_w * fr_w * max(0.1, match_quality)
+        compound = raw_rank * ev_w * src_w * fr_w * status_w * max(0.1, match_quality)
 
         snippet = row["content"][:200].replace("\n", " ").strip()
         if len(row["content"]) > 200:
@@ -309,11 +392,19 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
             "project": row["project"] or "",
             "name": row["name"] or "",
             "type": row["type"] or "",
+            "card_kind": row["card_kind"] or "",
+            "status": row["status"] or "current",
+            "area": row["area"] or "",
+            "supersedes": row["supersedes"] or "",
+            "superseded_by": row["superseded_by"] or "",
             "section": row["section_heading"] or "",
             "snippet": snippet,
             "evidence": row["evidence"] or "observed",
             "source": row["source"] or "user-explicit",
             "freshness": fr_w,
+            "status_weight": status_w,
+            "drift_penalty": dp,
+            "drift_findings": drift_info.get("findings", []),
             "score": round(compound, 4),
             "retrieval_score": round(compound, 4),
             "fts_rank": round(raw_rank, 4),
@@ -328,15 +419,17 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
     has_phrase = any(r.get("match") == "phrase" for r in results[:3])
     if _needs_vector(results, limit) and os.path.exists(vector_db):
         vec_results = _vector_search(
-            vector_db, conn, query, limit, type_filter, drift_map, warn=not output_json
+            vector_db, conn, query, limit, type_filter, drift_data,
+            warn=not (output_json or json_object)
         )
         if vec_results:
             results = _rrf_merge(results, vec_results, limit, has_phrase=has_phrase)
 
     results = _annotate_confidence(results)
 
-    if output_json:
-        print(json.dumps(results, indent=2, ensure_ascii=False))
+    if output_json or json_object:
+        payload = _search_response(query, limit, type_filter, results) if json_object else results
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
         if not results:
             print(f"No results for: {query}")
@@ -358,13 +451,21 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False):
             print(f"  File: {short_path}")
             if r["name"]:
                 print(f"  Name: {r['name']}")
-            print(f"  Type: {r['type']}  Section: {r['section']}")
+            print(f"  Type: {r['type']}  Kind: {r.get('card_kind') or '?'}  Status: {r.get('status') or 'current'}  Section: {r['section']}")
+            if r.get("superseded_by"):
+                print(f"  Superseded by: {r['superseded_by']}")
+            if r.get("drift_findings"):
+                drift = ", ".join(
+                    f"{d.get('type')}:{d.get('detail')}"
+                    for d in r["drift_findings"][:3]
+                )
+                print(f"  Drift: {drift}")
             print(f"  {r['snippet']}")
 
     conn.close()
 
 
-def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_map=None, warn=False):
+def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=None, warn=False):
     try:
         embed_path = os.path.join(os.path.dirname(__file__), "embed.py")
         spec = importlib.util.spec_from_file_location("eidetic_embed", embed_path)
@@ -393,20 +494,24 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_map=N
     results = []
     for path, (sim, chunk_id, name) in best_per_path.items():
         row = index_conn.execute("""
-            SELECT type, evidence, source, last_verified, content, section_heading, project
+            SELECT type, evidence, source, last_verified, content, section_heading,
+                   project, card_kind, status, area, supersedes, superseded_by
             FROM memory_chunks WHERE id = ?
         """, (chunk_id,)).fetchone()
         if not row:
             continue
-        typ, evidence, source, lv, content, heading, project = row
+        (typ, evidence, source, lv, content, heading, project, card_kind,
+         status, area, supersedes, superseded_by) = row
         if type_filter and typ != type_filter:
             continue
 
         ev_w = EVIDENCE_WEIGHTS.get(evidence, 0.7)
         src_w = SOURCE_WEIGHTS.get(source, 0.5)
-        dp = (drift_map or {}).get(path)
+        status_w = compute_status_weight(status, superseded_by)
+        drift_info = (drift_data or {}).get(path, {})
+        dp = drift_info.get("penalty")
         fr_w = dp if dp is not None else compute_freshness(lv)
-        compound = sim * ev_w * src_w * fr_w
+        compound = sim * ev_w * src_w * fr_w * status_w
 
         snippet = content[:200].replace("\n", " ").strip() if content else ""
         if content and len(content) > 200:
@@ -417,11 +522,19 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_map=N
             "project": project or "",
             "name": name or "",
             "type": typ or "",
+            "card_kind": card_kind or "",
+            "status": status or "current",
+            "area": area or "",
+            "supersedes": supersedes or "",
+            "superseded_by": superseded_by or "",
             "section": heading or "",
             "snippet": snippet,
             "evidence": evidence or "observed",
             "source": source or "user-explicit",
             "freshness": fr_w,
+            "status_weight": status_w,
+            "drift_penalty": dp,
+            "drift_findings": drift_info.get("findings", []),
             "score": round(compound, 4),
             "retrieval_score": round(compound, 4),
             "fts_rank": 0,
@@ -476,7 +589,7 @@ def _rrf_merge(fts_results, vec_results, limit, k=60, has_phrase=False):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: search.sh <query> [--limit N] [--type TYPE] [--json]", file=sys.stderr)
+        print("Usage: search.sh <query> [--limit N] [--type TYPE] [--json|--json-object]", file=sys.stderr)
         sys.exit(1)
 
     db_path = sys.argv[1]
@@ -484,6 +597,7 @@ def main():
     limit = 10
     type_filter = None
     output_json = False
+    json_object = False
 
     i = 2
     while i < len(sys.argv):
@@ -497,6 +611,9 @@ def main():
         elif arg == "--json":
             output_json = True
             i += 1
+        elif arg == "--json-object":
+            json_object = True
+            i += 1
         elif query is None:
             query = arg
             i += 1
@@ -508,7 +625,7 @@ def main():
         print("ERROR: No query provided", file=sys.stderr)
         sys.exit(1)
 
-    search(db_path, query, limit, type_filter, output_json)
+    search(db_path, query, limit, type_filter, output_json, json_object)
 
 
 if __name__ == "__main__":

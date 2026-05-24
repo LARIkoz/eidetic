@@ -21,7 +21,7 @@ BIN = os.path.join(MEMORY_SYSTEM, "bin")
 TOOLS = [
     {
         "name": "memory_search",
-        "description": "Search long-term memory across all projects. Returns ranked results with compound scoring and confidence metadata. Use when you need past decisions, rules, context, or knowledge.",
+        "description": "Search long-term memory across all projects. Returns a structured payload with ranked results, confidence metadata, no_confident_results, lifecycle status, and drift diagnostics. Do not treat weak candidates as usable memory when no_confident_results=true.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -36,7 +36,7 @@ TOOLS = [
                 },
                 "type_filter": {
                     "type": "string",
-                    "description": "Filter by memory type: feedback, project, user, or reference",
+                    "description": "Filter by memory type: feedback, project, user, reference, or code",
                     "enum": ["feedback", "project", "user", "reference", "code"]
                 }
             },
@@ -187,7 +187,7 @@ def handle_search(params):
         return "ERROR: query is required"
 
     limit = str(clamp_limit(params.get("limit", 5)))
-    args = [os.path.expanduser("~/.claude/memory-system/db/index.db"), query, "--limit", limit, "--json"]
+    args = [os.path.expanduser("~/.claude/memory-system/db/index.db"), query, "--limit", limit, "--json-object"]
     type_filter = params.get("type_filter")
     if type_filter:
         if type_filter not in {"feedback", "project", "user", "reference", "code"}:
@@ -303,7 +303,7 @@ def handle_request(request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "eidetic",
-                "version": "4.2.3"
+                "version": "4.2.4"
             }
         })
 

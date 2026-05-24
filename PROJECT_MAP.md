@@ -59,8 +59,9 @@ visibility through a read-only projection layer, but it must not affect core
 recall, hooks, search, injection, or compounding. Therefore:
 
 1. Keep Obsidian/Vault IA in maintenance mode unless explicitly requested.
-2. Finish v2.6 Agent Memory Quality first: card kind, status, supersession,
-   drift diagnostics, and stronger recall regression coverage.
+2. Keep v2.6 Agent Memory Quality as the current baseline: card kind, status,
+   supersession, drift diagnostics, and recall regression coverage must stay
+   healthy before adding human-facing IA.
 3. Treat weak/noisy retrieval as a product bug, not as acceptable "more context."
 
 ## Cold Start Checklist

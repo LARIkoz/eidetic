@@ -36,6 +36,111 @@ CASES = [
         "min_confidence": "high",
     },
     {
+        "name": "gemini_acc2_home_override",
+        "query": "gemini cli account 2 HOME override",
+        "expect_any": ["bug_gemini_cli_acc2_switch", "home override"],
+        "min_confidence": "high",
+    },
+    {
+        "name": "gemini_batch_double_cap",
+        "query": "gemini batch two env overrides parallel Pro",
+        "expect_any": ["bug_gemini_batch_double_cap", "two env overrides"],
+        "min_confidence": "high",
+    },
+    {
+        "name": "key_penalty_store",
+        "query": "key penalty store shared key_penalty.db route-scoped failures",
+        "expect_any": ["key-penalty-store", "key_penalty.db"],
+        "min_confidence": "high",
+    },
+    {
+        "name": "model_split_opus46_47",
+        "query": "Model split Opus 4.6 4.7 sub-agent",
+        "expect_any": ["feedback-model-split", "opus 4.6"],
+        "min_confidence": "high",
+    },
+    {
+        "name": "consilium_partial_failure",
+        "query": "bug consilium voices partial failure 2026-04-28",
+        "expect_any": ["bug_consilium_voices_fail", "partial failure"],
+        "min_confidence": "high",
+    },
+    {
+        "name": "sync_skills_private_bug",
+        "query": "sync skills PRIVATE_SKILLS bug",
+        "expect_any": ["private_skills", "sync-skills-private"],
+        "min_confidence": "high",
+    },
+    {
+        "name": "dashscope_400_all_keys",
+        "query": "DashScope 400 all 110 keys",
+        "expect_any": ["bug_dashscope_400_all_keys", "dashscope 400"],
+        "min_confidence": "high",
+    },
+    {
+        "name": "deepseek_json_truncation",
+        "query": "DeepSeek R1 truncates JSON taxonomy prompts",
+        "expect_any": ["bug_deepseek_r1_truncation", "truncates json"],
+        "min_confidence": "high",
+    },
+    {
+        "name": "llm_consilium_parse_failure",
+        "query": "LLMConsiliumClient classify parse failure Cohere MiniMax Reka",
+        "expect_any": ["bug_llm_consilium_classify_parse", "parse failure"],
+        "min_confidence": "high",
+    },
+    {
+        "name": "gap_malformed_platform_predicate",
+        "query": "gap pipeline live DB malformed platform predicate",
+        "expect_any": ["bug_gap_pipeline_live_db_malformed", "malformed platform"],
+        "min_confidence": "high",
+    },
+    {
+        "name": "zamesin_methodology_skill",
+        "query": "Zamesin AJTBD methodology router",
+        "expect_any": ["zamesin-methodology", "ajtbd"],
+        "min_confidence": "high",
+    },
+    {
+        "name": "provider_admission_contract",
+        "query": "provider route admission exact model degraded blocked",
+        "expect_any": ["provider-admission", "route admission"],
+        "min_confidence": "high",
+    },
+    {
+        "name": "memory_recall_skill",
+        "query": "Memory Recall Search the FTS5 memory index",
+        "expect_any": ["memory-recall", "fts5 memory index"],
+        "min_confidence": "high",
+    },
+    {
+        "name": "drift_check_code",
+        "query": "drift_check first_seen auto resolve",
+        "type": "code",
+        "expect_any": ["drift_check.py", "auto_resolve"],
+        "min_confidence": "medium",
+    },
+    {
+        "name": "search_confidence_code",
+        "query": "classify retrieval confidence vector semantic match",
+        "type": "code",
+        "expect_any": ["_classify_confidence", "semantic match"],
+        "min_confidence": "high",
+    },
+    {
+        "name": "agent_schema_migration_code",
+        "query": "ensure agent columns card_kind status superseded_by",
+        "type": "code",
+        "expect_any": ["ensure_agent_columns", "card_kind"],
+        "min_confidence": "high",
+    },
+    {
+        "name": "x_web_public_indexed_research",
+        "query": "x-web KeyPenaltyStore x_web_murphy_check public indexed X",
+        "expect_any": ["x-web", "keypenaltystore"],
+        "min_confidence": "medium",
+    },
+    {
         "name": "suppress_missing_database_mock_rule",
         "query": "do not mock database tests",
         "expect_no_confident": True,
@@ -55,7 +160,7 @@ def run_search(script_dir, db_path, case):
         case["query"],
         "--limit",
         str(case.get("limit", 5)),
-        "--json",
+        "--json-object",
     ]
     if case.get("type"):
         cmd.extend(["--type", case["type"]])
@@ -63,7 +168,10 @@ def run_search(script_dir, db_path, case):
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
     if result.returncode != 0:
         raise RuntimeError((result.stderr or result.stdout).strip())
-    return json.loads(result.stdout)
+    payload = json.loads(result.stdout)
+    if isinstance(payload, list):
+        return {"results": payload, "no_confident_results": False}
+    return payload
 
 
 def result_text(result):
@@ -76,15 +184,17 @@ def result_text(result):
     return " ".join(fields).lower()
 
 
-def evaluate(case, results):
+def evaluate(case, payload):
+    results = payload.get("results", [])
     if case.get("expect_no_confident"):
-        confident = [
-            r for r in results
-            if CONFIDENCE_ORDER.get(r.get("confidence", "low"), 0) >= CONFIDENCE_ORDER["medium"]
-        ]
-        if confident:
-            top = confident[0]
-            return False, f"unexpected confident result: {top.get('path')} ({top.get('confidence')})"
+        if not payload.get("no_confident_results"):
+            confident = [
+                r for r in results
+                if CONFIDENCE_ORDER.get(r.get("confidence", "low"), 0) >= CONFIDENCE_ORDER["medium"]
+            ]
+            if confident:
+                top = confident[0]
+                return False, f"unexpected confident result: {top.get('path')} ({top.get('confidence')})"
         return True, "no confident result"
 
     expected = [s.lower() for s in case["expect_any"]]

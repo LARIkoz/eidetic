@@ -56,11 +56,14 @@ The system runs in parallel with MEMORY.md auto-load (Phase A). Nothing breaks. 
 4. **Agent-extracted = 0.5x weight.** Memories you create are discounted vs. user-created ones. This prevents hallucination reinforcement loops.
 5. **Atomic writes.** Always use tempfile + os.replace(). Never write directly to a file that other hooks might read.
 6. **Lock before write.** Hooks must use the current runtime lock protocol before file/DB writes. SessionStart currently uses `~/.claude/memory-system/.memory.pid`; update `PROJECT_MAP.md` and hook docs if this changes.
+7. **Weak recall is not memory.** Programmatic consumers must use `--json-object` or MCP `memory_search` and honor `no_confident_results=true`.
+8. **Lifecycle matters.** `card_kind`, `status`, `supersedes`, and `superseded_by` affect recall. Current cards should outrank resolved/superseded/archived cards.
 
 ## Commands you can run
 
 ```bash
 ~/.claude/memory-system/bin/search.sh "query" --limit 5    # Search
+~/.claude/memory-system/bin/search.sh "query" --json-object # Agent-safe structured search
 ~/.claude/memory-system/bin/index.sh --incremental          # Reindex
 ~/.claude/memory-system/bin/health.sh                       # Health check
 ~/.claude/memory-system/bin/lint.sh                         # Find issues
