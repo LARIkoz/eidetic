@@ -132,8 +132,9 @@ def compound_weight(evidence, source, last_verified, drift_penalty=None, status=
         fr = 0.7
         if last_verified:
             try:
-                lv = datetime.fromisoformat(last_verified)
-                fr = 1.0 if (datetime.now() - lv).days < FRESHNESS_DAYS else 0.5
+                lv = datetime.fromisoformat(str(last_verified).replace("Z", "+00:00"))
+                now = datetime.now(lv.tzinfo) if lv.tzinfo else datetime.now()
+                fr = 1.0 if (now - lv).days < FRESHNESS_DAYS else 0.5
             except (ValueError, TypeError):
                 pass
     return ev * src * fr * st
@@ -345,21 +346,22 @@ def fetch_project(conn, cwd, budget_chars, drift_map=None):
 def fetch_recent(conn, budget_chars, exclude_project=None, drift_map=None):
     """Fetch recent cross-project memories (last 14 days)."""
     cutoff = int((datetime.now() - timedelta(days=14)).timestamp())
+    mtime_seconds = "CASE WHEN c.mtime > 10000000000 THEN c.mtime / 1000000000 ELSE c.mtime END"
 
     query = """
         SELECT DISTINCT c.path, c.name, c.description, c.section_heading, c.content,
                c.evidence, c.source, c.last_verified, c.type, c.project,
                c.card_kind, c.status, c.superseded_by
         FROM memory_chunks c
-        WHERE c.mtime > ? AND c.type != 'feedback'
-    """
+        WHERE {mtime_seconds} > ? AND c.type != 'feedback'
+    """.format(mtime_seconds=mtime_seconds)
     params = [cutoff]
 
     if exclude_project:
         query += " AND (c.project IS NULL OR c.project NOT LIKE ? ESCAPE '\\')"
         params.append(f"%{_escape_like(exclude_project[-60:])}%")
 
-    query += " ORDER BY c.mtime DESC LIMIT 30"
+    query += f" ORDER BY {mtime_seconds} DESC LIMIT 30"
 
     rows = conn.execute(query, params).fetchall()
 

@@ -87,6 +87,16 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Fix timezone-aware drift age checks, archive destination collisions, `embed.py --search`, `export-vault.sh --project`, and false-green update refresh reporting.
 - [x] Add regression tests for the above.
 
+### Closed In v4.2.10
+
+- [x] Run clean consreview against v4.2.9. Pipeline was DEGRADED (`audit=UNKNOWN`, `mechanical=FAIL`, `redteam=WEAK`), so `SYNTHESIS.md` is not final, but raw voices/redteam exposed concrete follow-up findings.
+- [x] Fix nanosecond `mtime` unit mismatch in SessionStart recent-memory filtering.
+- [x] Align timezone-aware freshness scoring in search and context assembly with drift checks.
+- [x] Keep `export-vault.sh --no-open` wrapper-only so Python argparse does not reject it.
+- [x] Fix compounding exact-match gate so FTS5 rank magnitude does not prevent updates forever.
+- [x] Harden code-index transaction replacement and add a success-path regression.
+- [x] Add regression tests for the above.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
@@ -99,7 +109,7 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 ### Suggested Next Checks
 
-- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.9 agent recall behavior.
+- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.10 agent recall behavior.
 - [ ] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
 - [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.

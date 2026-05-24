@@ -121,8 +121,9 @@ def compute_freshness(last_verified):
     if not last_verified:
         return 0.7
     try:
-        lv = datetime.fromisoformat(last_verified)
-        if datetime.now() - lv < timedelta(days=FRESHNESS_CUTOFF_DAYS):
+        lv = datetime.fromisoformat(str(last_verified).replace("Z", "+00:00"))
+        now = datetime.now(lv.tzinfo) if lv.tzinfo else datetime.now()
+        if now - lv < timedelta(days=FRESHNESS_CUTOFF_DAYS):
             return 1.0
         return 0.5
     except (ValueError, TypeError):

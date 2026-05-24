@@ -353,7 +353,7 @@ def handle_request(request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "eidetic",
-                "version": "4.2.9"
+                "version": "4.2.10"
             }
         })
 

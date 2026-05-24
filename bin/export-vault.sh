@@ -43,7 +43,6 @@ while [ "$#" -gt 0 ]; do
     case "$arg" in
     --no-open)
         NO_OPEN=true
-        PASS_ARGS+=("$arg")
         shift
         ;;
     --project|--polish-count|--polish-model)

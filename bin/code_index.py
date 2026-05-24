@@ -188,22 +188,20 @@ def index_code(conn, project_dir, project_slug=None):
             ))
 
     try:
-        conn.execute("BEGIN")
-        conn.execute(
-            "DELETE FROM memory_chunks WHERE source = 'code-index' AND path LIKE ?",
-            (abs_dir + "%",)
-        )
-        conn.executemany("""
-            INSERT INTO memory_chunks
-                (path, project, name, type, evidence, source,
-                 card_kind, status, area, section_heading, content,
-                 description, mtime)
-            VALUES (?, ?, ?, 'code', 'observed', 'code-index',
-                    'code', 'current', ?, ?, ?, ?, ?)
-        """, rows)
-        conn.commit()
+        with conn:
+            conn.execute(
+                "DELETE FROM memory_chunks WHERE source = 'code-index' AND path LIKE ?",
+                (abs_dir + "%",)
+            )
+            conn.executemany("""
+                INSERT INTO memory_chunks
+                    (path, project, name, type, evidence, source,
+                     card_kind, status, area, section_heading, content,
+                     description, mtime)
+                VALUES (?, ?, ?, 'code', 'observed', 'code-index',
+                        'code', 'current', ?, ?, ?, ?, ?)
+            """, rows)
     except Exception:
-        conn.rollback()
         raise
 
     total = len(rows)
