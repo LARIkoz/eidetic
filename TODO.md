@@ -51,6 +51,13 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Keep feedback rules visible name-by-name even when the context budget is exceeded; no `...and N more feedback rules` hiding.
 - [x] Add CI checks for MCP structured search, recall-smoke contract assertions, lifecycle path false positives, age drift migration, and feedback visibility.
 
+### Closed In v4.2.6
+
+- [x] Add old-DB lifecycle backfill: if migrated rows still have empty `card_kind`, incremental indexing reindexes existing memory files instead of skipping by unchanged mtime.
+- [x] Add CI reproducer for the old `index_meta` skip bug.
+- [x] Reduce wikilink lint/drift false positives by ignoring fenced Markdown examples and placeholder links such as `[[filename]]`.
+- [x] Clean maintainer corpus broken wikilinks from 24 to 0 by fixing memory-to-memory targets and converting non-memory file references to Markdown links.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
@@ -66,7 +73,7 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [ ] Re-run clean v2.x consreview against v4.2.5 agent recall behavior.
 - [ ] Triage residual lint debt into real fixes vs accepted standalone memories.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.
-- [ ] Verify schema migration/backfill with an old-DB reproducer before changing update behavior.
+- [x] Verify schema migration/backfill with an old-DB reproducer before changing update behavior.
 - [ ] Keep Obsidian export in maintenance mode only: no new human-facing IA until agent recall quality stays stable after review.
 
 ### Deferred: v4.3 Vault IA

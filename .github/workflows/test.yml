@@ -148,6 +148,109 @@ jobs:
               os.remove(path)
           PY
 
+      - name: Test wikilink lint ignores markdown examples
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          cat > "$tmp/example.md" << 'EOF'
+          # Example
+
+          ### [[filename]]
+
+          ```
+          [[Atomic notes]]
+          [[Review]]
+          ```
+
+          Real link: [[real-target]]
+          EOF
+          python3 - << 'PY' "$tmp/example.md"
+          import sys
+          sys.path.insert(0, "bin")
+          import drift_check
+          import lint_impl
+
+          path = sys.argv[1]
+          assert lint_impl.extract_wikilinks(path) == ["real-target"]
+          text = open(path).read()
+          assert drift_check.extract_wikilinks_from_content(text) == ["real-target"]
+          PY
+
+      - name: Test old DB lifecycle backfill
+        run: |
+          tmp_home=$(mktemp -d)
+          trap 'rm -rf "$tmp_home"' EXIT
+          export HOME="$tmp_home"
+          mkdir -p "$HOME/.claude/projects/test-project/memory" "$HOME/.claude/memory-system/db"
+          cat > "$HOME/.claude/projects/test-project/memory/old-bug.md" << 'EOF'
+          ---
+          name: old-bug-memory
+          description: Regression fixed in old flow
+          type: project
+          ---
+          # Old Bug
+          Body.
+          EOF
+          python3 - << 'PY'
+          import os
+          import sqlite3
+          from pathlib import Path
+
+          db = Path.home() / ".claude/memory-system/db/index.db"
+          mem = Path.home() / ".claude/projects/test-project/memory/old-bug.md"
+          mtime = int(mem.stat().st_mtime)
+          conn = sqlite3.connect(db)
+          conn.executescript("""
+          CREATE TABLE memory_chunks (
+              id INTEGER PRIMARY KEY,
+              path TEXT NOT NULL,
+              project TEXT,
+              name TEXT,
+              type TEXT,
+              evidence TEXT DEFAULT 'observed',
+              source TEXT DEFAULT 'user-explicit',
+              confidence REAL DEFAULT 0.7,
+              last_verified TEXT,
+              section_heading TEXT,
+              content TEXT NOT NULL,
+              description TEXT,
+              mtime INTEGER,
+              UNIQUE(path, section_heading)
+          );
+          CREATE VIRTUAL TABLE memory_fts USING fts5(
+              name, description, section_heading, content,
+              content=memory_chunks,
+              content_rowid=id,
+              tokenize='porter unicode61'
+          );
+          CREATE TRIGGER memory_chunks_ai AFTER INSERT ON memory_chunks BEGIN
+              INSERT INTO memory_fts(rowid, name, description, section_heading, content)
+              VALUES (new.id, new.name, new.description, new.section_heading, new.content);
+          END;
+          CREATE TRIGGER memory_chunks_ad AFTER DELETE ON memory_chunks BEGIN
+              INSERT INTO memory_fts(memory_fts, rowid, name, description, section_heading, content)
+              VALUES ('delete', old.id, old.name, old.description, old.section_heading, old.content);
+          END;
+          CREATE TRIGGER memory_chunks_au AFTER UPDATE ON memory_chunks BEGIN
+              INSERT INTO memory_fts(memory_fts, rowid, name, description, section_heading, content)
+              VALUES ('delete', old.id, old.name, old.description, old.section_heading, old.content);
+              INSERT INTO memory_fts(rowid, name, description, section_heading, content)
+              VALUES (new.id, new.name, new.description, new.section_heading, new.content);
+          END;
+          CREATE TABLE index_meta (path TEXT PRIMARY KEY, mtime INTEGER);
+          """)
+          conn.execute(
+              "INSERT INTO memory_chunks (path, project, name, type, evidence, source, section_heading, content, description, mtime) VALUES (?, 'test-project', 'old-bug-memory', 'project', 'observed', 'user-explicit', 'old-bug', 'Body.', 'Regression fixed in old flow', ?)",
+              (str(mem), mtime),
+          )
+          conn.execute("INSERT INTO index_meta (path, mtime) VALUES (?, ?)", (str(mem), mtime))
+          conn.commit()
+          conn.close()
+          PY
+          python3 bin/index_impl.py --incremental "$HOME/.claude/memory-system/db/index.db"
+          sqlite3 "$HOME/.claude/memory-system/db/index.db" "SELECT card_kind, status FROM memory_chunks WHERE name = 'old-bug-memory' LIMIT 1" \
+            | grep -q '^bug|resolved$'
+
       - name: Test feedback rules are never hidden
         run: |
           python3 - << 'PY'

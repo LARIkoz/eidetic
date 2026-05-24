@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.2.5-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.2.6-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -438,6 +438,7 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.2.3** — v2.6 foundations: confidence-aware search, stale-context health signal, operator recall smoke
 - [x] **v4.2.4** — v2.6 agent recall contract: structured no-confident JSON/MCP, card/status schema, drift diagnostics, 21-case recall smoke
 - [x] **v4.2.5** — v2.7 recall hardening: structured MCP result, strict smoke contract, lifecycle inference fix, stable age drift identity
+- [x] **v4.2.6** — v2.7 Stage 3: old-DB lifecycle backfill, wikilink lint noise reduction, broken-link corpus cleanup
 
 ### Next
 
@@ -455,6 +456,13 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v4.2.6 (2026-05-24)
+
+- Incremental indexing now detects old rows with empty lifecycle metadata and reindexes existing memory files to backfill `card_kind`, `status`, and related derived fields
+- CI now includes an old-DB reproducer where unchanged `index_meta` rows previously skipped semantic backfill
+- Wikilink lint/drift extraction now ignores fenced Markdown examples and obvious placeholders such as `[[filename]]`
+- Maintainer corpus broken wikilinks were cleaned from 24 to 0 by converting non-memory references to Markdown links and fixing memory-to-memory targets
 
 ### v4.2.5 (2026-05-24)
 

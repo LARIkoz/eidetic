@@ -75,6 +75,13 @@ SCAN_DIRS = [
 ]
 
 EXCLUDE_FILES = {"MEMORY.md", "BACKLOG.md"}
+DERIVED_COLUMNS = {
+    "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
+    "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
+    "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
+    "supersedes": "ALTER TABLE memory_chunks ADD COLUMN supersedes TEXT DEFAULT ''",
+    "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
+}
 
 
 def parse_frontmatter(text):
@@ -291,20 +298,26 @@ def infer_area(meta, filepath, project):
 def migrate_schema(conn):
     """Add v2.6 columns to existing derived DBs."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
-    migrations = {
-        "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
-        "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
-        "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
-        "supersedes": "ALTER TABLE memory_chunks ADD COLUMN supersedes TEXT DEFAULT ''",
-        "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
-    }
-    for column, statement in migrations.items():
+    for column, statement in DERIVED_COLUMNS.items():
         if column not in existing:
             try:
                 conn.execute(statement)
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
+
+
+def needs_lifecycle_backfill(conn):
+    """Detect old rows that got v2.6 columns but skipped semantic inference."""
+    try:
+        row = conn.execute("""
+            SELECT 1 FROM memory_chunks
+            WHERE IFNULL(card_kind, '') = ''
+            LIMIT 1
+        """).fetchone()
+    except sqlite3.OperationalError:
+        return False
+    return row is not None
 
 
 def collect_files():
@@ -429,6 +442,10 @@ def run_incremental(conn, files):
     for row in conn.execute("SELECT path, mtime FROM index_meta"):
         existing[row[0]] = row[1]
 
+    force_backfill = needs_lifecycle_backfill(conn)
+    if force_backfill:
+        existing = {}
+
     current_paths = set()
     indexed = 0
     skipped = 0
@@ -459,6 +476,8 @@ def run_incremental(conn, files):
             removed += 1
 
     conn.commit()
+    if force_backfill:
+        print("Lifecycle metadata backfill: reindexed existing memory files")
     return indexed, skipped, removed
 
 
