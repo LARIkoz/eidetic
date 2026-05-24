@@ -424,11 +424,12 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 
 ### Next
 
+- [ ] **v2.6 — Agent Memory Quality** — schema/status/card-kind cleanup, confidence-aware search, stale-context detection, recall regression suite
 - [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter.
-- [ ] **v4.3 — Vault IA** — replace flat projects/references/topics with areas, card kinds, deterministic MOCs, and topic-candidate review gates
 
 ### v5.0 (deferred)
 
+- Vault IA — replace flat projects/references/topics with areas, card kinds, deterministic MOCs, and topic-candidate review gates
 - Soul layer — personality profile, tension detection, decision style adaptation
 - HTML dashboard — single-file knowledge graph (D3.js)
 - Progressive summarization — memories mature via LLM distillation
