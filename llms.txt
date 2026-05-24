@@ -1,6 +1,6 @@
-# Eidetic — Long-term memory for Claude Code
+# Eidetic — Second brain for AI agent
 
-> Eidetic is a persistent memory system for Claude Code that replaces the 200-line MEMORY.md limit with FTS5 full-text search, automatic context injection, and session signal extraction.
+> Eidetic is a persistent memory system for Claude Code that gives an AI agent a second brain: FTS5 full-text search, automatic context injection, and session signal extraction beyond the 200-line MEMORY.md limit.
 
 For local development, `PROJECT_MAP.md` is the artifact routing table. It links
 the public runtime repo to the canonical Kurdyuk-run brief and charter, the
