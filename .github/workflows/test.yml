@@ -447,6 +447,66 @@ jobs:
               assert f"feedback-rule-{i}" in text
           PY
 
+      - name: Test recent context normalizes nanosecond mtimes
+        run: |
+          python3 - << 'PY'
+          import sqlite3
+          import sys
+          sys.path.insert(0, "bin")
+          import assemble_context
+
+          conn = sqlite3.connect(":memory:")
+          conn.execute("""
+              CREATE TABLE memory_chunks (
+                  id INTEGER PRIMARY KEY,
+                  path TEXT,
+                  name TEXT,
+                  description TEXT,
+                  section_heading TEXT,
+                  content TEXT,
+                  evidence TEXT,
+                  source TEXT,
+                  last_verified TEXT,
+                  type TEXT,
+                  project TEXT,
+                  card_kind TEXT,
+                  status TEXT,
+                  superseded_by TEXT,
+                  mtime INTEGER
+              )
+          """)
+          old_ns = 946684800000000000
+          conn.execute("INSERT INTO memory_chunks VALUES (1, '/tmp/old.md', 'old', '', '', 'old body', 'observed', 'user-explicit', '', 'project', 'old-project', 'finding', 'current', '', ?)", (old_ns,))
+          text, used = assemble_context.fetch_recent(conn, 10000)
+          assert "old body" not in text
+          assert used == 0
+          PY
+
+      - name: Test timezone-aware freshness scoring
+        run: |
+          python3 - << 'PY'
+          import sys
+          sys.path.insert(0, "bin")
+          import assemble_context
+          import search_impl
+
+          assert search_impl.compute_freshness("2026-01-01T00:00:00+03:00") == 0.5
+          assert search_impl.compute_freshness("2026-01-01T00:00:00Z") == 0.5
+          assert assemble_context.compound_weight("observed", "user-explicit", "2026-01-01T00:00:00+03:00") == 0.35
+          PY
+
+      - name: Test compound exact matches are candidates
+        run: |
+          python3 - << 'PY'
+          import sys
+          sys.path.insert(0, "bin")
+          import compound
+
+          assert compound.is_compound_candidate("/tmp/project/memory/existing.md")
+          assert not compound.is_compound_candidate("/tmp/project/SKILL.md")
+          assert not compound.is_compound_candidate("/tmp/project/notes.md")
+          PY
+
       - name: Test MCP structured memory_search
         run: |
           mkdir -p db
@@ -567,6 +627,60 @@ jobs:
               conn.close()
           PY
 
+      - name: Test code index successful replacement transaction
+        run: |
+          python3 - << 'PY'
+          import os
+          import sqlite3
+          import sys
+          import tempfile
+          sys.path.insert(0, "bin")
+          import code_index
+
+          tmp = tempfile.mkdtemp()
+          db = os.path.join(tmp, "index.db")
+          src = os.path.join(tmp, "x.py")
+          open(src, "w").write("def new():\n    return 2\n")
+          conn = sqlite3.connect(db)
+          conn.execute("""
+              CREATE TABLE memory_chunks (
+                  id INTEGER PRIMARY KEY,
+                  path TEXT,
+                  project TEXT,
+                  name TEXT,
+                  type TEXT,
+                  evidence TEXT,
+                  source TEXT,
+                  card_kind TEXT DEFAULT '',
+                  status TEXT DEFAULT 'current',
+                  area TEXT DEFAULT '',
+                  section_heading TEXT,
+                  content TEXT,
+                  description TEXT,
+                  mtime INTEGER
+              )
+          """)
+          conn.execute("INSERT INTO memory_chunks (path, project, name, type, source, content) VALUES (?, 'p', 'old', 'code', 'code-index', 'old')", (src,))
+          conn.commit()
+          code_index.LANGUAGE_MAP = {".py": object()}
+          old_extract = code_index.extract_entities
+          code_index.extract_entities = lambda *a, **k: [{
+              "language": "py",
+              "name": "new",
+              "start_line": 1,
+              "end_line": 2,
+              "body": "def new():\n    return 2",
+              "type": "function_definition",
+          }]
+          try:
+              code_index.index_code(conn, tmp, "p")
+              rows = conn.execute("SELECT name, content FROM memory_chunks WHERE source = 'code-index'").fetchall()
+              assert rows == [("new", "def new():\n    return 2")], rows
+          finally:
+              code_index.extract_entities = old_extract
+              conn.close()
+          PY
+
       - name: Test cleanup handles basename collisions
         run: |
           tmp=$(mktemp -d)
@@ -636,7 +750,25 @@ jobs:
           out=$(EIDETIC_EXPORT_PARSE_ONLY=1 bash bin/export-vault.sh --project sample-slug --no-open)
           echo "$out"
           echo "$out" | grep -q "TARGET=$HOME/Documents/eidetic-vault"
-          echo "$out" | grep -q "ARGS=--project sample-slug --no-open"
+          echo "$out" | grep -q "ARGS=--project sample-slug"
+          ! echo "$out" | grep -q -- "--no-open"
+
+      - name: Test export vault wrapper keeps no-open shell-only
+        run: |
+          tmp_home=$(mktemp -d)
+          trap 'rm -rf "$tmp_home"' EXIT
+          export HOME="$tmp_home"
+          mkdir -p "$HOME/.claude/projects/test-project/memory"
+          cat > "$HOME/.claude/projects/test-project/memory/test.md" << 'EOF'
+          ---
+          name: test
+          type: project
+          ---
+          # Test
+          Body
+          EOF
+          bash bin/export-vault.sh "$tmp_home/vault" --project test-project --no-polish --no-synthesize --no-open
+          test -f "$tmp_home/vault/HOME.md"
 
       - name: Test FTS5 special characters
         run: |

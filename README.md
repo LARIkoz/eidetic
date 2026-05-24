@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.2.9-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.2.10-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -349,7 +349,7 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 
 | Capability                   | Eidetic                            | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
 | ---------------------------- | ---------------------------------- | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
-|                              | **v4.2.9**                         | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
+|                              | **v4.2.10**                        | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
 | Search                       | FTS5 + vector                      | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
 | Recall benchmark             | **100%**                           | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
 | Auto-inject on session start | **rules/ (no cap)**                | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
@@ -442,10 +442,11 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.2.7** — v2.8 review hardening: vector identity guards, atomic hook locks, MCP error contract, signal path portability
 - [x] **v4.2.8** — code-index file discovery fix; update now refreshes FTS/code/vector/context for the installed runtime
 - [x] **v4.2.9** — degraded v4.2.8 review hardening: empty-file cleanup, code-index atomicity, fcntl hook lock, timezone drift, vector validation ordering
+- [x] **v4.2.10** — v4.2.9 review follow-up: recent mtime unit normalization, timezone freshness ranking, export no-open wrapper fix, compound exact-match fix
 
 ### Next
 
-- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.9
+- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.10
 - [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter.
 
 ### v5.0 (deferred)
@@ -459,6 +460,15 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v4.2.10 (2026-05-25)
+
+- Fixed SessionStart recent-memory filtering after v4.2.9 nanosecond mtimes; old memories no longer pass a seconds cutoff as "recent"
+- Search and context freshness scoring now handle timezone-aware and `Z` `last_verified` values consistently with drift checks
+- `export-vault.sh --no-open` is wrapper-only again and no longer reaches `export_vault.py` argparse
+- Stop-hook compounding no longer depends on impossible FTS5 rank magnitudes; exact FTS matches can update existing memory history
+- Code indexing transaction replacement now uses the sqlite connection context manager instead of manual `BEGIN`
+- Added CI regressions for recent mtime normalization, timezone freshness, no-open export, compound matching, and successful code-index replacement
 
 ### v4.2.9 (2026-05-25)
 

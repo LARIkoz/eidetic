@@ -61,6 +61,11 @@ def extract_keywords(signal_text):
 PROTECTED_TYPES = {"feedback", "user"}
 
 
+def is_compound_candidate(path):
+    """A returned exact FTS match is enough; FTS5 rank magnitudes are corpus-scale dependent."""
+    return bool(path and "/memory/" in path and "SKILL.md" not in path)
+
+
 def _get_file_type(filepath):
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
@@ -211,7 +216,7 @@ def main():
         if conn and keywords:
             results = search_fts5(conn, keywords, limit=3)
             for path, name, heading, content, rank in results:
-                if abs(rank) > 5.0 and "/memory/" in path and "SKILL.md" not in path:
+                if is_compound_candidate(path):
                     file_type = _get_file_type(path)
                     if file_type in ("feedback", "user"):
                         continue
