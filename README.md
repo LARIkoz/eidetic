@@ -33,6 +33,11 @@ git clone https://github.com/LARIkoz/eidetic.git && cd eidetic && bash install.s
 One command. Core has zero external dependencies and works immediately.
 Optional semantic/vector search and code-aware indexing use small pip packages.
 
+Maintainer-local project governance lives in [`PROJECT_MAP.md`](PROJECT_MAP.md).
+End users can ignore it; it links this runtime repo to the canonical brief,
+charter, installed runtime, source corpus, and human-facing projection in the
+maintainer workspace.
+
 ---
 
 ## The Problem

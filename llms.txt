@@ -2,6 +2,11 @@
 
 > Eidetic is a persistent memory system for Claude Code that replaces the 200-line MEMORY.md limit with FTS5 full-text search, automatic context injection, and session signal extraction.
 
+For local development, `PROJECT_MAP.md` is the artifact routing table. It links
+the public runtime repo to the canonical Kurdyuk-run brief and charter, the
+installed runtime, derived indexes, source memory corpus, and Obsidian
+projection.
+
 ## What this solves
 
 Claude Code forgets between sessions. The built-in MEMORY.md has a 200-line platform limit. Critical behavioral rules past line 200 are invisible to the agent. Eidetic fixes this by indexing all memory files into SQLite FTS5 and injecting relevant context via ~/.claude/rules/ on every session start.
@@ -51,3 +56,4 @@ bash install.sh
 - Repository: https://github.com/LARIkoz/eidetic
 - Install: https://github.com/LARIkoz/eidetic/blob/main/install.sh
 - Agent instructions: https://github.com/LARIkoz/eidetic/blob/main/CLAUDE.md
+- Project map: https://github.com/LARIkoz/eidetic/blob/main/PROJECT_MAP.md
