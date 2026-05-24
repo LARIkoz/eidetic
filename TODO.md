@@ -70,8 +70,9 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 ### Suggested Next Checks
 
-- [ ] Re-run clean v2.x consreview against v4.2.5 agent recall behavior.
-- [ ] Triage residual lint debt into real fixes vs accepted standalone memories.
+- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.6 agent recall behavior.
+- [ ] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
+- [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.
 - [x] Verify schema migration/backfill with an old-DB reproducer before changing update behavior.
 - [ ] Keep Obsidian export in maintenance mode only: no new human-facing IA until agent recall quality stays stable after review.
