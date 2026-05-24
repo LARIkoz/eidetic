@@ -15,8 +15,11 @@ import os
 import subprocess
 import sys
 
-MEMORY_SYSTEM = os.path.expanduser("~/.claude/memory-system")
+MEMORY_SYSTEM = os.path.expanduser(
+    os.environ.get("EIDETIC_MEMORY_SYSTEM", "~/.claude/memory-system")
+)
 BIN = os.path.join(MEMORY_SYSTEM, "bin")
+INDEX_DB = os.path.join(MEMORY_SYSTEM, "db", "index.db")
 
 TOOLS = [
     {
@@ -184,16 +187,52 @@ def handle_search(params):
 
     query = str(params.get("query", "")).strip()
     if not query:
-        return "ERROR: query is required"
+        return mcp_error("query is required")
 
     limit = str(clamp_limit(params.get("limit", 5)))
-    args = [os.path.expanduser("~/.claude/memory-system/db/index.db"), query, "--limit", limit, "--json-object"]
+    args = [INDEX_DB, query, "--limit", limit, "--json-object"]
     type_filter = params.get("type_filter")
     if type_filter:
         if type_filter not in {"feedback", "project", "user", "reference", "code"}:
-            return f"ERROR: unsupported type_filter: {type_filter}"
+            return mcp_error(f"unsupported type_filter: {type_filter}")
         args.extend(["--type", type_filter])
-    return run_script("search_impl.py", args, timeout=30)
+
+    cmd = [sys.executable, os.path.join(BIN, "search_impl.py")] + args
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return mcp_error("memory_search timed out")
+    except FileNotFoundError:
+        return mcp_error("Script not found: search_impl.py")
+
+    if result.returncode != 0:
+        err = result.stderr.strip() or result.stdout.strip() or "non-zero exit"
+        return mcp_error(f"memory_search failed: {err}")
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        detail = result.stdout.strip()[:500] or result.stderr.strip()[:500]
+        return mcp_error(f"memory_search returned invalid JSON: {exc}; output={detail}")
+
+    return {
+        "_mcp_result": {
+            "content": [{
+                "type": "text",
+                "text": json.dumps(payload, ensure_ascii=False, indent=2),
+            }],
+            "structuredContent": payload,
+        }
+    }
+
+
+def mcp_error(message):
+    return {
+        "_mcp_result": {
+            "content": [{"type": "text", "text": f"ERROR: {message}"}],
+            "isError": True,
+        }
+    }
 
 
 def handle_serendipity(params):
@@ -303,7 +342,7 @@ def handle_request(request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "eidetic",
-                "version": "4.2.4"
+                "version": "4.2.5"
             }
         })
 
@@ -327,9 +366,12 @@ def handle_request(request):
 
         try:
             output = handler(tool_args)
-            send_response(id, {
-                "content": [{"type": "text", "text": output}]
-            })
+            if isinstance(output, dict) and "_mcp_result" in output:
+                send_response(id, output["_mcp_result"])
+            else:
+                send_response(id, {
+                    "content": [{"type": "text", "text": output}]
+                })
         except Exception as e:
             send_response(id, {
                 "content": [{"type": "text", "text": f"ERROR: {e}"}],

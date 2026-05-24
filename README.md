@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.2.4-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.2.5-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -437,6 +437,7 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.2.2** — Disable topic synthesis by default; keep it explicit/experimental pending v4.3 IA
 - [x] **v4.2.3** — v2.6 foundations: confidence-aware search, stale-context health signal, operator recall smoke
 - [x] **v4.2.4** — v2.6 agent recall contract: structured no-confident JSON/MCP, card/status schema, drift diagnostics, 21-case recall smoke
+- [x] **v4.2.5** — v2.7 recall hardening: structured MCP result, strict smoke contract, lifecycle inference fix, stable age drift identity
 
 ### Next
 
@@ -454,6 +455,16 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v4.2.5 (2026-05-24)
+
+- MCP `memory_search` now returns parsed `structuredContent` plus JSON text fallback, and marks subprocess failures as `isError`
+- Lifecycle and card-kind inference no longer uses storage paths, preventing archive/debug path fragments from downranking active memories
+- `recall_smoke.py` now fails hard if `--json-object` returns a list, if positive cases return `no_confident_results=true`, or if negative cases omit the flag
+- `age_stale` drift findings now use stable threshold-based identity so repeated detections can reach penalized state
+- Feedback rules now remain visible name-by-name even when the context budget is exceeded
+- CI now checks lifecycle path false positives, recall-smoke contract assertions, and MCP structured search round-trip
+- Duplicate-column races during v2.6 schema safety migrations are now ignored when another process added the column first
 
 ### v4.2.4 (2026-05-24)
 

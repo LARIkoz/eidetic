@@ -58,7 +58,63 @@ def init_drift_db(drift_path):
         )
     """)
     conn.commit()
+    migrate_age_stale_details(conn)
     return conn
+
+
+def normalize_age_stale_detail(detail):
+    """Keep age-stale identity stable while threshold stays the same."""
+    m = re.search(r"threshold=(\d+)d", detail or "")
+    if m:
+        return f"threshold={m.group(1)}d"
+    return detail or ""
+
+
+def migrate_age_stale_details(conn):
+    """Normalize old age-stale details like `age=88d threshold=30d`.
+
+    v2.5 stored changing age values in the primary key detail, so consecutive
+    detections could never accumulate `first_seen`. Merge old rows into the
+    stable threshold identity and preserve the highest detection count.
+    """
+    try:
+        rows = conn.execute("""
+            SELECT rowid, path, detail, first_seen, detected_at, resolved_at
+            FROM drift_findings
+            WHERE drift_type = 'age_stale'
+        """).fetchall()
+    except sqlite3.OperationalError:
+        return
+
+    for rowid, path, detail, first_seen, detected_at, resolved_at in rows:
+        stable_detail = normalize_age_stale_detail(detail)
+        if stable_detail == (detail or ""):
+            continue
+
+        existing = conn.execute("""
+            SELECT rowid, first_seen, detected_at, resolved_at
+            FROM drift_findings
+            WHERE path = ? AND drift_type = 'age_stale' AND detail = ?
+        """, (path, stable_detail)).fetchone()
+
+        if existing and int(existing[0]) != int(rowid):
+            existing_rowid, existing_seen, existing_detected, existing_resolved = existing
+            merged_seen = max(int(existing_seen or 0), int(first_seen or 0))
+            merged_detected = max(existing_detected or "", detected_at or "")
+            merged_resolved = None if (resolved_at is None or existing_resolved is None) else existing_resolved
+            conn.execute("""
+                UPDATE drift_findings
+                SET first_seen = ?, detected_at = ?, resolved_at = ?,
+                    resolved_by = CASE WHEN ? IS NULL THEN NULL ELSE resolved_by END
+                WHERE rowid = ?
+            """, (merged_seen, merged_detected, merged_resolved, merged_resolved, existing_rowid))
+            conn.execute("DELETE FROM drift_findings WHERE rowid = ?", (rowid,))
+        else:
+            conn.execute(
+                "UPDATE drift_findings SET detail = ? WHERE rowid = ?",
+                (stable_detail, rowid),
+            )
+    conn.commit()
 
 
 def should_run(drift_conn):
@@ -171,7 +227,7 @@ def check_age_drift(index_conn):
         if age_days > threshold:
             findings.append((
                 path, mem_type, "age_stale",
-                f"age={age_days}d threshold={threshold}d"
+                f"threshold={threshold}d"
             ))
     return findings
 

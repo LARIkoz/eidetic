@@ -215,6 +215,15 @@ def _slug_text(*parts):
     return " ".join(str(p or "").lower() for p in parts)
 
 
+def _has_term(text, *terms):
+    """Match lifecycle/kind terms as words, not substrings inside other words."""
+    for term in terms:
+        pattern = r"(^|[^a-z0-9])" + re.escape(term.lower()) + r"($|[^a-z0-9])"
+        if re.search(pattern, text):
+            return True
+    return False
+
+
 def infer_card_kind(meta, filepath):
     """Infer a stable memory kind without depending on folder taxonomy."""
     explicit = (meta.get("card_kind") or "").strip().lower()
@@ -223,7 +232,7 @@ def infer_card_kind(meta, filepath):
 
     typ = (meta.get("type") or "").strip().lower()
     name = meta.get("name") or os.path.basename(filepath).replace(".md", "")
-    text = _slug_text(filepath, name, meta.get("description"))
+    text = _slug_text(name, meta.get("description"))
 
     if typ == "feedback":
         return "rule"
@@ -231,19 +240,19 @@ def infer_card_kind(meta, filepath):
         return "profile"
     if typ == "code":
         return "code"
-    if "handoff" in text:
+    if _has_term(text, "handoff"):
         return "handoff"
-    if "todo" in text or "next-session" in text:
+    if _has_term(text, "todo", "next-session"):
         return "todo"
-    if "state" in text or "status" in text:
+    if _has_term(text, "state", "status"):
         return "status"
-    if "bug" in text or "regression" in text:
+    if _has_term(text, "bug", "regression"):
         return "bug"
-    if "decision" in text or "decided" in text:
+    if _has_term(text, "decision", "decided"):
         return "decision"
-    if "research" in text or "study" in text:
+    if _has_term(text, "research", "study"):
         return "research"
-    if typ == "reference" or "reference" in text or "skill" in text:
+    if typ == "reference" or _has_term(text, "reference", "skill"):
         return "reference"
     return "finding"
 
@@ -257,17 +266,17 @@ def infer_status(meta, filepath):
         return "superseded"
 
     name = meta.get("name") or os.path.basename(filepath).replace(".md", "")
-    text = _slug_text(filepath, name, meta.get("description"))
+    text = _slug_text(name, meta.get("description"))
 
-    if "superseded" in text:
+    if _has_term(text, "superseded"):
         return "superseded"
-    if "deprecated" in text:
+    if _has_term(text, "deprecated"):
         return "deprecated"
-    if "obsolete" in text:
+    if _has_term(text, "obsolete"):
         return "obsolete"
-    if "archive" in text or "archived" in text:
+    if _has_term(text, "archive", "archived"):
         return "archived"
-    if "resolved" in text or "fixed" in text or "closed" in text:
+    if _has_term(text, "resolved", "fixed", "closed"):
         return "resolved"
     return "current"
 
@@ -291,7 +300,11 @@ def migrate_schema(conn):
     }
     for column, statement in migrations.items():
         if column not in existing:
-            conn.execute(statement)
+            try:
+                conn.execute(statement)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
 
 
 def collect_files():
