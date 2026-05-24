@@ -105,6 +105,42 @@ TOOLS = [
                     "type": "boolean",
                     "description": "Incremental export — only rewrite changed notes",
                     "default": False
+                },
+                "polish": {
+                    "type": "boolean",
+                    "description": "Run LLM note polish. Defaults to false for MCP to avoid surprise API calls/timeouts.",
+                    "default": False
+                },
+                "synthesize": {
+                    "type": "boolean",
+                    "description": "Run LLM topic synthesis. Defaults to false for MCP to avoid surprise API calls/timeouts.",
+                    "default": False
+                },
+                "polish_count": {
+                    "type": "integer",
+                    "description": "Number of notes to polish when polish=true (0=all, max 500)",
+                    "default": 0
+                },
+                "polish_model": {
+                    "type": "string",
+                    "description": "Polish model routing",
+                    "enum": ["auto", "sonnet", "haiku"],
+                    "default": "auto"
+                },
+                "all": {
+                    "type": "boolean",
+                    "description": "Skip quality gate. Implies force=true.",
+                    "default": False
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Allow writing into an existing non-Eidetic directory.",
+                    "default": False
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Export timeout in seconds (30-1800). Defaults to 60 without LLM and 600 with LLM.",
+                    "default": 60
                 }
             },
             "required": ["target"]
@@ -131,6 +167,13 @@ def run_script(script, args=None, timeout=10):
 def clamp_limit(value, default=5, max_limit=50):
     try:
         return max(1, min(int(value), max_limit))
+    except (TypeError, ValueError):
+        return default
+
+
+def clamp_int(value, default, min_value, max_value):
+    try:
+        return max(min_value, min(int(value), max_value))
     except (TypeError, ValueError):
         return default
 
@@ -191,9 +234,32 @@ def handle_export_vault(params):
         args.extend(["--project", str(project)])
     if params.get("delta"):
         args.append("--delta")
+    if params.get("all"):
+        args.append("--all")
+        args.append("--force")
+    elif params.get("force"):
+        args.append("--force")
+
+    polish = bool(params.get("polish", False))
+    synthesize = bool(params.get("synthesize", False))
+    if polish:
+        polish_model = params.get("polish_model", "auto")
+        if polish_model not in {"auto", "sonnet", "haiku"}:
+            return f"ERROR: unsupported polish_model: {polish_model}"
+        args.extend(["--polish-model", str(polish_model)])
+        polish_count = clamp_int(params.get("polish_count", 0), 0, 0, 500)
+        if polish_count:
+            args.extend(["--polish-count", str(polish_count)])
+    else:
+        args.append("--no-polish")
+    if not synthesize:
+        args.append("--no-synthesize")
+
+    timeout_default = 600 if (polish or synthesize) else 60
+    timeout = clamp_int(params.get("timeout", timeout_default), timeout_default, 30, 1800)
     cmd = [sys.executable, os.path.join(BIN, "export_vault.py")] + args
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return "ERROR: export_vault timed out"
     except FileNotFoundError:
@@ -237,7 +303,7 @@ def handle_request(request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "eidetic",
-                "version": "2.2.2"
+                "version": "4.2.1"
             }
         })
 

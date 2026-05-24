@@ -16,15 +16,17 @@ If no target-dir given, exports to ~/Documents/eidetic-vault/
 Options:
   --project <slug>   Export only one project (fuzzy match)
   --delta            Only export changed files since last export
-  --no-polish        Skip Haiku polish (faster, no API calls)
+  --no-polish        Skip LLM polish (faster, no API calls)
+  --no-synthesize    Skip topic synthesis (faster, no API calls)
   --all --force      Skip quality gate (raw dump)
   --no-open          Don't open Obsidian after export
   -h, --help         Show this help
 
 Examples:
-  eidetic export-vault                          # export + open in Obsidian
+  eidetic export-vault                          # export + LLM polish/synthesis + open
   eidetic export-vault ~/my-vault/              # custom location
   eidetic export-vault --delta                  # incremental update + open
+  eidetic export-vault --no-polish --no-synthesize --no-open
   eidetic export-vault --delta --no-open        # update without opening
 EOF
     exit 0

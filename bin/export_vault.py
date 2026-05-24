@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Eidetic v4.0 — Obsidian Vault Exporter.
+"""Eidetic v4.2.1 — Obsidian Vault Exporter.
 
 Reads memory files from ~/.claude/projects/*/memory/, filters by quality gate,
 applies template formatting, writes an Obsidian-compatible vault with MOC and
@@ -1453,7 +1453,7 @@ def main():
     p.add_argument("--all", action="store_true")
     p.add_argument("--force", action="store_true")
     p.add_argument("--no-polish", action="store_true",
-                   help="Skip Haiku polish (faster, no API calls)")
+                   help="Skip LLM polish (faster, no API calls)")
     p.add_argument("--polish-count", type=int, default=0,
                    help="Number of notes to polish (0=all, default: all)")
     p.add_argument("--polish-model", choices=["auto", "sonnet", "haiku"], default="auto",
