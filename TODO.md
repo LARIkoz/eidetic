@@ -68,8 +68,14 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Make Stop-hook signal extraction portable by resolving `claude-batch` instead of hardcoding one maintainer path.
 - [x] Stop parsing TypeScript with the JavaScript grammar; use optional `tree_sitter_typescript` when available.
 - [x] Fix cleanup basename collisions across projects.
-- [x] Refresh derived FTS/vector indexes during update so vector identity migration does not temporarily suppress semantic recall.
+- [x] Refresh derived FTS/code/vector indexes during update so code-aware recall and vector identity migration do not temporarily suppress recall.
 - [x] Add regression tests for the above plus FTS5 special-character command success.
+
+### Closed In v4.2.8
+
+- [x] Fix `code_index.find_code_files()` so it discovers every supported file in a directory instead of only the last filename seen by `os.walk`.
+- [x] Refresh code-aware recall for the whole installed runtime during update, including top-level `mcp_server.py`, before vector and `memory-context.md` refresh.
+- [x] Add CI regression coverage for multi-file code discovery.
 
 ### v2.6 Agent Memory Quality Goals
 
@@ -83,7 +89,7 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 ### Suggested Next Checks
 
-- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.7 agent recall behavior.
+- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.8 agent recall behavior.
 - [ ] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
 - [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.

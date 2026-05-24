@@ -65,9 +65,13 @@ fi
 
 echo "Refreshing derived indexes..."
 "$MEMORY_SYSTEM/bin/index.sh" --incremental 2>&1 || true
+if python3 -c "import tree_sitter" 2>/dev/null; then
+    python3 "$MEMORY_SYSTEM/bin/code_index.py" "$MEMORY_SYSTEM/db/index.db" "$MEMORY_SYSTEM" --slug claude-memory-system 2>&1 || true
+fi
 if [ -f "$MEMORY_SYSTEM/db/vectors.db" ]; then
     python3 "$MEMORY_SYSTEM/bin/embed.py" "$MEMORY_SYSTEM/db/index.db" "$MEMORY_SYSTEM/db/vectors.db" 2>&1 || true
 fi
+python3 "$MEMORY_SYSTEM/bin/assemble_context.py" "$MEMORY_SYSTEM/db/index.db" "$HOME/.claude/rules/memory-context.md" "$(pwd)" 2>&1 || true
 
 python3 -c "
 import json, time
@@ -88,4 +92,4 @@ rm -f "$MEMORY_SYSTEM/.update-available"
 echo ""
 echo "=== Updated to v$NEW_VER ==="
 echo "Preserved: db/ (index + vectors), rules/memory-context.md, settings.json hooks"
-echo "Derived indexes refreshed. Run ~/.claude/memory-system/bin/index.sh --full only if you need a full rebuild."
+echo "Derived indexes and memory context refreshed. Run ~/.claude/memory-system/bin/index.sh --full only if you need a full rebuild."

@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.2.7-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.2.8-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -349,7 +349,7 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 
 | Capability                   | Eidetic                            | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
 | ---------------------------- | ---------------------------------- | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
-|                              | **v4.2.7**                         | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
+|                              | **v4.2.8**                         | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
 | Search                       | FTS5 + vector                      | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
 | Recall benchmark             | **100%**                           | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
 | Auto-inject on session start | **rules/ (no cap)**                | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
@@ -440,10 +440,11 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.2.5** — v2.7 recall hardening: structured MCP result, strict smoke contract, lifecycle inference fix, stable age drift identity
 - [x] **v4.2.6** — v2.7 Stage 3: old-DB lifecycle backfill, wikilink lint noise reduction, broken-link corpus cleanup
 - [x] **v4.2.7** — v2.8 review hardening: vector identity guards, atomic hook locks, MCP error contract, signal path portability
+- [x] **v4.2.8** — code-index file discovery fix; update now refreshes FTS/code/vector/context for the installed runtime
 
 ### Next
 
-- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.7
+- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.8
 - [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter.
 
 ### v5.0 (deferred)
@@ -458,6 +459,12 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 
 ## Changelog
 
+### v4.2.8 (2026-05-24)
+
+- Fixed code index file discovery so every supported file in a directory is indexed, not only the last filename visited by `os.walk`
+- `bin/update.sh` now refreshes code-aware recall for the whole installed runtime, including `mcp_server.py`, before refreshing vectors and `memory-context.md`
+- CI now covers multi-file code discovery to prevent silent code-aware recall regressions
+
 ### v4.2.7 (2026-05-24)
 
 - Vector rows now include stable path/section/content-hash identity, and semantic search skips stale vector rows whose chunk IDs no longer match current index content
@@ -467,7 +474,7 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - MCP tool failures now return `isError: true` consistently; `export_vault` forwards `--synthesize` when requested
 - Code indexing no longer parses TypeScript with the JavaScript grammar; `.ts/.tsx` are enabled only when `tree_sitter_typescript` is installed
 - Cleanup reports now handle duplicate memory basenames across projects without dropping files
-- `bin/update.sh` now refreshes derived FTS/vector indexes after runtime updates so new vector identity metadata is populated immediately
+- `bin/update.sh` now refreshes derived FTS/code/vector indexes after runtime updates so code-aware recall and new vector identity metadata are populated immediately
 - CI now covers vector identity, old-DB deleted-row cleanup, MCP export/error contracts, TypeScript grammar routing, cleanup basename collisions, and FTS5 special-character command success
 
 ### v4.2.6 (2026-05-24)
