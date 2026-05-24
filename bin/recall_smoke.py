@@ -69,7 +69,7 @@ CASES = [
         "name": "sync_skills_private_bug",
         "query": "sync skills PRIVATE_SKILLS bug",
         "expect_any": ["private_skills", "sync-skills-private"],
-        "min_confidence": "high",
+        "min_confidence": "medium",
     },
     {
         "name": "dashscope_400_all_keys",

@@ -80,7 +80,8 @@ def is_shell_test(link):
 
 
 def strip_fenced_code(text):
-    return re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    return re.sub(r"`[^`\n]*`", "", text)
 
 
 def is_placeholder_link(target):

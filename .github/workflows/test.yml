@@ -163,6 +163,8 @@ jobs:
           ```
 
           Real link: [[real-target]]
+
+          Inline code: `inputs:[[chunk1, chunk2, ...]]`
           EOF
           python3 - << 'PY' "$tmp/example.md"
           import sys
