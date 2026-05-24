@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.2.2-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.2.3-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -125,7 +125,7 @@ How: keyword clustering (24 related rules compressed into 1 block), tiered displ
 
 ### Hybrid Search (v2.0)
 
-FTS5 for keywords (50ms). Vector search as fallback when keyword quality is low. Results merged via Reciprocal Rank Fusion.
+FTS5 for keywords (50ms). Vector search as fallback when keyword quality is low. Results merged via Reciprocal Rank Fusion. Search output includes a conservative confidence label; if every candidate is weak, the CLI reports `No confident results` instead of surfacing random-looking vector neighbors as actionable memory.
 
 | Query type                  | FTS5 only   | Hybrid                   |
 | --------------------------- | ----------- | ------------------------ |
@@ -421,6 +421,7 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.2** — LLM topic clustering and wiki-style topic synthesis
 - [x] **v4.2.1** — Runtime hardening: non-interactive install, MCP export flags/timeouts, docs/version sync, CI export smoke
 - [x] **v4.2.2** — Disable topic synthesis by default; keep it explicit/experimental pending v4.3 IA
+- [x] **v4.2.3** — v2.6 foundations: confidence-aware search, stale-context health signal, operator recall smoke
 
 ### Next
 
@@ -438,6 +439,14 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v4.2.3 (2026-05-24)
+
+- Search results now include `confidence`, `confidence_reason`, `retrieval_score`, and `rrf_score` fields
+- CLI search suppresses all-low-confidence result sets and reports `No confident results`
+- `health.sh` reports stale `memory-context.md` when assembled counts no longer match `index.db`
+- Added `bin/recall_smoke.py` for operator-corpus recall regression checks
+- CI asserts confidence metadata in JSON search output
 
 ### v4.2.2 (2026-05-24)
 

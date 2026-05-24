@@ -20,20 +20,27 @@ Context: pause Obsidian/human-facing vault work until the agent-facing memory la
 - [x] Keep `--no-synthesize` accepted as a compatibility no-op.
 - [x] Mark topic synthesis as experimental in docs until v4.3 Vault IA lands.
 
+### Closed In v4.2.3
+
+- [x] Add confidence-aware search UX: all-low-confidence result sets now report `No confident results` instead of surfacing random-looking matches.
+- [x] Add confidence metadata to JSON search results: `confidence`, `confidence_reason`, `retrieval_score`, and `rrf_score`.
+- [x] Add stale-context detection to `health.sh`: `memory-context.md` counts are compared against current `index.db`.
+- [x] Add operator recall regression set in `bin/recall_smoke.py` for large-prompt bug, Gap Pipeline concept, Obsidian best practices, and a weak negative query.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [ ] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
 - [ ] Replace overloaded `type: project` semantics with `card_kind`: `decision`, `bug`, `finding`, `handoff`, `todo`, `status`, `reference`, `research`, `profile`, `rule`.
 - [ ] Add status-aware ranking: active/current notes outrank resolved/superseded/archived notes.
-- [ ] Add confidence-aware search UX: when top results are weak/vector-only, report "no confident result" instead of returning random-looking matches.
-- [ ] Add agent recall regression set for real queries: routing rules, large-prompt bug, drift findings, current Eidetic version, Gap Pipeline concept, Obsidian topic decision.
-- [ ] Add stale-context detection: `health.sh` should report when `memory-context.md` was assembled from an older index or older git/runtime state.
+- [x] Add confidence-aware search UX: when top results are weak/vector-only, report "no confident result" instead of returning random-looking matches.
+- [x] Add first agent recall regression set for real queries: large-prompt bug, Gap Pipeline concept, Obsidian best practices, and weak negative recall.
+- [x] Add stale-context detection: `health.sh` should report when `memory-context.md` was assembled from an older index.
 - [ ] Tighten drift handling for agent recall: broken/stale findings should be visible as diagnostics, not silently buried.
 
 ### Suggested Next Checks
 
 - [ ] Rebuild context and verify `memory-context.md` counts match the current index.
-- [ ] Run 20-query recall benchmark and classify misses: stale, noisy, low-confidence vector fallback, wrong type, missing memory.
+- [ ] Expand recall benchmark from 4 smoke cases to 20 queries and classify misses: stale, noisy, low-confidence vector fallback, wrong type, missing memory.
 - [ ] Design the minimal schema migration that improves agent recall without requiring human-vault IA.
 - [ ] Keep Obsidian export in maintenance mode only: no new human-facing IA until agent recall quality passes.
 
