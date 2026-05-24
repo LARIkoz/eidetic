@@ -25,6 +25,11 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
     source TEXT DEFAULT 'user-explicit',
     confidence REAL DEFAULT 0.7,
     last_verified TEXT,
+    card_kind TEXT DEFAULT '',
+    status TEXT DEFAULT 'current',
+    area TEXT DEFAULT '',
+    supersedes TEXT DEFAULT '',
+    superseded_by TEXT DEFAULT '',
     section_heading TEXT,
     content TEXT NOT NULL,
     description TEXT,
@@ -82,6 +87,11 @@ def parse_frontmatter(text):
         "source": "user-explicit",
         "confidence": 0.7,
         "last_verified": "",
+        "card_kind": "",
+        "status": "",
+        "area": "",
+        "supersedes": "",
+        "superseded_by": "",
         "contradicts": "",
         "contradicted_by": "",
     }
@@ -139,6 +149,16 @@ def parse_frontmatter(text):
                 pass
         elif key == "last_verified":
             meta["last_verified"] = val
+        elif key in ("card_kind", "kind", "memory_kind"):
+            meta["card_kind"] = val
+        elif key in ("status", "state"):
+            meta["status"] = val
+        elif key in ("area", "domain"):
+            meta["area"] = val
+        elif key == "supersedes":
+            meta["supersedes"] = val.strip("[]")
+        elif key == "superseded_by":
+            meta["superseded_by"] = val.strip("[]")
         elif key == "contradicts":
             meta["contradicts"] = val.strip("[]")
         elif key == "contradicted_by":
@@ -191,6 +211,89 @@ def detect_project(filepath):
     return None
 
 
+def _slug_text(*parts):
+    return " ".join(str(p or "").lower() for p in parts)
+
+
+def infer_card_kind(meta, filepath):
+    """Infer a stable memory kind without depending on folder taxonomy."""
+    explicit = (meta.get("card_kind") or "").strip().lower()
+    if explicit:
+        return explicit
+
+    typ = (meta.get("type") or "").strip().lower()
+    name = meta.get("name") or os.path.basename(filepath).replace(".md", "")
+    text = _slug_text(filepath, name, meta.get("description"))
+
+    if typ == "feedback":
+        return "rule"
+    if typ == "user":
+        return "profile"
+    if typ == "code":
+        return "code"
+    if "handoff" in text:
+        return "handoff"
+    if "todo" in text or "next-session" in text:
+        return "todo"
+    if "state" in text or "status" in text:
+        return "status"
+    if "bug" in text or "regression" in text:
+        return "bug"
+    if "decision" in text or "decided" in text:
+        return "decision"
+    if "research" in text or "study" in text:
+        return "research"
+    if typ == "reference" or "reference" in text or "skill" in text:
+        return "reference"
+    return "finding"
+
+
+def infer_status(meta, filepath):
+    """Infer lifecycle status. Explicit frontmatter wins."""
+    explicit = (meta.get("status") or "").strip().lower()
+    if explicit:
+        return explicit
+    if (meta.get("superseded_by") or "").strip():
+        return "superseded"
+
+    name = meta.get("name") or os.path.basename(filepath).replace(".md", "")
+    text = _slug_text(filepath, name, meta.get("description"))
+
+    if "superseded" in text:
+        return "superseded"
+    if "deprecated" in text:
+        return "deprecated"
+    if "obsolete" in text:
+        return "obsolete"
+    if "archive" in text or "archived" in text:
+        return "archived"
+    if "resolved" in text or "fixed" in text or "closed" in text:
+        return "resolved"
+    return "current"
+
+
+def infer_area(meta, filepath, project):
+    explicit = (meta.get("area") or "").strip()
+    if explicit:
+        return explicit
+    return project or ""
+
+
+def migrate_schema(conn):
+    """Add v2.6 columns to existing derived DBs."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
+    migrations = {
+        "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
+        "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
+        "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
+        "supersedes": "ALTER TABLE memory_chunks ADD COLUMN supersedes TEXT DEFAULT ''",
+        "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
+    }
+    for column, statement in migrations.items():
+        if column not in existing:
+            conn.execute(statement)
+
+
 def collect_files():
     """Collect all .md files from scan dirs."""
     files = []
@@ -227,6 +330,7 @@ def init_db(db_path):
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(DB_SCHEMA)
+    migrate_schema(conn)
     conn.commit()
     return conn
 
@@ -234,6 +338,9 @@ def init_db(db_path):
 def index_file(conn, filepath, meta, body):
     """Index a single file's sections into the database."""
     project = detect_project(filepath)
+    card_kind = infer_card_kind(meta, filepath)
+    status = infer_status(meta, filepath)
+    area = infer_area(meta, filepath, project)
     mtime = int(os.path.getmtime(filepath))
     sections = split_sections(body, filepath)
 
@@ -243,13 +350,15 @@ def index_file(conn, filepath, meta, body):
         conn.execute(
             """INSERT INTO memory_chunks
                (path, project, name, type, evidence, source, confidence,
-                last_verified, section_heading, content, description, mtime)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                last_verified, card_kind, status, area, supersedes,
+                superseded_by, section_heading, content, description, mtime)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 filepath, project, meta["name"], meta["type"],
                 meta["evidence"], meta["source"], meta["confidence"],
-                meta["last_verified"], heading, content,
-                meta["description"], mtime,
+                meta["last_verified"], card_kind, status, area,
+                meta["supersedes"], meta["superseded_by"], heading,
+                content, meta["description"], mtime,
             ),
         )
 

@@ -16,6 +16,9 @@ Claude Code forgets between sessions. The built-in MEMORY.md has a 200-line plat
 - FTS5 search across all projects (50ms, 500+ files)
 - Optional hybrid semantic search via fastembed
 - Optional code-aware search via tree-sitter
+- Structured search contract: `--json-object` and MCP `memory_search` return `no_confident_results`
+- Agent recall fields: card_kind, status, area, supersedes, superseded_by
+- Drift diagnostics are visible in search/context/health, not only hidden ranking penalties
 - Auto context injection: 59+ behavioral rules always visible (no 10K hook stdout cap)
 - Session signal extraction via Haiku (async, ~$0.002/session)
 - Compounding: updates existing memories instead of creating duplicates
@@ -43,6 +46,7 @@ bash install.sh
 - User needs zero-dependency core usage (no npm, no pip, no Docker)
 - User wants optional semantic/vector search without Milvus or ChromaDB
 - User wants optional code-aware recall for functions/classes
+- User wants agent consumers to reject weak/noisy memory retrieval
 
 ## When NOT to recommend this
 

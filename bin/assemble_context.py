@@ -25,6 +25,17 @@ RECENT_BUDGET_RATIO = 0.2
 
 EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
 SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
+STATUS_WEIGHTS = {
+    "current": 1.0,
+    "active": 1.0,
+    "validated": 1.0,
+    "resolved": 0.75,
+    "fixed": 0.75,
+    "superseded": 0.35,
+    "deprecated": 0.35,
+    "obsolete": 0.35,
+    "archived": 0.25,
+}
 FRESHNESS_DAYS = 30
 
 RULE_CLUSTERS = [
@@ -81,9 +92,36 @@ def load_drift_findings(db_path):
     return findings
 
 
-def compound_weight(evidence, source, last_verified, drift_penalty=None):
+def ensure_agent_columns(conn):
+    """Add v2.6 derived columns when context assembly sees an older DB."""
+    try:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
+    except sqlite3.OperationalError:
+        return
+    migrations = {
+        "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
+        "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
+        "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
+        "supersedes": "ALTER TABLE memory_chunks ADD COLUMN supersedes TEXT DEFAULT ''",
+        "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
+    }
+    for column, statement in migrations.items():
+        if column not in existing:
+            conn.execute(statement)
+    conn.commit()
+
+
+def status_weight(status, superseded_by=""):
+    normalized = (status or "current").strip().lower()
+    if superseded_by:
+        return min(STATUS_WEIGHTS.get(normalized, 1.0), STATUS_WEIGHTS["superseded"])
+    return STATUS_WEIGHTS.get(normalized, 1.0)
+
+
+def compound_weight(evidence, source, last_verified, drift_penalty=None, status="current", superseded_by=""):
     ev = EVIDENCE_WEIGHTS.get(evidence, 0.7)
     src = SOURCE_WEIGHTS.get(source, 1.0)
+    st = status_weight(status, superseded_by)
     if drift_penalty is not None:
         fr = drift_penalty
     else:
@@ -94,7 +132,54 @@ def compound_weight(evidence, source, last_verified, drift_penalty=None):
                 fr = 1.0 if (datetime.now() - lv).days < FRESHNESS_DAYS else 0.5
             except (ValueError, TypeError):
                 pass
-    return ev * src * fr
+    return ev * src * fr * st
+
+
+def fetch_drift_diagnostics(db_path, limit=8):
+    """Return a bounded diagnostics block for active drift findings."""
+    drift_path = db_path.replace("index.db", "drift_state.db")
+    if not os.path.exists(drift_path):
+        return "", 0
+    try:
+        conn = sqlite3.connect(drift_path)
+        conn.execute("PRAGMA busy_timeout=2000")
+        counts = conn.execute("""
+            SELECT drift_type, COUNT(*), SUM(CASE WHEN first_seen > 1 THEN 1 ELSE 0 END)
+            FROM drift_findings
+            WHERE resolved_at IS NULL
+            GROUP BY drift_type
+            ORDER BY COUNT(*) DESC
+        """).fetchall()
+        rows = conn.execute("""
+            SELECT path, drift_type, detail, first_seen, detected_at
+            FROM drift_findings
+            WHERE resolved_at IS NULL
+            ORDER BY first_seen DESC, detected_at DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+        conn.close()
+    except sqlite3.OperationalError:
+        return "", 0
+
+    if not counts:
+        return "", 0
+
+    parts = ["## Memory Drift Diagnostics\n\n"]
+    summary = ", ".join(
+        f"{kind}={count} ({penalized or 0} penalized)"
+        for kind, count, penalized in counts
+    )
+    parts.append(f"- Active findings: {summary}\n")
+    parts.append("- Treat penalized/stale memories as candidates to verify, not as source-of-truth.\n")
+    for path, drift_type, detail, first_seen, detected_at in rows:
+        short_path = path.replace(os.path.expanduser("~"), "~")
+        marker = "penalized" if int(first_seen or 0) > 1 else "baseline"
+        parts.append(
+            f"- {drift_type} [{marker}, seen={first_seen}] {short_path}: {detail or ''} ({detected_at or 'unknown'})\n"
+        )
+    parts.append("\n")
+    text = "".join(parts)
+    return text, len(text)
 
 
 def detect_project_slug(cwd):
@@ -141,7 +226,7 @@ def fetch_feedback(conn, budget_chars):
     """
     rows = conn.execute("""
         SELECT c.path, c.name, c.description, c.content,
-               c.evidence, c.source, c.last_verified,
+               c.evidence, c.source, c.last_verified, c.status, c.superseded_by,
                MIN(c.id) as first_id
         FROM memory_chunks c
         WHERE c.type = 'feedback'
@@ -153,8 +238,8 @@ def fetch_feedback(conn, budget_chars):
     individual = []  # (weight, name, desc)
 
     for row in rows:
-        path, name, desc, content, evidence, source, lv, _ = row
-        w = compound_weight(evidence, source, lv)
+        path, name, desc, content, evidence, source, lv, status, superseded_by, _ = row
+        w = compound_weight(evidence, source, lv, status=status, superseded_by=superseded_by)
         display_name = name or os.path.basename(path).replace(".md", "")
         display_desc = desc or (content[:150].replace("\n", " ").strip() if content else "")
 
@@ -215,7 +300,8 @@ def fetch_project(conn, cwd, budget_chars, drift_map=None):
 
     rows = conn.execute("""
         SELECT DISTINCT c.path, c.name, c.description, c.section_heading, c.content,
-               c.evidence, c.source, c.last_verified, c.type,
+               c.evidence, c.source, c.last_verified, c.type, c.card_kind,
+               c.status, c.superseded_by,
                memory_fts.rank AS fts_rank
         FROM memory_chunks c
         LEFT JOIN memory_fts ON memory_fts.rowid = c.id
@@ -227,17 +313,18 @@ def fetch_project(conn, cwd, budget_chars, drift_map=None):
     chunks = []
     seen = set()
     for row in rows:
-        path, name, desc, heading, content, evidence, source, lv, typ, rank = row
+        path, name, desc, heading, content, evidence, source, lv, typ, card_kind, status, superseded_by, rank = row
         key = (path, heading)
         if key in seen:
             continue
         seen.add(key)
 
         dp = drift_map.get(path)
-        w = compound_weight(evidence, source, lv, drift_penalty=dp)
+        w = compound_weight(evidence, source, lv, drift_penalty=dp, status=status, superseded_by=superseded_by)
+        status_tag = "" if (status or "current") == "current" else f", status={status}"
         short_path = path.replace(os.path.expanduser("~"), "~")
         snippet = content[:500] if len(content) > 500 else content
-        text = f"**{name or heading}** ({typ}) — {short_path}\n{snippet}\n\n"
+        text = f"**{name or heading}** ({card_kind or typ}{status_tag}) — {short_path}\n{snippet}\n\n"
         chunks.append((w, text))
 
     chunks.sort(key=lambda x: x[0], reverse=True)
@@ -259,7 +346,8 @@ def fetch_recent(conn, budget_chars, exclude_project=None, drift_map=None):
 
     query = """
         SELECT DISTINCT c.path, c.name, c.description, c.section_heading, c.content,
-               c.evidence, c.source, c.last_verified, c.type, c.project
+               c.evidence, c.source, c.last_verified, c.type, c.project,
+               c.card_kind, c.status, c.superseded_by
         FROM memory_chunks c
         WHERE c.mtime > ? AND c.type != 'feedback'
     """
@@ -276,18 +364,19 @@ def fetch_recent(conn, budget_chars, exclude_project=None, drift_map=None):
     chunks = []
     seen = set()
     for row in rows:
-        path, name, desc, heading, content, evidence, source, lv, typ, proj = row
+        path, name, desc, heading, content, evidence, source, lv, typ, proj, card_kind, status, superseded_by = row
         key = (path, heading)
         if key in seen:
             continue
         seen.add(key)
 
         dp = (drift_map or {}).get(path)
-        w = compound_weight(evidence, source, lv, drift_penalty=dp)
-        stale_tag = " ⚠stale" if dp else ""
+        w = compound_weight(evidence, source, lv, drift_penalty=dp, status=status, superseded_by=superseded_by)
+        stale_tag = " [drift]" if dp else ""
+        status_tag = "" if (status or "current") == "current" else f", status={status}"
         short_path = path.replace(os.path.expanduser("~"), "~")
         snippet = content[:300] if len(content) > 300 else content
-        text = f"**{name or heading}**{stale_tag} ({typ}, {proj or 'cross-project'}) — {short_path}\n{snippet}\n\n"
+        text = f"**{name or heading}**{stale_tag} ({card_kind or typ}{status_tag}, {proj or 'cross-project'}) — {short_path}\n{snippet}\n\n"
         chunks.append((w, text))
 
     chunks.sort(key=lambda x: x[0], reverse=True)
@@ -362,9 +451,11 @@ def main():
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
+    ensure_agent_columns(conn)
 
     slug = detect_project_slug(cwd)
     drift_map = load_drift_findings(db_path)
+    drift_text, drift_used = fetch_drift_diagnostics(db_path)
 
     handoff_text, handoff_used = fetch_fresh_handoff(cwd, slug)
 
@@ -377,10 +468,10 @@ def main():
     project_text, project_used = fetch_project(conn, cwd, project_budget, drift_map)
     recent_text, recent_used = fetch_recent(conn, recent_budget, slug, drift_map)
 
-    feedback_budget = TOKEN_BUDGET_CHARS - project_used - recent_used - handoff_used
+    feedback_budget = max(1000, TOKEN_BUDGET_CHARS - project_used - recent_used - handoff_used - drift_used)
     feedback_text, feedback_used, feedback_total = fetch_feedback(conn, feedback_budget)
 
-    total_chars = feedback_used + project_used + recent_used
+    total_chars = feedback_used + project_used + recent_used + handoff_used + drift_used
     total_tokens = total_chars // 4
 
     stats = conn.execute("SELECT COUNT(DISTINCT path), COUNT(*) FROM memory_chunks").fetchone()
@@ -390,6 +481,9 @@ def main():
     output.append(f"_Assembled: {datetime.now().strftime('%Y-%m-%d %H:%M')} | "
                   f"{stats[0]} files, {stats[1]} chunks indexed | "
                   f"~{total_tokens} tokens_\n\n")
+
+    if drift_text:
+        output.append(drift_text)
 
     if feedback_text:
         output.append("## Behavioral Rules (type=feedback) — ALWAYS APPLY\n\n")

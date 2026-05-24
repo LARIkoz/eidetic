@@ -18,8 +18,9 @@ Run the search command with a natural language query:
 ### Options
 
 - `--limit N` — number of results (default 10)
-- `--type feedback|project|user|reference` — filter by memory type
+- `--type feedback|project|user|reference|code` — filter by memory type
 - `--json` — JSON output for programmatic use
+- `--json-object` — structured agent output with `no_confident_results`
 
 ### Examples
 
@@ -47,6 +48,9 @@ Run the search command with a natural language query:
 Each result shows:
 
 - Score (compound: FTS5 rank × evidence × source × freshness)
+- Confidence and confidence reason
+- Card kind, lifecycle status, and supersession fields
+- Drift findings when a memory is stale or otherwise suspect
 - File path
 - Memory name and type
 - Section heading
@@ -54,8 +58,12 @@ Each result shows:
 
 Results are ranked by compound score. Higher = more relevant + more trustworthy.
 
+For agent consumers, prefer `--json-object`. If `no_confident_results` is
+true, treat rows as weak candidates to inspect, not as usable memory.
+
 ## Important
 
 - If a result has `contradicts:` in frontmatter — read BOTH sides before acting
 - `agent-extracted` source = 0.5x weight (self-referential discount)
 - Results older than 30 days have reduced freshness weight
+- Superseded/deprecated/archived memories are downranked and should be verified before use

@@ -15,6 +15,20 @@ if [ -f "$DB" ]; then
     CURRENT_FILES="$FILES"
     CURRENT_CHUNKS="$CHUNKS"
     echo "✅ Index: ${SIZE}, ${FILES} files, ${CHUNKS} chunks"
+
+    DRIFT_DB="$HOME/.claude/memory-system/db/drift_state.db"
+    if [ -f "$DRIFT_DB" ]; then
+        ACTIVE_DRIFT=$(sqlite3 "$DRIFT_DB" "SELECT COUNT(*) FROM drift_findings WHERE resolved_at IS NULL" 2>/dev/null || echo "?")
+        PENALIZED_DRIFT=$(sqlite3 "$DRIFT_DB" "SELECT COUNT(*) FROM drift_findings WHERE resolved_at IS NULL AND first_seen > 1" 2>/dev/null || echo "?")
+        DRIFT_TYPES=$(sqlite3 "$DRIFT_DB" "SELECT group_concat(drift_type || '=' || cnt, ', ') FROM (SELECT drift_type, COUNT(*) AS cnt FROM drift_findings WHERE resolved_at IS NULL GROUP BY drift_type ORDER BY cnt DESC)" 2>/dev/null || true)
+        if [ "$ACTIVE_DRIFT" = "0" ]; then
+            echo "✅ Drift: 0 active findings"
+        else
+            echo "⚠️ Drift: ${ACTIVE_DRIFT} active, ${PENALIZED_DRIFT} penalized (${DRIFT_TYPES:-no type summary})"
+        fi
+    else
+        echo "⬜ Drift state not created yet"
+    fi
 else
     echo "❌ Index missing: $DB"
 fi

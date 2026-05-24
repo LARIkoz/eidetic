@@ -31,22 +31,32 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Add `PROJECT_MAP.md` and link repo entrypoints to canonical brief/charter, installed runtime, source corpus, and human projection.
 - [x] Sync canonical Kurdyuk-run `state.md`, `todo.md`, `gate-log.md`, `brief.md`, and `charter.md` with v4.2.3/v2.6 status.
 
+### Closed In v4.2.4
+
+- [x] Add explicit JSON/MCP no-confident contract via `--json-object` and MCP `memory_search`.
+- [x] Add durable retrieval fields: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`.
+- [x] Infer card kind/status conservatively from frontmatter, memory type, filename, and path.
+- [x] Add status-aware ranking so current cards outrank resolved/superseded/deprecated/archived cards.
+- [x] Make drift visible in search results, CLI rows, context assembly, and health output.
+- [x] Expand operator recall smoke from 4 to 21 cases on the live corpus.
+- [x] Keep Obsidian/Vault IA untouched; v4.x projection remains maintenance/deferred.
+
 ### v2.6 Agent Memory Quality Goals
 
-- [ ] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
-- [ ] Replace overloaded `type: project` semantics with `card_kind`: `decision`, `bug`, `finding`, `handoff`, `todo`, `status`, `reference`, `research`, `profile`, `rule`.
-- [ ] Add status-aware ranking: active/current notes outrank resolved/superseded/archived notes.
+- [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
+- [x] Replace overloaded `type: project` semantics with `card_kind`: `decision`, `bug`, `finding`, `handoff`, `todo`, `status`, `reference`, `research`, `profile`, `rule`.
+- [x] Add status-aware ranking: active/current notes outrank resolved/superseded/archived notes.
 - [x] Add confidence-aware search UX: when top results are weak/vector-only, report "no confident result" instead of returning random-looking matches.
 - [x] Add first agent recall regression set for real queries: large-prompt bug, Gap Pipeline concept, Obsidian best practices, and weak negative recall.
 - [x] Add stale-context detection: `health.sh` should report when `memory-context.md` was assembled from an older index.
-- [ ] Tighten drift handling for agent recall: broken/stale findings should be visible as diagnostics, not silently buried.
+- [x] Tighten drift handling for agent recall: broken/stale findings should be visible as diagnostics, not silently buried.
 
 ### Suggested Next Checks
 
-- [ ] Rebuild context and verify `memory-context.md` counts match the current index.
-- [ ] Expand recall benchmark from 4 smoke cases to 20 queries and classify misses: stale, noisy, low-confidence vector fallback, wrong type, missing memory.
-- [ ] Design the minimal schema migration that improves agent recall without requiring human-vault IA.
-- [ ] Keep Obsidian export in maintenance mode only: no new human-facing IA until agent recall quality passes.
+- [ ] Re-run clean v2.x consreview against v4.2.4 agent recall behavior.
+- [ ] Triage residual lint debt into real fixes vs accepted standalone memories.
+- [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.
+- [ ] Keep Obsidian export in maintenance mode only: no new human-facing IA until agent recall quality stays stable after review.
 
 ### Deferred: v4.3 Vault IA
 

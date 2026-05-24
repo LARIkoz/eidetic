@@ -42,6 +42,8 @@ jobs:
           metadata:
             type: project
             evidence: observed
+            card_kind: decision
+            status: current
           ---
           # Test Project
           ## Section A
@@ -56,6 +58,7 @@ jobs:
           CHUNKS=$(sqlite3 ~/.claude/memory-system/db/index.db "SELECT COUNT(*) FROM memory_chunks")
           echo "Indexed $CHUNKS chunks"
           [ "$CHUNKS" -ge 2 ] || exit 1
+          sqlite3 ~/.claude/memory-system/db/index.db "SELECT card_kind, status, area, supersedes, superseded_by FROM memory_chunks LIMIT 1" >/dev/null
 
       - name: Test incremental index
         run: |
@@ -77,6 +80,10 @@ jobs:
       - name: Test search JSON output
         run: |
           bash bin/search.sh "test" --json --limit 3 | python3 -c "import json,sys; data=json.load(sys.stdin); assert data; assert all('confidence' in r and 'retrieval_score' in r for r in data)" || exit 1
+
+      - name: Test structured no-confident search output
+        run: |
+          bash bin/search.sh "zzzznotarealmemoryquery" --json-object --limit 3 | python3 -c "import json,sys; data=json.load(sys.stdin); assert data['no_confident_results'] is True; assert 'results' in data; assert data['best_confidence'] == 'low'" || exit 1
 
       - name: Test FTS5 special characters
         run: |
