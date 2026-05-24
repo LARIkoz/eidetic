@@ -461,7 +461,7 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 
 - Incremental indexing now detects old rows with empty lifecycle metadata and reindexes existing memory files to backfill `card_kind`, `status`, and related derived fields
 - CI now includes an old-DB reproducer where unchanged `index_meta` rows previously skipped semantic backfill
-- Wikilink lint/drift extraction now ignores fenced Markdown examples and obvious placeholders such as `[[filename]]`
+- Wikilink lint/drift extraction now ignores fenced Markdown examples, inline code snippets, and obvious placeholders such as `[[filename]]`; drift validates full source files instead of split chunks
 - Maintainer corpus broken wikilinks were cleaned from 24 to 0 by converting non-memory references to Markdown links and fixing memory-to-memory targets
 
 ### v4.2.5 (2026-05-24)

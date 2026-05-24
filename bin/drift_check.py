@@ -158,6 +158,7 @@ def extract_wikilinks_from_content(content):
     if not content:
         return []
     content = re.sub(r"```.*?```", "", content, flags=re.DOTALL)
+    content = re.sub(r"`[^`\n]*`", "", content)
     raw = re.findall(r'\[\[([^\]]+)\]\]', content)
     links = []
     seen = set()
@@ -180,12 +181,23 @@ def extract_wikilinks_from_content(content):
 
 def check_wikilink_drift(index_conn, known_names):
     rows = index_conn.execute("""
-        SELECT DISTINCT path, type, content FROM memory_chunks
-        WHERE content LIKE '%[[%' AND source != 'code-index'
+        SELECT DISTINCT path, type FROM memory_chunks
+        WHERE source != 'code-index'
     """).fetchall()
 
     findings = []
-    for path, mem_type, content in rows:
+    for path, mem_type in rows:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except OSError:
+            chunks = index_conn.execute("""
+                SELECT content FROM memory_chunks
+                WHERE path = ? AND source != 'code-index'
+            """, (path,)).fetchall()
+            content = "\n".join(row[0] or "" for row in chunks)
+        if "[[" not in content:
+            continue
         links = extract_wikilinks_from_content(content)
         for link in links:
             if link not in known_names:
