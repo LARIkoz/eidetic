@@ -4,6 +4,8 @@
 
 Context: pause Obsidian/human-facing vault work until the agent-facing memory layer is excellent. A clean vault is secondary; the core product is an agent that recalls the right rules, decisions, bugs, and project state, and refuses low-confidence retrieval instead of surfacing random near-matches.
 
+Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk-lite/.kurdyuk-lite/runs/ai-memory-system/`. Use `PROJECT_MAP.md` as the local routing table before editing roadmap, charter-sensitive behavior, runtime docs, or installed state.
+
 ### Closed In v4.2.1
 
 - [x] Keep `install.sh` non-interactive by default. Daily vault export is opt-in through `EIDETIC_SETUP_CRON=1`.
@@ -26,6 +28,7 @@ Context: pause Obsidian/human-facing vault work until the agent-facing memory la
 - [x] Add confidence metadata to JSON search results: `confidence`, `confidence_reason`, `retrieval_score`, and `rrf_score`.
 - [x] Add stale-context detection to `health.sh`: `memory-context.md` counts are compared against current `index.db`.
 - [x] Add operator recall regression set in `bin/recall_smoke.py` for large-prompt bug, Gap Pipeline concept, Obsidian best practices, and a weak negative query.
+- [x] Add `PROJECT_MAP.md` and link repo entrypoints to canonical brief/charter, installed runtime, source corpus, and human projection.
 
 ### v2.6 Agent Memory Quality Goals
 
