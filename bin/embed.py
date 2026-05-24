@@ -11,7 +11,6 @@ import os
 import sqlite3
 import sys
 import time
-import numpy as np
 
 MODEL_NAME = "BAAI/bge-small-en-v1.5"
 VECTOR_DIM = 384
@@ -66,6 +65,8 @@ def content_hash(name, desc, content, heading):
 
 
 def embed_texts(texts):
+    import numpy as np
+
     model = get_model()
     embeddings = list(model.embed(texts))
     return [np.array(e, dtype=np.float32).tobytes() for e in embeddings]
@@ -218,6 +219,8 @@ def run_incremental(index_db_path, vector_db_path):
 
 
 def search(vector_db_path, query, limit=5):
+    import numpy as np
+
     vec_conn = init_vector_db(vector_db_path)
     try:
         model = get_model()
