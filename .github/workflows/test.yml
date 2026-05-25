@@ -148,6 +148,49 @@ jobs:
               os.remove(path)
           PY
 
+      - name: Test age drift honors lifecycle and card kind
+        run: |
+          python3 - << 'PY'
+          from datetime import datetime, timedelta
+          import sqlite3
+          import sys
+          sys.path.insert(0, "bin")
+          import drift_check
+
+          conn = sqlite3.connect(":memory:")
+          conn.execute("""
+              CREATE TABLE memory_chunks (
+                  id INTEGER PRIMARY KEY,
+                  path TEXT,
+                  type TEXT,
+                  evidence TEXT,
+                  last_verified TEXT,
+                  mtime INTEGER,
+                  card_kind TEXT,
+                  status TEXT
+              )
+          """)
+          old_for_60 = (datetime.now() - timedelta(days=66)).date().isoformat()
+          recent_for_60 = (datetime.now() - timedelta(days=35)).date().isoformat()
+          very_old = (datetime.now() - timedelta(days=180)).date().isoformat()
+          rows = [
+              ("/tmp/current-project.md", "project", "observed", old_for_60, 0, "finding", "current"),
+              ("/tmp/current-todo.md", "project", "observed", old_for_60, 0, "todo", "current"),
+              ("/tmp/recent-todo.md", "project", "observed", recent_for_60, 0, "todo", "current"),
+              ("/tmp/archived-status.md", "project", "observed", very_old, 0, "status", "archived"),
+              ("/tmp/reference.md", "project", "observed", old_for_60, 0, "reference", "current"),
+              ("/tmp/source.py", "code", "observed", very_old, 0, "code", "current"),
+          ]
+          conn.executemany(
+              "INSERT INTO memory_chunks (path, type, evidence, last_verified, mtime, card_kind, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
+              rows,
+          )
+          findings = drift_check.check_age_drift(conn)
+          assert findings == [
+              ("/tmp/current-todo.md", "project", "age_stale", "threshold=60d")
+          ], findings
+          PY
+
       - name: Test confidence escalation counts files, not chunks
         run: |
           python3 - << 'PY'
