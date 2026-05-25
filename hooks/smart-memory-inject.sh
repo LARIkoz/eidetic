@@ -62,27 +62,29 @@ python3 "$MEMORY_SYSTEM/bin/drift_check.py" "$DB" 2>/dev/null || true
 
 # Code indexing for CWD project (if tree-sitter available)
 if python3 -c "import tree_sitter" 2>/dev/null; then
-    python3 -c "
+    python3 - "$MEMORY_SYSTEM/bin/code_index.py" "$DB" "$(pwd)" <<'PY' 2>/dev/null || true
 import subprocess, sys
+script, db_path, project_dir = sys.argv[1:4]
 try:
-    subprocess.run([sys.executable, '$MEMORY_SYSTEM/bin/code_index.py', '$DB', '$(pwd)'],
+    subprocess.run([sys.executable, script, db_path, project_dir],
                    timeout=10, capture_output=True)
 except subprocess.TimeoutExpired:
     pass
-" 2>/dev/null || true
+PY
 fi
 
 # Incremental vector embeddings (if fastembed available)
 VECTORS_DB="$MEMORY_SYSTEM/db/vectors.db"
 if [ -f "$VECTORS_DB" ]; then
-    python3 -c "
+    python3 - "$MEMORY_SYSTEM/bin/embed.py" "$DB" "$VECTORS_DB" <<'PY' 2>/dev/null || true
 import subprocess, sys
+script, db_path, vectors_db = sys.argv[1:4]
 try:
-    subprocess.run([sys.executable, '$MEMORY_SYSTEM/bin/embed.py', '$DB', '$VECTORS_DB'],
+    subprocess.run([sys.executable, script, db_path, vectors_db],
                    timeout=30, capture_output=True)
 except subprocess.TimeoutExpired:
     pass
-" 2>/dev/null || true
+PY
 fi
 
 # Record session + get phase-adaptive hint
