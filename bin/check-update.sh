@@ -20,17 +20,30 @@ if [ ! -f "$META" ]; then
     exit 0
 fi
 
-LOCAL_SHA=$(python3 -c "import json; print(json.load(open('$META')).get('git_sha',''))" 2>/dev/null || echo "")
+LOCAL_SHA=$(
+python3 - "$META" 2>/dev/null << 'PYEOF' || echo ""
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    print(json.load(f).get("git_sha", ""))
+PYEOF
+)
 if [ -z "$LOCAL_SHA" ]; then
     exit 0
 fi
 
-LAST_CHECK=$(python3 -c "
+LAST_CHECK=$(
+python3 - "$META" 2>/dev/null << 'PYEOF' || echo "check"
 import json, time
-m = json.load(open('$META'))
-lc = m.get('last_update_check', 0)
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    m = json.load(f)
+lc = m.get("last_update_check", 0)
 print('skip' if time.time() - lc < 21600 else 'check')
-" 2>/dev/null || echo "check")
+PYEOF
+)
 
 if [ "$LAST_CHECK" = "skip" ]; then
     if [ -f "$UPDATE_MARKER" ]; then
@@ -41,13 +54,16 @@ fi
 
 REMOTE_SHA=$(git ls-remote "$REPO" refs/heads/main 2>/dev/null | cut -f1 || echo "")
 
-python3 -c "
+python3 - "$META" << 'PYEOF' 2>/dev/null || true
 import json, time
-m = json.load(open('$META'))
-m['last_update_check'] = time.time()
-with open('$META', 'w') as f:
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    m = json.load(f)
+m["last_update_check"] = time.time()
+with open(sys.argv[1], "w", encoding="utf-8") as f:
     json.dump(m, f, indent=2)
-" 2>/dev/null || true
+PYEOF
 
 if [ -z "$REMOTE_SHA" ]; then
     exit 0
