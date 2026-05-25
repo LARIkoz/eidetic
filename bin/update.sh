@@ -3,7 +3,15 @@
 # Preserves: db/, rules/memory-context.md, settings.json hooks
 set -euo pipefail
 
-MEMORY_SYSTEM="$HOME/.claude/memory-system"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INSTALLED_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+if [ -n "${EIDETIC_MEMORY_SYSTEM:-}" ]; then
+    MEMORY_SYSTEM="$EIDETIC_MEMORY_SYSTEM"
+elif [ -f "$INSTALLED_ROOT/.installed.json" ]; then
+    MEMORY_SYSTEM="$INSTALLED_ROOT"
+else
+    MEMORY_SYSTEM="$HOME/.claude/memory-system"
+fi
 META="$MEMORY_SYSTEM/.installed.json"
 REPO="https://github.com/LARIkoz/eidetic.git"
 TMP_DIR=$(mktemp -d)
@@ -60,6 +68,19 @@ fi
 if [ -d "$TMP_DIR/eidetic/skill" ]; then
     mkdir -p "$HOME/.claude/skills/memory-recall"
     cp "$TMP_DIR/eidetic/skill/SKILL.md" "$HOME/.claude/skills/memory-recall/"
+    if [ "$MEMORY_SYSTEM" != "$HOME/.claude/memory-system" ]; then
+        python3 - "$HOME/.claude/skills/memory-recall/SKILL.md" "$MEMORY_SYSTEM" << 'PYEOF'
+import pathlib, shlex, sys
+
+path = pathlib.Path(sys.argv[1])
+memory_system = sys.argv[2]
+text = path.read_text(encoding="utf-8")
+path.write_text(
+    text.replace("~/.claude/memory-system", shlex.quote(memory_system)),
+    encoding="utf-8",
+)
+PYEOF
+    fi
     echo "Skill updated"
 fi
 
@@ -105,10 +126,11 @@ rm -f "$MEMORY_SYSTEM/.update-available"
 echo ""
 echo "=== Updated to v$NEW_VER ==="
 echo "Preserved: db/ (index + vectors), rules/memory-context.md, settings.json hooks"
+COMMAND_MEMORY_SYSTEM=$(printf '%q' "$MEMORY_SYSTEM")
 if [ "$REFRESH_FAILED" -eq 0 ]; then
-    echo "Derived indexes and memory context refreshed. Run ~/.claude/memory-system/bin/index.sh --full only if you need a full rebuild."
+    echo "Derived indexes and memory context refreshed. Run $COMMAND_MEMORY_SYSTEM/bin/index.sh --full only if you need a full rebuild."
 else
     echo "WARNING: Runtime files updated, but one or more derived refresh steps failed."
-    echo "Run ~/.claude/memory-system/bin/health.sh and refresh the failing derived artifact before trusting recall."
+    echo "Run $COMMAND_MEMORY_SYSTEM/bin/health.sh and refresh the failing derived artifact before trusting recall."
     exit 2
 fi

@@ -3,7 +3,15 @@
 # Writes a one-line notice to stdout if update available. Silent otherwise.
 set -euo pipefail
 
-MEMORY_SYSTEM="$HOME/.claude/memory-system"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INSTALLED_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+if [ -n "${EIDETIC_MEMORY_SYSTEM:-}" ]; then
+    MEMORY_SYSTEM="$EIDETIC_MEMORY_SYSTEM"
+elif [ -f "$INSTALLED_ROOT/.installed.json" ]; then
+    MEMORY_SYSTEM="$INSTALLED_ROOT"
+else
+    MEMORY_SYSTEM="$HOME/.claude/memory-system"
+fi
 META="$MEMORY_SYSTEM/.installed.json"
 UPDATE_MARKER="$MEMORY_SYSTEM/.update-available"
 REPO="https://github.com/LARIkoz/eidetic.git"
@@ -46,7 +54,8 @@ if [ -z "$REMOTE_SHA" ]; then
 fi
 
 if [ "$REMOTE_SHA" != "$LOCAL_SHA" ]; then
-    MSG="Eidetic update available (${REMOTE_SHA:0:7}). Run: bash ~/.claude/memory-system/bin/update.sh"
+    COMMAND_MEMORY_SYSTEM=$(printf '%q' "$MEMORY_SYSTEM")
+    MSG="Eidetic update available (${REMOTE_SHA:0:7}). Run: bash $COMMAND_MEMORY_SYSTEM/bin/update.sh"
     echo "$MSG" > "$UPDATE_MARKER"
     echo "$MSG"
 else

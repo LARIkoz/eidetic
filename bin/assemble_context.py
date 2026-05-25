@@ -410,6 +410,9 @@ def fetch_fresh_handoff(cwd, slug):
     for f in _glob.glob(memory_pattern, recursive=True):
         candidates.append(f)
 
+    output_handoff_pattern = os.path.join(cwd, "output", "handoff-*", "state.md")
+    candidates.extend(_glob.glob(output_handoff_pattern))
+
     for handoff_dir in [os.path.join(cwd, "handoff"), os.path.join(cwd, ".kurdyuk-lite/runs")]:
         if os.path.isdir(handoff_dir):
             for root, dirs, files in os.walk(handoff_dir):
