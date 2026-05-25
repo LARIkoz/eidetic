@@ -128,7 +128,6 @@ jobs:
           import tempfile
           sys.path.insert(0, "bin")
           import drift_check
-          import index_impl
 
           fd, path = tempfile.mkstemp(suffix=".db")
           os.close(fd)
@@ -158,6 +157,7 @@ jobs:
           import tempfile
           sys.path.insert(0, "bin")
           import drift_check
+          import index_impl
 
           conn = sqlite3.connect(":memory:")
           conn.execute(
