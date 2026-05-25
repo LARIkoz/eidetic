@@ -1013,6 +1013,55 @@ jobs:
           assert signal == "Decision: Tool result ignored.\n", signal
           PY
 
+      - name: Test Stop hook does not raw-tail fallback on oversized tool result
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          export HOME="$tmp/home"
+          export EIDETIC_MEMORY_SYSTEM="$tmp/custom-memory-system"
+          export CLAUDE_RAN="$tmp/claude-ran"
+          export COMPOUND_LOG="$tmp/compound.log"
+          mkdir -p "$HOME" "$EIDETIC_MEMORY_SYSTEM/bin" "$tmp/fakebin"
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/index.sh" << 'EOF'
+          #!/bin/bash
+          exit 0
+          EOF
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/compound.py" << 'EOF'
+          import os
+          import pathlib
+          import sys
+          pathlib.Path(os.environ["COMPOUND_LOG"]).write_text(sys.stdin.read(), encoding="utf-8")
+          EOF
+          chmod +x "$EIDETIC_MEMORY_SYSTEM/bin/index.sh"
+          cat > "$tmp/fakebin/claude-batch" << 'EOF'
+          #!/bin/bash
+          touch "$CLAUDE_RAN"
+          exit 2
+          EOF
+          cat > "$tmp/fakebin/codex-batch" << 'EOF'
+          #!/bin/bash
+          exit 1
+          EOF
+          chmod +x "$tmp/fakebin/claude-batch" "$tmp/fakebin/codex-batch"
+          python3 - << 'PY' "$tmp/transcript.jsonl"
+          import json
+          import sys
+          filler = "x" * 1200
+          leak = "SECRET_TOOL_RESULT_TAIL_LEAK" + ("x" * 9000)
+          with open(sys.argv[1], "w", encoding="utf-8") as f:
+              f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "Earlier human request should be outside tail. " + filler}}) + "\n")
+              f.write(json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": leak}]}}) + "\n")
+          PY
+          printf '{"transcript_path":"%s"}\n' "$tmp/transcript.jsonl" \
+            | PATH="$tmp/fakebin:$PATH" bash hooks/session-signals.sh
+          python3 - << 'PY'
+          import os
+          from pathlib import Path
+
+          assert not Path(os.environ["CLAUDE_RAN"]).exists()
+          assert not Path(os.environ["COMPOUND_LOG"]).exists()
+          PY
+
       - name: Test Stop hook falls back after Claude EMPTY success
         run: |
           tmp=$(mktemp -d)
