@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.2.10-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.2.11-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -349,7 +349,7 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 
 | Capability                   | Eidetic                            | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
 | ---------------------------- | ---------------------------------- | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
-|                              | **v4.2.10**                        | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
+|                              | **v4.2.11**                        | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
 | Search                       | FTS5 + vector                      | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
 | Recall benchmark             | **100%**                           | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
 | Auto-inject on session start | **rules/ (no cap)**                | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
@@ -443,10 +443,11 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.2.8** — code-index file discovery fix; update now refreshes FTS/code/vector/context for the installed runtime
 - [x] **v4.2.9** — degraded v4.2.8 review hardening: empty-file cleanup, code-index atomicity, fcntl hook lock, timezone drift, vector validation ordering
 - [x] **v4.2.10** — v4.2.9 review follow-up: recent mtime unit normalization, timezone freshness ranking, export no-open wrapper fix, compound exact-match fix
+- [x] **v4.2.11** — v4.2.10 review hardening: event-level confidence drift, custom memory root routing, handoff discovery, cleanup protection, polish model overrides
 
 ### Next
 
-- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.10
+- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.11
 - [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter.
 
 ### v5.0 (deferred)
@@ -460,6 +461,16 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v4.2.11 (2026-05-25)
+
+- `confidence_escalation` drift now counts agent-extracted history events instead of markdown chunks, so multi-section files no longer look like multiple independent confirmations
+- `EIDETIC_MEMORY_SYSTEM` is honored by wrappers, MCP reindex/serendipity, hooks, install, update, and update-check paths
+- SessionStart handoff discovery now scans `output/handoff-*/state.md` in the current repo
+- Cleanup protects large-frontmatter `feedback`/`user` files and counts inbound wikilinks from skill `SKILL.md` files
+- Compounding appends new entries inside the existing `## History` section instead of after later sections
+- Vault polish/synthesis model IDs are centralized behind environment overrides, and polish prompt templating preserves literal `{...}` note text
+- Added CI regressions for all fixes above
 
 ### v4.2.10 (2026-05-25)
 

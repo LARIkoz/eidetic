@@ -5,7 +5,7 @@
 # Source: agent-extracted (0.5x self-referential discount)
 set -euo pipefail
 
-MEMORY_SYSTEM="$HOME/.claude/memory-system"
+MEMORY_SYSTEM="${EIDETIC_MEMORY_SYSTEM:-$HOME/.claude/memory-system}"
 COMPOUND="$MEMORY_SYSTEM/bin/compound.py"
 INDEX="$MEMORY_SYSTEM/bin/index.sh"
 

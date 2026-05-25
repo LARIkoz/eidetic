@@ -14,7 +14,17 @@ import sqlite3
 import sys
 from datetime import datetime
 
-DB_PATH = os.path.expanduser("~/.claude/memory-system/db/sessions.db")
+def default_memory_system():
+    installed_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if os.path.exists(os.path.join(installed_root, ".installed.json")):
+        return installed_root
+    return os.path.expanduser("~/.claude/memory-system")
+
+
+MEMORY_SYSTEM = os.path.expanduser(
+    os.environ.get("EIDETIC_MEMORY_SYSTEM") or default_memory_system()
+)
+DB_PATH = os.path.join(MEMORY_SYSTEM, "db", "sessions.db")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS session_log (

@@ -5,7 +5,7 @@
 # P3: ALL feedback rules always included. P9: only relevant, not dump.
 set -euo pipefail
 
-MEMORY_SYSTEM="$HOME/.claude/memory-system"
+MEMORY_SYSTEM="${EIDETIC_MEMORY_SYSTEM:-$HOME/.claude/memory-system}"
 
 if [ "${EIDETIC_LOCK_HELD:-}" != "1" ] && [ -f "$MEMORY_SYSTEM/bin/lock_runner.py" ]; then
     exec env EIDETIC_LOCK_HELD=1 python3 "$MEMORY_SYSTEM/bin/lock_runner.py" "$MEMORY_SYSTEM/.memory.lockfile" "$0" "$@"

@@ -16,7 +16,17 @@ import sqlite3
 import sys
 from datetime import datetime
 
-DB_PATH = os.path.expanduser("~/.claude/memory-system/db/index.db")
+def default_memory_system():
+    installed_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if os.path.exists(os.path.join(installed_root, ".installed.json")):
+        return installed_root
+    return os.path.expanduser("~/.claude/memory-system")
+
+
+MEMORY_SYSTEM = os.path.expanduser(
+    os.environ.get("EIDETIC_MEMORY_SYSTEM") or default_memory_system()
+)
+DB_PATH = os.path.join(MEMORY_SYSTEM, "db", "index.db")
 TODAY = datetime.now().strftime("%Y-%m-%d")
 
 
@@ -79,6 +89,31 @@ def _get_file_type(filepath):
     return None
 
 
+def _markdown_headings(content):
+    in_fence = False
+    offset = 0
+    for line in content.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            offset += len(line)
+            continue
+        if not in_fence:
+            m = re.match(r'^(##)\s+(.+?)\s*$', line.rstrip("\r\n"))
+            if m:
+                yield offset, offset + len(line), m.group(2).strip()
+        offset += len(line)
+
+
+def _history_section_bounds(content):
+    headings = list(_markdown_headings(content))
+    for idx, (_start, end, title) in enumerate(headings):
+        if title == "History":
+            next_start = headings[idx + 1][0] if idx + 1 < len(headings) else None
+            return end, next_start
+    return None
+
+
 def update_existing(filepath, signal_text):
     """Update existing memory file: append to History section. Does NOT update last_verified."""
     try:
@@ -89,21 +124,17 @@ def update_existing(filepath, signal_text):
 
     history_entry = f"- {TODAY}: {signal_text.strip()}\n"
 
-    if "## History" in content:
-        content = content.rstrip() + "\n" + history_entry
+    history_bounds = _history_section_bounds(content)
+    if history_bounds:
+        _history_end, next_heading_start = history_bounds
+        if next_heading_start is not None:
+            before = content[:next_heading_start].rstrip()
+            after = content[next_heading_start:].lstrip("\n")
+            content = before + "\n" + history_entry + "\n" + after
+        else:
+            content = content.rstrip() + "\n" + history_entry
     else:
         content = content.rstrip() + f"\n\n## History\n\n{history_entry}"
-
-    # Do NOT auto-bump last_verified — agent-extracted signals should not
-    # inflate freshness of human-curated memories. Only explicit human
-    # verification should update this field.
-    if False and "last_verified:" in content:
-        content = re.sub(
-            r'last_verified:\s*\S+',
-            f'last_verified: {TODAY}',
-            content,
-            count=1,
-        )
 
     tmp = None
     try:
@@ -144,7 +175,7 @@ def create_signal_file(cwd, signals):
                         break
 
     if not memory_dir:
-        memory_dir = os.path.expanduser("~/.claude/memory-system/")
+        memory_dir = MEMORY_SYSTEM
         os.makedirs(memory_dir, exist_ok=True)
 
     signals_dir = os.path.join(memory_dir, "signals")
