@@ -20,8 +20,19 @@ AGE_THRESHOLDS = {
     "user": 180,
     "reference": 90,
     "project": 30,
-    "code": 30,
+    "code": None,
 }
+CARD_KIND_AGE_THRESHOLDS = {
+    "finding": 90,
+    "research": 90,
+    "reference": 90,
+    "handoff": 90,
+    "decision": 90,
+    "status": 60,
+    "todo": 60,
+    "bug": 60,
+}
+INACTIVE_STATUSES = {"archived", "deprecated", "obsolete", "resolved", "superseded"}
 DEFAULT_AGE_DAYS = 60
 
 try:
@@ -266,15 +277,20 @@ def check_age_drift(index_conn):
     findings = []
 
     rows = index_conn.execute("""
-        SELECT path, type, evidence, last_verified, mtime
+        SELECT path, type, evidence, last_verified, mtime, card_kind, status
         FROM memory_chunks
         WHERE evidence != 'hypothesis'
         GROUP BY path
         HAVING MIN(id)
     """).fetchall()
 
-    for path, mem_type, evidence, last_verified, mtime in rows:
-        threshold = AGE_THRESHOLDS.get(mem_type or "", DEFAULT_AGE_DAYS)
+    for path, mem_type, evidence, last_verified, mtime, card_kind, status in rows:
+        if (status or "").lower() in INACTIVE_STATUSES:
+            continue
+        threshold = CARD_KIND_AGE_THRESHOLDS.get(
+            (card_kind or "").lower(),
+            AGE_THRESHOLDS.get(mem_type or "", DEFAULT_AGE_DAYS),
+        )
         if threshold is None:
             continue
 

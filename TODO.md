@@ -142,6 +142,14 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Keep SessionStart degraded fallback scoped to the current CWD project `MEMORY.md` instead of injecting the first project on disk.
 - [x] Add `EIDETIC_SIGNAL_CLAUDE_TIMEOUT` and align async Stop-hook registration timeout with the Claude + Codex fallback budget.
 
+### Closed In v4.2.16
+
+- [x] Triage the 88 active `age_stale` findings before the next clean consreview: all were `type: project`, but most were historical findings/research/reference/handoffs rather than active stale status.
+- [x] Make age drift honor lifecycle status: archived, deprecated, obsolete, resolved, and superseded cards are no longer counted as active stale findings.
+- [x] Apply `card_kind` freshness thresholds before broad memory `type`: findings/research/reference/handoffs use 90 days; active bug/todo/status cards use a 60-day backlog window.
+- [x] Stop applying calendar-age drift to code-index chunks; code freshness is covered by source mtime reindexing and vector identity, not by "file older than N days".
+- [x] Add CI regression proving the old blanket `type: project` 30-day threshold no longer turns historical project memory into review noise.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
@@ -154,8 +162,8 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 ### Suggested Next Checks
 
-- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.15 agent recall behavior.
-- [ ] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
+- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.16 agent recall behavior.
+- [x] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
 - [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.
 - [x] Verify schema migration/backfill with an old-DB reproducer before changing update behavior.
