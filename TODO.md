@@ -133,6 +133,15 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Add CI regression proving Codex fallback output is passed to `compound.py`.
 - [x] Expose signal route overrides through `EIDETIC_SIGNAL_CLAUDE_MODEL`, `EIDETIC_SIGNAL_CODEX_MODEL`, `EIDETIC_SIGNAL_CODEX_REASONING`, and `EIDETIC_SIGNAL_CODEX_TIMEOUT`.
 
+### Closed In v4.2.15
+
+- [x] Run clean consreview against v4.2.14. Pipeline was DEGRADED (`audit=ISSUES`, `mechanical=FAIL`, `redteam=WEAK`), so final fixes are based on corrected findings and direct local repros.
+- [x] Filter Stop-hook extractor output to contract-shaped `Decision:`, `Rule:`, `Worked:`, `Failed:`, and `Knowledge:` lines before compounding.
+- [x] Fall back to Codex when Claude succeeds but returns `EMPTY` or no valid signal lines.
+- [x] Add defense-in-depth prefix filtering in `compound.py` for direct/manual stdin usage.
+- [x] Keep SessionStart degraded fallback scoped to the current CWD project `MEMORY.md` instead of injecting the first project on disk.
+- [x] Add `EIDETIC_SIGNAL_CLAUDE_TIMEOUT` and align async Stop-hook registration timeout with the Claude + Codex fallback budget.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
@@ -145,7 +154,7 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 ### Suggested Next Checks
 
-- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.14 agent recall behavior.
+- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.15 agent recall behavior.
 - [ ] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
 - [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.
