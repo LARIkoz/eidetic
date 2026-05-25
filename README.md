@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.2.12-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.2.13-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -353,7 +353,7 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 
 | Capability                   | Eidetic                            | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
 | ---------------------------- | ---------------------------------- | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
-|                              | **v4.2.12**                        | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
+|                              | **v4.2.13**                        | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
 | Search                       | FTS5 + vector                      | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
 | Recall benchmark             | **100%**                           | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
 | Auto-inject on session start | **rules/ (no cap)**                | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
@@ -449,10 +449,11 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.2.10** — v4.2.9 review follow-up: recent mtime unit normalization, timezone freshness ranking, export no-open wrapper fix, compound exact-match fix
 - [x] **v4.2.11** — v4.2.10 review hardening: event-level confidence drift, custom memory root routing, handoff discovery, cleanup protection, polish model overrides
 - [x] **v4.2.12** — degraded v4.2.11 review follow-up: custom-root signal indexing, cleanup/MCP lint parity, hook update migration, quote-safe metadata reads
+- [x] **v4.2.13** — degraded v4.2.12 review follow-up: fenced-heading drift fix and SessionStart custom-root quoting fix
 
 ### Next
 
-- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.12
+- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.13
 - [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter.
 
 ### v5.0 (deferred)
@@ -466,6 +467,12 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v4.2.13 (2026-05-25)
+
+- Markdown section splitting is now fence-aware, so `##` headings inside fenced examples cannot become standalone chunks that trigger false `confidence_escalation` drift
+- SessionStart code/vector refresh now passes paths through Python `argv`, keeping custom memory roots and CWDs with apostrophes safe
+- Added CI regressions for fenced `## History` examples and SessionStart hook refresh under a quoted custom root
 
 ### v4.2.12 (2026-05-25)
 
