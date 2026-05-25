@@ -409,6 +409,30 @@ jobs:
           assert mcp_server.INDEX_DB == expected
           result = mcp_server.handle_reindex({"full": False})
           assert not result["_mcp_result"].get("isError"), result
+          captured_reindex = {}
+          old_subprocess_run = mcp_server.subprocess.run
+          try:
+              class FakeCompleted:
+                  returncode = 0
+                  stdout = "full ok"
+                  stderr = ""
+
+              def fake_run(cmd, capture_output, text, timeout):
+                  captured_reindex.update(
+                      cmd=cmd,
+                      capture_output=capture_output,
+                      text=text,
+                      timeout=timeout,
+                  )
+                  return FakeCompleted()
+
+              mcp_server.subprocess.run = fake_run
+              result = mcp_server.handle_reindex({"full": True})
+          finally:
+              mcp_server.subprocess.run = old_subprocess_run
+          assert not result["_mcp_result"].get("isError"), result
+          assert captured_reindex["cmd"][-1] == "--full", captured_reindex
+          assert captured_reindex["timeout"] == 300, captured_reindex
           result = mcp_server.handle_serendipity({"query": "custom memory system routing"})
           assert not result["_mcp_result"].get("isError"), result
           captured = {}
@@ -920,6 +944,73 @@ jobs:
           assert signal == "Decision: Valid signal should remain.\n", signal
           assert timeout == "30", timeout
           assert not Path(os.environ["CODEX_RAN"]).exists()
+          PY
+
+      - name: Test Stop hook ignores tool result transcript blocks
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          export HOME="$tmp/home"
+          export EIDETIC_MEMORY_SYSTEM="$tmp/custom-memory-system"
+          export COMPOUND_LOG="$tmp/compound.log"
+          mkdir -p "$HOME" "$EIDETIC_MEMORY_SYSTEM/bin" "$tmp/fakebin"
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/index.sh" << 'EOF'
+          #!/bin/bash
+          exit 0
+          EOF
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/compound.py" << 'EOF'
+          import os
+          import pathlib
+          import sys
+          pathlib.Path(os.environ["COMPOUND_LOG"]).write_text(sys.stdin.read(), encoding="utf-8")
+          EOF
+          chmod +x "$EIDETIC_MEMORY_SYSTEM/bin/index.sh"
+          cat > "$tmp/fakebin/claude-batch" << 'EOF'
+          #!/bin/bash
+          set -euo pipefail
+          prompt_file=""
+          while [ "$#" -gt 0 ]; do
+            case "$1" in
+              --prompt-file)
+                shift
+                prompt_file="${1:-}"
+                ;;
+              --model)
+                shift
+                ;;
+            esac
+            shift || true
+          done
+          test -n "$prompt_file"
+          grep -q "Human request should appear" "$prompt_file"
+          grep -q "Assistant reply should appear" "$prompt_file"
+          if grep -q "SECRET_TOOL_RESULT_SHOULD_NOT_APPEAR" "$prompt_file"; then
+            exit 2
+          fi
+          printf '%s\n' "Decision: Tool result ignored."
+          EOF
+          cat > "$tmp/fakebin/codex-batch" << 'EOF'
+          #!/bin/bash
+          exit 1
+          EOF
+          chmod +x "$tmp/fakebin/claude-batch" "$tmp/fakebin/codex-batch"
+          python3 - << 'PY' "$tmp/transcript.jsonl"
+          import json
+          import sys
+          filler = "x" * 1200
+          with open(sys.argv[1], "w", encoding="utf-8") as f:
+              f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "Human request should appear. " + filler}}) + "\n")
+              f.write(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Assistant reply should appear. " + filler}]}}) + "\n")
+              f.write(json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "SECRET_TOOL_RESULT_SHOULD_NOT_APPEAR"}]}}) + "\n")
+          PY
+          printf '{"transcript_path":"%s"}\n' "$tmp/transcript.jsonl" \
+            | PATH="$tmp/fakebin:$PATH" bash hooks/session-signals.sh
+          python3 - << 'PY'
+          import os
+          from pathlib import Path
+
+          signal = Path(os.environ["COMPOUND_LOG"]).read_text(encoding="utf-8")
+          assert signal == "Decision: Tool result ignored.\n", signal
           PY
 
       - name: Test Stop hook falls back after Claude EMPTY success
