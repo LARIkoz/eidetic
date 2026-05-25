@@ -414,10 +414,13 @@ jobs:
           memory_system = os.environ["EIDETIC_MEMORY_SYSTEM"]
           settings = json.loads((home / ".claude/settings.json").read_text())
           commands = []
+          stop_hooks = []
           for entries in settings["hooks"].values():
               for entry in entries:
                   for hook in entry.get("hooks", []):
                       commands.append(hook.get("command", ""))
+          for entry in settings["hooks"].get("Stop", []):
+              stop_hooks.extend(entry.get("hooks", []))
           assert any(
               cmd.startswith("EIDETIC_MEMORY_SYSTEM=")
               and "smart-memory-inject" in cmd
@@ -430,6 +433,8 @@ jobs:
               and memory_system in cmd
               for cmd in commands
           ), commands
+          signal_hook = next(h for h in stop_hooks if "session-signals" in h.get("command", ""))
+          assert signal_hook["timeout"] == 180000, signal_hook
           skill = (home / ".claude/skills/memory-recall/SKILL.md").read_text()
           assert memory_system in skill
           assert "~/.claude/memory-system" not in skill
@@ -498,11 +503,18 @@ jobs:
               for entry in entries
               for hook in entry.get("hooks", [])
           ]
+          stop_hooks = [
+              hook
+              for entry in settings["hooks"].get("Stop", [])
+              for hook in entry.get("hooks", [])
+          ]
           for needle in ["smart-memory-inject", "session-signals"]:
               cmd = next(c for c in commands if needle in c)
               prefix = shlex.split(cmd)[0]
               assert prefix.startswith("EIDETIC_MEMORY_SYSTEM="), cmd
               assert prefix.split("=", 1)[1] == memory_system, cmd
+          signal_hook = next(h for h in stop_hooks if "session-signals" in h.get("command", ""))
+          assert signal_hook["timeout"] == 180000, signal_hook
           meta = json.loads((Path(memory_system) / ".installed.json").read_text())
           assert meta["git_sha"] == "fake-sha-quote", meta
           skill = (home / ".claude/skills/memory-recall/SKILL.md").read_text()
@@ -515,6 +527,65 @@ jobs:
           assert search_commands, skill
           for command in search_commands:
               assert shlex.split(command)[0] == expected_search, command
+          PY
+
+      - name: Test default update refreshes Stop hook timeout
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          unset EIDETIC_MEMORY_SYSTEM
+          export HOME="$tmp/home"
+          memory_system="$HOME/.claude/memory-system"
+          mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/rules" "$HOME/.claude/projects/test-project/memory" "$memory_system/bin" "$memory_system/db" "$tmp/fakebin"
+          cat > "$HOME/.claude/settings.json" << 'EOF'
+          {"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/smart-memory-inject.sh","timeout":5000}]}],"Stop":[{"hooks":[{"type":"command","command":"~/.claude/hooks/session-signals.sh","timeout":30000,"async":true}]}]}}
+          EOF
+          cat > "$HOME/.claude/projects/test-project/memory/test-rule.md" << 'EOF'
+          ---
+          name: test-rule
+          description: Test feedback rule
+          type: feedback
+          ---
+          # Test Rule
+          Default update smoke.
+          EOF
+          printf '{"version":"old","git_sha":"oldsha","installed_at":"2026-01-01T00:00:00Z"}\n' > "$memory_system/.installed.json"
+          cat > "$tmp/fakebin/git" << 'EOF'
+          #!/bin/bash
+          set -euo pipefail
+          if [ "${1:-}" = "clone" ]; then
+            dest="${@: -1}"
+            mkdir -p "$dest"
+            (cd "$EIDETIC_FAKE_SOURCE" && tar --exclude .git --exclude output -cf - .) | (cd "$dest" && tar -xf -)
+            exit 0
+          fi
+          if [ "${1:-}" = "-C" ] && [ "${3:-}" = "rev-parse" ]; then
+            echo fake-sha-default
+            exit 0
+          fi
+          exec /usr/bin/git "$@"
+          EOF
+          chmod +x "$tmp/fakebin/git"
+          export EIDETIC_FAKE_SOURCE="$PWD"
+          PATH="$tmp/fakebin:$PATH" bash bin/update.sh >/dev/null
+          python3 - << 'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          home = Path(os.environ["HOME"])
+          memory_system = home / ".claude/memory-system"
+          settings = json.loads((home / ".claude/settings.json").read_text())
+          stop_hooks = [
+              hook
+              for entry in settings["hooks"].get("Stop", [])
+              for hook in entry.get("hooks", [])
+          ]
+          signal_hook = next(h for h in stop_hooks if "session-signals" in h.get("command", ""))
+          assert signal_hook["timeout"] == 180000, signal_hook
+          assert signal_hook["command"] == "~/.claude/hooks/session-signals.sh", signal_hook
+          meta = json.loads((memory_system / ".installed.json").read_text())
+          assert meta["git_sha"] == "fake-sha-default", meta
           PY
 
       - name: Test export polish preserves placeholders and model overrides
@@ -704,6 +775,145 @@ jobs:
           ], log
           PY
 
+      - name: Test SessionStart fallback uses current project MEMORY
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          repo=$(pwd)
+          export HOME="$tmp/home"
+          export EIDETIC_MEMORY_SYSTEM="$tmp/not-ready-memory-system"
+          workdir="$tmp/work/current-project"
+          mkdir -p "$workdir" "$HOME/.claude/projects/000-unrelated/memory"
+          printf '%s\n' "UNRELATED MEMORY" > "$HOME/.claude/projects/000-unrelated/memory/MEMORY.md"
+          slug=$(python3 - "$workdir" << 'PY'
+          import sys
+          print(sys.argv[1].rstrip("/").replace("/", "-").lstrip("-"))
+          PY
+          )
+          mkdir -p "$HOME/.claude/projects/$slug/memory"
+          printf '%s\n' "PROJECT MEMORY" > "$HOME/.claude/projects/$slug/memory/MEMORY.md"
+          (cd "$workdir" && bash "$repo/hooks/smart-memory-inject.sh") >/tmp/hook.out 2>/tmp/hook.err
+          grep -q "PROJECT MEMORY" "$HOME/.claude/rules/memory-context.md"
+          ! grep -q "UNRELATED MEMORY" "$HOME/.claude/rules/memory-context.md"
+
+      - name: Test Stop hook filters non-signal Claude output
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          export HOME="$tmp/home"
+          export EIDETIC_MEMORY_SYSTEM="$tmp/custom memory-system"
+          export COMPOUND_LOG="$tmp/compound.log"
+          export CLAUDE_ENV_LOG="$tmp/claude-env.log"
+          export CODEX_RAN="$tmp/codex-ran"
+          mkdir -p "$HOME" "$EIDETIC_MEMORY_SYSTEM/bin" "$tmp/fakebin"
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/index.sh" << 'EOF'
+          #!/bin/bash
+          exit 0
+          EOF
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/compound.py" << 'EOF'
+          import os
+          import pathlib
+          import sys
+          pathlib.Path(os.environ["COMPOUND_LOG"]).write_text(sys.stdin.read(), encoding="utf-8")
+          EOF
+          chmod +x "$EIDETIC_MEMORY_SYSTEM/bin/index.sh"
+          cat > "$tmp/fakebin/claude-batch" << 'EOF'
+          #!/bin/bash
+          printf '%s\n' "${CLAUDE_BATCH_JOB_TIMEOUT:-}" > "$CLAUDE_ENV_LOG"
+          printf '%s\n' "Here are the signals:" "Decision: Valid signal should remain."
+          EOF
+          cat > "$tmp/fakebin/codex-batch" << 'EOF'
+          #!/bin/bash
+          touch "$CODEX_RAN"
+          exit 1
+          EOF
+          chmod +x "$tmp/fakebin/claude-batch" "$tmp/fakebin/codex-batch"
+          python3 - << 'PY' "$tmp/transcript.jsonl"
+          import json
+          import sys
+          filler = "x" * 1200
+          with open(sys.argv[1], "w", encoding="utf-8") as f:
+              f.write(json.dumps({"role": "user", "content": "Persist the prefix filter test. " + filler}) + "\n")
+              f.write(json.dumps({"role": "assistant", "content": "Added the prefix filter. " + filler}) + "\n")
+          PY
+          printf '{"transcript_path":"%s"}\n' "$tmp/transcript.jsonl" \
+            | PATH="$tmp/fakebin:$PATH" bash hooks/session-signals.sh
+          python3 - << 'PY'
+          import os
+          from pathlib import Path
+
+          signal = Path(os.environ["COMPOUND_LOG"]).read_text(encoding="utf-8")
+          timeout = Path(os.environ["CLAUDE_ENV_LOG"]).read_text(encoding="utf-8").strip()
+          assert signal == "Decision: Valid signal should remain.\n", signal
+          assert timeout == "30", timeout
+          assert not Path(os.environ["CODEX_RAN"]).exists()
+          PY
+
+      - name: Test Stop hook falls back after Claude EMPTY success
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          export HOME="$tmp/home"
+          export EIDETIC_MEMORY_SYSTEM="$tmp/custom memory-system"
+          export COMPOUND_LOG="$tmp/compound.log"
+          export CODEX_RAN="$tmp/codex-ran"
+          mkdir -p "$HOME" "$EIDETIC_MEMORY_SYSTEM/bin" "$tmp/fakebin"
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/index.sh" << 'EOF'
+          #!/bin/bash
+          exit 0
+          EOF
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/compound.py" << 'EOF'
+          import os
+          import pathlib
+          import sys
+          pathlib.Path(os.environ["COMPOUND_LOG"]).write_text(sys.stdin.read(), encoding="utf-8")
+          EOF
+          chmod +x "$EIDETIC_MEMORY_SYSTEM/bin/index.sh"
+          cat > "$tmp/fakebin/claude-batch" << 'EOF'
+          #!/bin/bash
+          printf '%s\n' "EMPTY"
+          EOF
+          cat > "$tmp/fakebin/codex-batch" << 'EOF'
+          #!/bin/bash
+          set -euo pipefail
+          out_dir=""
+          touch "$CODEX_RAN"
+          while [ "$#" -gt 0 ]; do
+            case "$1" in
+              --out-dir|-o)
+                shift
+                out_dir="${1:-}"
+                ;;
+              --prompt-file|--model|--reasoning|--timeout|--validate|-C)
+                shift
+                ;;
+            esac
+            shift || true
+          done
+          test -n "$out_dir"
+          mkdir -p "$out_dir/results"
+          printf '%s\n' "Decision: Codex ran after EMPTY." > "$out_dir/results/single.md"
+          EOF
+          chmod +x "$tmp/fakebin/claude-batch" "$tmp/fakebin/codex-batch"
+          python3 - << 'PY' "$tmp/transcript.jsonl"
+          import json
+          import sys
+          filler = "x" * 1200
+          with open(sys.argv[1], "w", encoding="utf-8") as f:
+              f.write(json.dumps({"role": "user", "content": "Persist the empty fallback test. " + filler}) + "\n")
+              f.write(json.dumps({"role": "assistant", "content": "Added the empty fallback path. " + filler}) + "\n")
+          PY
+          printf '{"transcript_path":"%s"}\n' "$tmp/transcript.jsonl" \
+            | PATH="$tmp/fakebin:$PATH" bash hooks/session-signals.sh
+          python3 - << 'PY'
+          import os
+          from pathlib import Path
+
+          signal = Path(os.environ["COMPOUND_LOG"]).read_text(encoding="utf-8")
+          assert Path(os.environ["CODEX_RAN"]).exists()
+          assert signal == "Decision: Codex ran after EMPTY.\n", signal
+          PY
+
       - name: Test Stop hook falls back to Codex signal extraction
         run: |
           tmp=$(mktemp -d)
@@ -784,6 +994,30 @@ jobs:
           assert "--skip-route-preflight" not in args, args
           assert "Decision: Codex fallback captured signal." in signal, signal
           assert "claude wrapper noise" not in signal, signal
+          PY
+
+      - name: Test compound ignores non-signal stdin lines
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          export HOME="$tmp/home"
+          export EIDETIC_MEMORY_SYSTEM="$tmp/memory-system"
+          mkdir -p "$HOME"
+          printf '%s\n' \
+            "Here are the signals:" \
+            "Decision: Prefix-filtered signal is stored." \
+            "- Failed: Bullet wrapper is ignored." \
+            | python3 bin/compound.py "$tmp/work"
+          python3 - << 'PY'
+          import os
+          from pathlib import Path
+
+          files = list((Path(os.environ["EIDETIC_MEMORY_SYSTEM"]) / "signals").glob("*.md"))
+          assert len(files) == 1, files
+          text = files[0].read_text(encoding="utf-8")
+          assert "Decision: Prefix-filtered signal is stored." in text, text
+          assert "Here are the signals" not in text, text
+          assert "Bullet wrapper" not in text, text
           PY
 
       - name: Test wikilink lint ignores markdown examples
