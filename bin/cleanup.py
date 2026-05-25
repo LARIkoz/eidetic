@@ -38,13 +38,36 @@ SCAN_DIRS = [
     os.path.expanduser("~/.claude/projects/*/memory/signals/"),
     os.path.expanduser("~/.claude/agent-memory/"),
     os.path.expanduser("~/.claude/agent-memory/*/"),
-    os.path.expanduser("~/.claude/memory-system/signals/"),
+    os.path.join(MEMORY_SYSTEM, "signals") + os.sep,
 ]
 LINK_SOURCE_DIRS = SCAN_DIRS + [
     os.path.expanduser("~/.claude/skills/*/"),
 ]
 EXCLUDE = {"MEMORY.md", "BACKLOG.md"}
 PROTECTED_TYPES = {"feedback", "user"}
+
+
+def file_stem(path):
+    return os.path.basename(path).replace(".md", "")
+
+
+def extract_name_from_frontmatter(filepath):
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except Exception:
+        return None
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    if end == -1:
+        return None
+    fm = text[4:end]
+    for line in fm.split("\n"):
+        m = re.match(r'^name:\s*(.+)$', line.strip())
+        if m:
+            return m.group(1).strip().strip('"').strip("'")
+    return None
 
 
 def collect_files():
@@ -56,9 +79,14 @@ def collect_files():
             for f in os.listdir(dirpath):
                 if f.endswith(".md") and f not in EXCLUDE and not f.endswith(".bak"):
                     path = os.path.join(dirpath, f)
+                    aliases = {file_stem(path)}
+                    fm_name = extract_name_from_frontmatter(path)
+                    if fm_name:
+                        aliases.add(fm_name)
                     files[path] = {
-                        "name": f.replace(".md", ""),
+                        "name": file_stem(path),
                         "path": path,
+                        "aliases": aliases,
                     }
     return files
 
@@ -98,7 +126,8 @@ def count_inbound(files):
     inbound = {key: 0 for key in files}
     targets = defaultdict(list)
     for key, info in files.items():
-        targets[info["name"]].append(key)
+        for alias in info.get("aliases", {info["name"]}):
+            targets[alias].append(key)
 
     for path in collect_link_source_files(files):
         try:

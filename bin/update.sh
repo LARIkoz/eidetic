@@ -21,7 +21,15 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 echo "=== Eidetic — Update ==="
 
 if [ -f "$META" ]; then
-    OLD_VER=$(python3 -c "import json; print(json.load(open('$META')).get('version','unknown'))" 2>/dev/null || echo "unknown")
+    OLD_VER=$(
+python3 - "$META" 2>/dev/null << 'PYEOF' || echo "unknown"
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    print(json.load(f).get("version", "unknown"))
+PYEOF
+)
     echo "Current: v$OLD_VER"
 else
     OLD_VER="unknown"
@@ -37,7 +45,15 @@ NEW_SHA=$(git -C "$TMP_DIR/eidetic" rev-parse HEAD 2>/dev/null || echo "unknown"
 echo "Latest:  v$NEW_VER ($NEW_SHA)"
 
 if [ -f "$META" ]; then
-    LOCAL_SHA=$(python3 -c "import json; print(json.load(open('$META')).get('git_sha',''))" 2>/dev/null || echo "")
+    LOCAL_SHA=$(
+python3 - "$META" 2>/dev/null << 'PYEOF' || echo ""
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    print(json.load(f).get("git_sha", ""))
+PYEOF
+)
     if [ "$LOCAL_SHA" = "$NEW_SHA" ]; then
         echo "Already up to date."
         rm -f "$MEMORY_SYSTEM/.update-available"
@@ -63,6 +79,62 @@ if [ -d "$TMP_DIR/eidetic/hooks" ]; then
         chmod +x "$TARGET"
     done
     echo "Hooks updated (pre-update backups saved)"
+fi
+
+SETTINGS="$HOME/.claude/settings.json"
+if [ -f "$SETTINGS" ] && [ "$MEMORY_SYSTEM" != "$HOME/.claude/memory-system" ]; then
+    EIDETIC_INSTALL_MEMORY_SYSTEM="$MEMORY_SYSTEM" python3 << 'PYEOF'
+import json, os, shlex
+
+settings_path = os.path.expanduser("~/.claude/settings.json")
+with open(settings_path, encoding="utf-8") as f:
+    settings = json.load(f)
+
+hooks = settings.setdefault("hooks", {})
+memory_system = os.environ.get("EIDETIC_INSTALL_MEMORY_SYSTEM", "")
+default_memory_system = os.path.expanduser("~/.claude/memory-system")
+hook_prefix = ""
+if memory_system and os.path.abspath(os.path.expanduser(memory_system)) != os.path.abspath(default_memory_system):
+    hook_prefix = "EIDETIC_MEMORY_SYSTEM={} ".format(shlex.quote(memory_system))
+
+session_start = hooks.setdefault("SessionStart", [])
+inject_hook = {
+    "type": "command",
+    "command": hook_prefix + "~/.claude/hooks/smart-memory-inject.sh",
+    "timeout": 5000,
+}
+inject_updated = False
+for entry in session_start:
+    for hook in entry.get("hooks", []) if isinstance(entry, dict) else []:
+        if "smart-memory-inject" in str(hook.get("command", "")):
+            hook.update(inject_hook)
+            inject_updated = True
+if not inject_updated:
+    session_start.append({"hooks": [inject_hook]})
+
+stop = hooks.setdefault("Stop", [])
+signal_entry = {
+    "type": "command",
+    "command": hook_prefix + "~/.claude/hooks/session-signals.sh",
+    "timeout": 30000,
+    "async": True,
+}
+signal_updated = False
+for entry in stop:
+    for hook in entry.get("hooks", []) if isinstance(entry, dict) else []:
+        if "session-signals" in str(hook.get("command", "")):
+            hook.update(signal_entry)
+            signal_updated = True
+if not signal_updated:
+    if stop and isinstance(stop[0], dict) and "hooks" in stop[0]:
+        stop[0]["hooks"].append(signal_entry)
+    else:
+        stop.append({"hooks": [signal_entry]})
+
+with open(settings_path, "w", encoding="utf-8") as f:
+    json.dump(settings, f, indent=2)
+PYEOF
+    echo "Hook routing updated for custom memory root"
 fi
 
 if [ -d "$TMP_DIR/eidetic/skill" ]; then
@@ -107,19 +179,25 @@ if [ -f "$MEMORY_SYSTEM/db/vectors.db" ]; then
 fi
 run_refresh_step "memory-context" python3 "$MEMORY_SYSTEM/bin/assemble_context.py" "$MEMORY_SYSTEM/db/index.db" "$HOME/.claude/rules/memory-context.md" "$(pwd)"
 
-python3 -c "
-import json, time
+python3 - "$META" "$NEW_VER" "$NEW_SHA" "$REPO" << 'PYEOF'
+import json, os, sys, time
+
+meta_path, new_ver, new_sha, repo = sys.argv[1:5]
+installed_at = ""
+if os.path.exists(meta_path):
+    with open(meta_path, encoding="utf-8") as f:
+        installed_at = json.load(f).get("installed_at", "")
 meta = {
-    'version': '$NEW_VER',
-    'git_sha': '$NEW_SHA',
-    'repo': '$REPO',
-    'installed_at': json.load(open('$META')).get('installed_at', '') if __import__('os').path.exists('$META') else '',
-    'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-    'update_method': 'auto'
+    "version": new_ver,
+    "git_sha": new_sha,
+    "repo": repo,
+    "installed_at": installed_at,
+    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "update_method": "auto",
 }
-with open('$META', 'w') as f:
+with open(meta_path, "w", encoding="utf-8") as f:
     json.dump(meta, f, indent=2)
-"
+PYEOF
 
 rm -f "$MEMORY_SYSTEM/.update-available"
 
