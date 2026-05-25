@@ -97,6 +97,17 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Harden code-index transaction replacement and add a success-path regression.
 - [x] Add regression tests for the above.
 
+### Closed In v4.2.11
+
+- [x] Run clean consreview against v4.2.10. Pipeline was DEGRADED (`audit=ISSUES`, `mechanical=FAIL`, `redteam=WEAK`), so final fixes are based on raw voices plus validator artifacts.
+- [x] Count confidence-escalation drift at history-event level instead of chunk level.
+- [x] Honor `EIDETIC_MEMORY_SYSTEM` across wrapper scripts, MCP reindex/serendipity, hooks, install, update, and update-check routing.
+- [x] Include repo-local `output/handoff-*/state.md` files in SessionStart handoff discovery.
+- [x] Protect cleanup candidates with large frontmatter and inbound skill wikilinks.
+- [x] Keep compound history entries inside the existing `## History` section.
+- [x] Centralize vault polish/synthesis model IDs behind environment overrides and preserve literal prompt placeholders in note bodies.
+- [x] Add regression tests for the above.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
@@ -109,7 +120,7 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 ### Suggested Next Checks
 
-- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.10 agent recall behavior.
+- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.11 agent recall behavior.
 - [ ] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
 - [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.

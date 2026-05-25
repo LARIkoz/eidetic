@@ -148,6 +148,323 @@ jobs:
               os.remove(path)
           PY
 
+      - name: Test confidence escalation counts files, not chunks
+        run: |
+          python3 - << 'PY'
+          import os
+          import sqlite3
+          import sys
+          import tempfile
+          sys.path.insert(0, "bin")
+          import drift_check
+
+          conn = sqlite3.connect(":memory:")
+          conn.execute(
+              "CREATE TABLE memory_chunks (path TEXT, type TEXT, source TEXT, section_heading TEXT, content TEXT)"
+          )
+          for idx in range(4):
+              conn.execute(
+                  "INSERT INTO memory_chunks (path, type, source, section_heading, content) VALUES (?, 'project', 'agent-extracted', ?, 'body')",
+                  ("/tmp/multi-section-agent.md", f"Section {idx}"),
+              )
+          assert drift_check.check_confidence_escalation(conn) == []
+
+          conn.execute(
+              "INSERT INTO memory_chunks (path, type, source, section_heading, content) VALUES (?, 'project', 'agent-extracted', 'History', ?)",
+              (
+                  "/tmp/repeated-agent.md",
+                  "- 2026-01-01: First signal\n- 2026-01-02: Second signal\n- 2026-01-03: Third signal\n",
+              ),
+          )
+          findings = drift_check.check_confidence_escalation(conn)
+          assert findings == [
+              ("/tmp/repeated-agent.md", "project", "confidence_escalation", "threshold=3")
+          ], findings
+          conn.execute(
+              "UPDATE memory_chunks SET content = content || '- 2026-01-04: Fourth signal\n' WHERE path = ? AND section_heading = 'History'",
+              ("/tmp/repeated-agent.md",),
+          )
+          assert drift_check.check_confidence_escalation(conn) == findings
+          conn.execute(
+              "INSERT INTO memory_chunks (path, type, source, section_heading, content) VALUES (?, 'project', 'agent-extracted', 'Details', ?)",
+              (
+                  "/tmp/misplaced-history-agent.md",
+                  "- 2026-01-01: First misplaced signal\n- 2026-01-02: Second misplaced signal\n- 2026-01-03: Third misplaced signal\n",
+              ),
+          )
+          assert (
+              "/tmp/misplaced-history-agent.md",
+              "project",
+              "confidence_escalation",
+              "threshold=3",
+          ) in drift_check.check_confidence_escalation(conn)
+
+          fd, path = tempfile.mkstemp(suffix=".db")
+          os.close(fd)
+          try:
+              drift_conn = drift_check.init_drift_db(path)
+              drift_conn.execute(
+                  "INSERT INTO drift_findings (path, drift_type, detail, memory_type, detected_at, first_seen) VALUES (?, 'confidence_escalation', 'agent=4', 'project', '2026-05-24T00:00:00Z', 5)",
+                  ("/tmp/repeated-agent.md",),
+              )
+              drift_conn.commit()
+              drift_conn.close()
+              drift_conn = drift_check.init_drift_db(path)
+              rows = drift_conn.execute(
+                  "SELECT detail, first_seen FROM drift_findings WHERE drift_type = 'confidence_escalation'"
+              ).fetchall()
+              assert rows == [("threshold=3", 5)], rows
+              drift_conn.close()
+          finally:
+              os.remove(path)
+          PY
+
+      - name: Test compound appends history inside section
+        run: |
+          python3 - << 'PY'
+          import os
+          import sys
+          import tempfile
+          sys.path.insert(0, "bin")
+          import compound
+
+          fd, path = tempfile.mkstemp(suffix=".md")
+          os.close(fd)
+          try:
+              with open(path, "w", encoding="utf-8") as f:
+                  f.write(
+                      "# Memory\n\n"
+                      "## History\n\n"
+                      "- 2026-01-01: Existing signal\n\n"
+                      "## Details\n\n"
+                      "Keep this section after history.\n"
+                  )
+              assert compound.update_existing(path, "New signal")
+              text = open(path, encoding="utf-8").read()
+              assert text.count("## History") == 1
+              assert text.index("New signal") < text.index("## Details")
+
+              with open(path, "w", encoding="utf-8") as f:
+                  f.write(
+                      "# Template Note\n\n"
+                      "```md\n"
+                      "## History\n\n"
+                      "- example only\n"
+                      "```\n\n"
+                      "## Details\n\n"
+                      "Keep real content outside the example.\n"
+                  )
+              assert compound.update_existing(path, "Fenced-safe signal")
+              text = open(path, encoding="utf-8").read()
+              fence_end = text.index("```\n\n## Details")
+              inserted = text.index("Fenced-safe signal")
+              assert inserted > fence_end
+          finally:
+              os.remove(path)
+          PY
+
+      - name: Test custom memory system wrapper routing
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          export HOME="$tmp/home"
+          export EIDETIC_MEMORY_SYSTEM="$tmp/custom-memory-system"
+          mkdir -p "$HOME/.claude/projects/custom-project/memory" "$EIDETIC_MEMORY_SYSTEM/bin" "$EIDETIC_MEMORY_SYSTEM/db"
+          cp bin/index.sh bin/index_impl.py bin/serendipity.py bin/compound.py "$EIDETIC_MEMORY_SYSTEM/bin/"
+          cp mcp_server.py "$EIDETIC_MEMORY_SYSTEM/mcp_server.py"
+          printf '{"version":"test"}\n' > "$EIDETIC_MEMORY_SYSTEM/.installed.json"
+          chmod +x "$EIDETIC_MEMORY_SYSTEM/bin/index.sh"
+          cat > "$HOME/.claude/projects/custom-project/memory/custom-rule.md" << 'EOF'
+          ---
+          name: custom-rule
+          description: Custom memory system routing smoke
+          type: feedback
+          ---
+          # Custom Rule
+          Custom memory system routing should use the override DB.
+          EOF
+          bash bin/index.sh --full
+          test -f "$EIDETIC_MEMORY_SYSTEM/db/index.db"
+          test ! -f "$HOME/.claude/memory-system/db/index.db"
+          bash bin/search.sh "custom memory system routing" --limit 1 | grep -q "custom-rule"
+          env -u EIDETIC_MEMORY_SYSTEM "$EIDETIC_MEMORY_SYSTEM/bin/index.sh" --full >/dev/null
+          python3 - << 'PY'
+          import importlib.util
+          import os
+          import sys
+          sys.path.insert(0, ".")
+          import mcp_server
+
+          expected = os.path.join(os.environ["EIDETIC_MEMORY_SYSTEM"], "db", "index.db")
+          assert mcp_server.INDEX_DB == expected
+          result = mcp_server.handle_reindex({"full": False})
+          assert not result["_mcp_result"].get("isError"), result
+          result = mcp_server.handle_serendipity({"query": "custom memory system routing"})
+          assert not result["_mcp_result"].get("isError"), result
+          os.environ.pop("EIDETIC_MEMORY_SYSTEM", None)
+          installed_root = expected.rsplit("/db/index.db", 1)[0]
+          spec = importlib.util.spec_from_file_location("installed_mcp", os.path.join(installed_root, "mcp_server.py"))
+          installed_mcp = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(installed_mcp)
+          assert installed_mcp.INDEX_DB == expected
+          PY
+
+      - name: Test custom memory system install persists routing
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          export HOME="$tmp/home"
+          export EIDETIC_MEMORY_SYSTEM="$tmp/custom memory-system"
+          mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/projects/test-project/memory"
+          cat > "$HOME/.claude/settings.json" << 'EOF'
+          {
+            "hooks": {
+              "SessionStart": [
+                {"hooks": [{"type": "command", "command": "~/.claude/hooks/smart-memory-inject.sh", "timeout": 5000}]}
+              ],
+              "Stop": [
+                {"hooks": [{"type": "command", "command": "~/.claude/hooks/session-signals.sh", "timeout": 30000, "async": true}]}
+              ]
+            }
+          }
+          EOF
+          cat > "$HOME/.claude/projects/test-project/memory/test-rule.md" << 'EOF'
+          ---
+          name: test-rule
+          description: Test feedback rule
+          type: feedback
+          ---
+          # Test Rule
+          Custom install smoke.
+          EOF
+          bash install.sh >/dev/null
+          python3 - << 'PY'
+          import json
+          import os
+          import shlex
+          from pathlib import Path
+
+          home = Path(os.environ["HOME"])
+          memory_system = os.environ["EIDETIC_MEMORY_SYSTEM"]
+          settings = json.loads((home / ".claude/settings.json").read_text())
+          commands = []
+          for entries in settings["hooks"].values():
+              for entry in entries:
+                  for hook in entry.get("hooks", []):
+                      commands.append(hook.get("command", ""))
+          assert any(
+              cmd.startswith("EIDETIC_MEMORY_SYSTEM=")
+              and "smart-memory-inject" in cmd
+              and memory_system in cmd
+              for cmd in commands
+          ), commands
+          assert any(
+              cmd.startswith("EIDETIC_MEMORY_SYSTEM=")
+              and "session-signals" in cmd
+              and memory_system in cmd
+              for cmd in commands
+          ), commands
+          skill = (home / ".claude/skills/memory-recall/SKILL.md").read_text()
+          assert memory_system in skill
+          assert "~/.claude/memory-system" not in skill
+          expected_search = str(Path(memory_system) / "bin/search.sh")
+          search_commands = [
+              line.strip()
+              for line in skill.splitlines()
+              if "bin/search.sh" in line and not line.strip().startswith("#")
+          ]
+          assert search_commands, skill
+          for command in search_commands:
+              assert shlex.split(command)[0] == expected_search, command
+          assert (Path(memory_system) / ".installed.json").exists()
+          PY
+
+      - name: Test export polish preserves placeholders and model overrides
+        run: |
+          python3 - << 'PY'
+          import importlib
+          import os
+          import sys
+          sys.path.insert(0, "bin")
+          import export_vault
+
+          assert export_vault.TOPIC_SYNTHESIS_MODEL == "claude-opus-4-6"
+          os.environ["EIDETIC_POLISH_MODEL_SONNET"] = "claude-sonnet-test"
+          os.environ["EIDETIC_POLISH_MODEL_HAIKU"] = "claude-haiku-test"
+          os.environ["EIDETIC_TOPIC_CLUSTER_MODEL"] = "claude-cluster-test"
+          os.environ["EIDETIC_TOPIC_SYNTHESIS_MODEL"] = "claude-synthesis-test"
+          importlib.reload(export_vault)
+
+          body = "Keep literals: {max_words} and {body}."
+          prompt = export_vault._build_polish_prompt(body, 123)
+          assert "Hard limit: 123 words." in prompt
+          assert body in prompt
+          assert export_vault.choose_polish_model("simple body") == "claude-haiku-test"
+          assert export_vault.choose_polish_model("```python\nprint(1)\n```") == "claude-sonnet-test"
+          assert export_vault.TOPIC_CLUSTER_MODEL == "claude-cluster-test"
+          assert export_vault.TOPIC_SYNTHESIS_MODEL == "claude-synthesis-test"
+          PY
+
+      - name: Test output handoff discovery
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          mkdir -p "$tmp/output/handoff-test"
+          printf 'fresh handoff sentinel\n' > "$tmp/output/handoff-test/state.md"
+          python3 - << 'PY' "$tmp"
+          import sys
+          sys.path.insert(0, "bin")
+          import assemble_context
+
+          text, used = assemble_context.fetch_fresh_handoff(sys.argv[1], "test")
+          assert "fresh handoff sentinel" in text
+          assert used == len(text)
+          PY
+
+      - name: Test cleanup protects large frontmatter and skill links
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          export HOME="$tmp/home"
+          mkdir -p "$HOME/.claude/projects/test-project/memory" "$HOME/.claude/skills/test-skill"
+          python3 - << 'PY'
+          import os
+          from pathlib import Path
+
+          home = Path(os.environ["HOME"])
+          memory = home / ".claude/projects/test-project/memory"
+          skill = home / ".claude/skills/test-skill"
+          long_description = "x" * 20000
+          (memory / "large-frontmatter.md").write_text(
+              "---\n"
+              "name: large-frontmatter\n"
+              f"description: {long_description}\n"
+              "metadata:\n"
+              "  type: feedback\n"
+              "---\n"
+              "# Protected\n",
+              encoding="utf-8",
+          )
+          (memory / "skill-linked.md").write_text(
+              "---\nname: skill-linked\ntype: project\n---\n# Skill Linked\n",
+              encoding="utf-8",
+          )
+          (skill / "SKILL.md").write_text("Use [[skill-linked]] for the workflow.\n", encoding="utf-8")
+          PY
+          python3 - << 'PY'
+          import os
+          import sys
+          sys.path.insert(0, "bin")
+          import cleanup
+
+          files = cleanup.collect_files()
+          large = os.path.join(os.environ["HOME"], ".claude/projects/test-project/memory/large-frontmatter.md")
+          target = os.path.join(os.environ["HOME"], ".claude/projects/test-project/memory/skill-linked.md")
+          assert cleanup.get_type(large) == "feedback"
+          inbound = cleanup.count_inbound(files)
+          assert inbound[target] == 1, inbound
+          PY
+
       - name: Test wikilink lint ignores markdown examples
         run: |
           tmp=$(mktemp -d)

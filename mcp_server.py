@@ -15,8 +15,15 @@ import os
 import subprocess
 import sys
 
+def default_memory_system():
+    installed_root = os.path.abspath(os.path.dirname(__file__))
+    if os.path.exists(os.path.join(installed_root, ".installed.json")):
+        return installed_root
+    return os.path.expanduser("~/.claude/memory-system")
+
+
 MEMORY_SYSTEM = os.path.expanduser(
-    os.environ.get("EIDETIC_MEMORY_SYSTEM", "~/.claude/memory-system")
+    os.environ.get("EIDETIC_MEMORY_SYSTEM") or default_memory_system()
 )
 BIN = os.path.join(MEMORY_SYSTEM, "bin")
 INDEX_DB = os.path.join(MEMORY_SYSTEM, "db", "index.db")
@@ -240,7 +247,7 @@ def handle_search(params):
 
 def handle_serendipity(params):
     query = params.get("query", "")
-    return run_script("serendipity.py", [query])
+    return run_script("serendipity.py", [query, INDEX_DB])
 
 
 def handle_health(params):
@@ -353,7 +360,7 @@ def handle_request(request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "eidetic",
-                "version": "4.2.10"
+                "version": "4.2.11"
             }
         })
 
