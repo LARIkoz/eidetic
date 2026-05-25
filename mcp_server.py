@@ -276,7 +276,7 @@ def handle_reindex(params):
 
 
 def handle_lint(params):
-    return run_script("lint_impl.py")
+    return run_script("lint_impl.py", [INDEX_DB])
 
 
 def handle_export_vault(params):
@@ -360,7 +360,7 @@ def handle_request(request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "eidetic",
-                "version": "4.2.11"
+                "version": "4.2.12"
             }
         })
 

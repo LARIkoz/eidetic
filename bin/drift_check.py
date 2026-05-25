@@ -204,11 +204,17 @@ def build_known_names(index_conn):
     return names
 
 
+def strip_markdown_code(content):
+    if not content:
+        return ""
+    content = re.sub(r"```.*?```", "", content, flags=re.DOTALL)
+    return re.sub(r"`[^`\n]*`", "", content)
+
+
 def extract_wikilinks_from_content(content):
     if not content:
         return []
-    content = re.sub(r"```.*?```", "", content, flags=re.DOTALL)
-    content = re.sub(r"`[^`\n]*`", "", content)
+    content = strip_markdown_code(content)
     raw = re.findall(r'\[\[([^\]]+)\]\]', content)
     links = []
     seen = set()
@@ -314,7 +320,8 @@ def check_confidence_escalation(index_conn):
         info = path_counts.setdefault(path, {"agent": 1, "events": 0, "type": mem_type})
         if info["type"] is None and mem_type is not None:
             info["type"] = mem_type
-        info["events"] += len(re.findall(r'(?m)^-\s+\d{4}-\d{2}-\d{2}:', content or ""))
+        event_text = strip_markdown_code(content or "")
+        info["events"] += len(re.findall(r'(?m)^-\s+\d{4}-\d{2}-\d{2}:', event_text))
 
     user_paths = set()
     for row in index_conn.execute(

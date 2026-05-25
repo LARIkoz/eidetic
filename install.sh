@@ -140,18 +140,20 @@ echo "6. Writing install metadata..."
 GIT_SHA=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
 VERSION=$(sed -n 's/.*version-\([0-9][0-9.]*\)-.*/\1/p' "$SCRIPT_DIR/README.md" 2>/dev/null | head -1)
 [ -z "$VERSION" ] && VERSION="unknown"
-python3 << PYEOF
-import json, time, os
-meta_path = os.path.expanduser("$META")
+python3 - "$META" "$VERSION" "$GIT_SHA" "$REPO_URL" << 'PYEOF'
+import json, os, sys, time
+
+meta_path, version, git_sha, repo_url = sys.argv[1:5]
+meta_path = os.path.expanduser(meta_path)
 meta = {
-    "version": "$VERSION",
-    "git_sha": "$GIT_SHA",
-    "repo": "$REPO_URL",
+    "version": version,
+    "git_sha": git_sha,
+    "repo": repo_url,
     "installed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "update_method": "install"
 }
-with open(meta_path, "w") as f:
+with open(meta_path, "w", encoding="utf-8") as f:
     json.dump(meta, f, indent=2)
 print(f"   Version: {meta['version']} ({meta['git_sha'][:7]})")
 PYEOF

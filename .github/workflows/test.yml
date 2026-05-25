@@ -198,6 +198,19 @@ jobs:
               "confidence_escalation",
               "threshold=3",
           ) in drift_check.check_confidence_escalation(conn)
+          conn.execute(
+              "INSERT INTO memory_chunks (path, type, source, section_heading, content) VALUES (?, 'project', 'agent-extracted', 'Template', ?)",
+              (
+                  "/tmp/fenced-history-example.md",
+                  "```md\n- 2026-01-01: Example only\n- 2026-01-02: Example only\n- 2026-01-03: Example only\n```\n",
+              ),
+          )
+          assert (
+              "/tmp/fenced-history-example.md",
+              "project",
+              "confidence_escalation",
+              "threshold=3",
+          ) not in drift_check.check_confidence_escalation(conn)
 
           fd, path = tempfile.mkstemp(suffix=".db")
           os.close(fd)
@@ -301,6 +314,14 @@ jobs:
           assert not result["_mcp_result"].get("isError"), result
           result = mcp_server.handle_serendipity({"query": "custom memory system routing"})
           assert not result["_mcp_result"].get("isError"), result
+          captured = {}
+          old_run_script = mcp_server.run_script
+          try:
+              mcp_server.run_script = lambda script, args=None: captured.update(script=script, args=args) or {}
+              mcp_server.handle_lint({})
+          finally:
+              mcp_server.run_script = old_run_script
+          assert captured == {"script": "lint_impl.py", "args": [expected]}, captured
           os.environ.pop("EIDETIC_MEMORY_SYSTEM", None)
           installed_root = expected.rsplit("/db/index.db", 1)[0]
           spec = importlib.util.spec_from_file_location("installed_mcp", os.path.join(installed_root, "mcp_server.py"))
@@ -308,6 +329,27 @@ jobs:
           spec.loader.exec_module(installed_mcp)
           assert installed_mcp.INDEX_DB == expected
           PY
+
+      - name: Test custom memory system fallback signals are indexed
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          export HOME="$tmp/home"
+          export EIDETIC_MEMORY_SYSTEM="$tmp/custom-memory-system"
+          mkdir -p "$EIDETIC_MEMORY_SYSTEM/signals" "$EIDETIC_MEMORY_SYSTEM/db" "$HOME/.claude/projects"
+          cat > "$EIDETIC_MEMORY_SYSTEM/signals/fallback.md" << 'EOF'
+          ---
+          name: fallback-signal
+          metadata:
+            type: project
+            source: agent-extracted
+          ---
+          # Fallback Signal
+          Custom fallback signals must be indexed.
+          EOF
+          python3 bin/index_impl.py --full "$EIDETIC_MEMORY_SYSTEM/db/index.db" >/dev/null
+          sqlite3 "$EIDETIC_MEMORY_SYSTEM/db/index.db" "SELECT COUNT(*) FROM memory_chunks WHERE path LIKE '%/signals/fallback.md'" \
+            | grep -q '^1$'
 
       - name: Test custom memory system install persists routing
         run: |
@@ -379,6 +421,78 @@ jobs:
           assert (Path(memory_system) / ".installed.json").exists()
           PY
 
+      - name: Test custom memory system update persists hook routing
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          export HOME="$tmp/home"
+          export EIDETIC_MEMORY_SYSTEM="$tmp/custom memory-system's"
+          mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/rules" "$HOME/.claude/projects/test-project/memory" "$EIDETIC_MEMORY_SYSTEM/bin" "$EIDETIC_MEMORY_SYSTEM/db" "$tmp/fakebin"
+          cat > "$HOME/.claude/settings.json" << 'EOF'
+          {"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"~/.claude/hooks/smart-memory-inject.sh","timeout":5000}]}],"Stop":[{"hooks":[{"type":"command","command":"~/.claude/hooks/session-signals.sh","timeout":30000,"async":true}]}]}}
+          EOF
+          cat > "$HOME/.claude/projects/test-project/memory/test-rule.md" << 'EOF'
+          ---
+          name: test-rule
+          description: Test feedback rule
+          type: feedback
+          ---
+          # Test Rule
+          Custom update smoke.
+          EOF
+          printf '{"version":"old","git_sha":"oldsha","installed_at":"2026-01-01T00:00:00Z"}\n' > "$EIDETIC_MEMORY_SYSTEM/.installed.json"
+          cat > "$tmp/fakebin/git" << 'EOF'
+          #!/bin/bash
+          set -euo pipefail
+          if [ "${1:-}" = "clone" ]; then
+            dest="${@: -1}"
+            mkdir -p "$dest"
+            (cd "$EIDETIC_FAKE_SOURCE" && tar --exclude .git --exclude output -cf - .) | (cd "$dest" && tar -xf -)
+            exit 0
+          fi
+          if [ "${1:-}" = "-C" ] && [ "${3:-}" = "rev-parse" ]; then
+            echo fake-sha-quote
+            exit 0
+          fi
+          exec /usr/bin/git "$@"
+          EOF
+          chmod +x "$tmp/fakebin/git"
+          export EIDETIC_FAKE_SOURCE="$PWD"
+          PATH="$tmp/fakebin:$PATH" bash bin/update.sh >/dev/null
+          python3 - << 'PY'
+          import json
+          import os
+          import shlex
+          from pathlib import Path
+
+          home = Path(os.environ["HOME"])
+          memory_system = os.environ["EIDETIC_MEMORY_SYSTEM"]
+          settings = json.loads((home / ".claude/settings.json").read_text())
+          commands = [
+              hook["command"]
+              for entries in settings["hooks"].values()
+              for entry in entries
+              for hook in entry.get("hooks", [])
+          ]
+          for needle in ["smart-memory-inject", "session-signals"]:
+              cmd = next(c for c in commands if needle in c)
+              prefix = shlex.split(cmd)[0]
+              assert prefix.startswith("EIDETIC_MEMORY_SYSTEM="), cmd
+              assert prefix.split("=", 1)[1] == memory_system, cmd
+          meta = json.loads((Path(memory_system) / ".installed.json").read_text())
+          assert meta["git_sha"] == "fake-sha-quote", meta
+          skill = (home / ".claude/skills/memory-recall/SKILL.md").read_text()
+          expected_search = str(Path(memory_system) / "bin/search.sh")
+          search_commands = [
+              line.strip()
+              for line in skill.splitlines()
+              if "bin/search.sh" in line and not line.strip().startswith("#")
+          ]
+          assert search_commands, skill
+          for command in search_commands:
+              assert shlex.split(command)[0] == expected_search, command
+          PY
+
       - name: Test export polish preserves placeholders and model overrides
         run: |
           python3 - << 'PY'
@@ -426,7 +540,7 @@ jobs:
           tmp=$(mktemp -d)
           trap 'rm -rf "$tmp"' EXIT
           export HOME="$tmp/home"
-          mkdir -p "$HOME/.claude/projects/test-project/memory" "$HOME/.claude/skills/test-skill"
+          mkdir -p "$HOME/.claude/projects/test-project/memory" "$HOME/.claude/skills/test-skill" "$HOME/.claude/memory-system/signals" "$HOME/custom-memory/signals"
           python3 - << 'PY'
           import os
           from pathlib import Path
@@ -434,6 +548,8 @@ jobs:
           home = Path(os.environ["HOME"])
           memory = home / ".claude/projects/test-project/memory"
           skill = home / ".claude/skills/test-skill"
+          custom_memory = home / "custom-memory/signals"
+          default_memory = home / ".claude/memory-system/signals"
           long_description = "x" * 20000
           (memory / "large-frontmatter.md").write_text(
               "---\n"
@@ -445,25 +561,53 @@ jobs:
               "# Protected\n",
               encoding="utf-8",
           )
-          (memory / "skill-linked.md").write_text(
+          (memory / "linked-card.md").write_text(
               "---\nname: skill-linked\ntype: project\n---\n# Skill Linked\n",
               encoding="utf-8",
           )
           (skill / "SKILL.md").write_text("Use [[skill-linked]] for the workflow.\n", encoding="utf-8")
+          (custom_memory / "custom-signal.md").write_text("---\nname: custom-signal\ntype: project\n---\n# Custom\n", encoding="utf-8")
+          (default_memory / "default-signal.md").write_text("---\nname: default-signal\ntype: project\n---\n# Default\n", encoding="utf-8")
           PY
           python3 - << 'PY'
           import os
           import sys
+          from pathlib import Path
+          os.environ["EIDETIC_MEMORY_SYSTEM"] = str(Path(os.environ["HOME"]) / "custom-memory")
           sys.path.insert(0, "bin")
           import cleanup
 
           files = cleanup.collect_files()
           large = os.path.join(os.environ["HOME"], ".claude/projects/test-project/memory/large-frontmatter.md")
-          target = os.path.join(os.environ["HOME"], ".claude/projects/test-project/memory/skill-linked.md")
+          target = os.path.join(os.environ["HOME"], ".claude/projects/test-project/memory/linked-card.md")
+          custom_signal = os.path.join(os.environ["HOME"], "custom-memory/signals/custom-signal.md")
+          default_signal = os.path.join(os.environ["HOME"], ".claude/memory-system/signals/default-signal.md")
           assert cleanup.get_type(large) == "feedback"
+          assert custom_signal in files, files
+          assert default_signal not in files, files
           inbound = cleanup.count_inbound(files)
           assert inbound[target] == 1, inbound
           PY
+
+      - name: Test check-update handles apostrophes in custom root
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          export EIDETIC_MEMORY_SYSTEM="$tmp/custom memory-system's"
+          mkdir -p "$EIDETIC_MEMORY_SYSTEM"
+          python3 - << 'PY'
+          import json
+          import os
+          import time
+          from pathlib import Path
+          root = Path(os.environ["EIDETIC_MEMORY_SYSTEM"])
+          (root / ".installed.json").write_text(json.dumps({
+              "git_sha": "abc",
+              "last_update_check": time.time(),
+          }), encoding="utf-8")
+          (root / ".update-available").write_text("cached notice\n", encoding="utf-8")
+          PY
+          bash bin/check-update.sh | grep -q "cached notice"
 
       - name: Test wikilink lint ignores markdown examples
         run: |
