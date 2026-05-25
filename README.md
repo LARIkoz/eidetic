@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.2.11-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.2.12-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -267,6 +267,8 @@ pip install tree-sitter tree-sitter-python tree-sitter-javascript tree-sitter-ba
 
 Core works without any pip installs. Without optional packages, Eidetic degrades to FTS5-only memory search and skips code indexing. Rollback in 5 seconds: `bash ~/.claude/memory-system/bin/rollback.sh`
 
+Default install path is `~/.claude/memory-system`. Advanced/custom installs can set `EIDETIC_MEMORY_SYSTEM=/path/to/memory-system` before running install, update, or wrapper commands.
+
 ### Updates
 
 Eidetic checks for updates in the background at session start (every 6 hours). When an update is available, you'll see a one-line notice:
@@ -275,7 +277,7 @@ Eidetic checks for updates in the background at session start (every 6 hours). W
 Eidetic update available (a1b2c3d). Run: bash ~/.claude/memory-system/bin/update.sh
 ```
 
-Updates preserve your databases, rules, and hook registrations — only code files are replaced.
+Updates preserve your databases, rules, and hook registrations — only code files are replaced. For custom-root installs, run the update command under the same `EIDETIC_MEMORY_SYSTEM` value or from the installed root's `bin/update.sh`.
 
 ### MCP Server
 
@@ -291,6 +293,8 @@ Works with Cursor, Windsurf, Cline, and any MCP-compatible agent:
   }
 }
 ```
+
+For custom-root installs, point `args` at that root's `mcp_server.py`; the MCP server derives its active index from the installed root or `EIDETIC_MEMORY_SYSTEM`.
 
 6 tools: `memory_search`, `memory_serendipity`, `memory_health`, `memory_reindex`, `memory_lint`, `export_vault`.
 
@@ -349,7 +353,7 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 
 | Capability                   | Eidetic                            | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
 | ---------------------------- | ---------------------------------- | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
-|                              | **v4.2.11**                        | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
+|                              | **v4.2.12**                        | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
 | Search                       | FTS5 + vector                      | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
 | Recall benchmark             | **100%**                           | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
 | Auto-inject on session start | **rules/ (no cap)**                | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
@@ -444,10 +448,11 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.2.9** — degraded v4.2.8 review hardening: empty-file cleanup, code-index atomicity, fcntl hook lock, timezone drift, vector validation ordering
 - [x] **v4.2.10** — v4.2.9 review follow-up: recent mtime unit normalization, timezone freshness ranking, export no-open wrapper fix, compound exact-match fix
 - [x] **v4.2.11** — v4.2.10 review hardening: event-level confidence drift, custom memory root routing, handoff discovery, cleanup protection, polish model overrides
+- [x] **v4.2.12** — degraded v4.2.11 review follow-up: custom-root signal indexing, cleanup/MCP lint parity, hook update migration, quote-safe metadata reads
 
 ### Next
 
-- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.11
+- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.12
 - [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter.
 
 ### v5.0 (deferred)
@@ -461,6 +466,16 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v4.2.12 (2026-05-25)
+
+- Index and lint now include fallback Stop-hook signals under the active `EIDETIC_MEMORY_SYSTEM` root
+- Cleanup no longer mixes default-root signal files into custom-root archive operations
+- Cleanup skill-link protection resolves frontmatter `name:` aliases, matching lint behavior
+- MCP `memory_lint` passes the active index path instead of defaulting to `~/.claude/memory-system`
+- `update.sh` refreshes hook registrations with the custom-root `EIDETIC_MEMORY_SYSTEM` prefix
+- Install/update/check-update metadata reads now pass paths through argv instead of interpolating shell paths into Python snippets
+- `confidence_escalation` ignores dated bullets inside fenced/inline code examples
 
 ### v4.2.11 (2026-05-25)
 

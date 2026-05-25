@@ -108,6 +108,17 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Centralize vault polish/synthesis model IDs behind environment overrides and preserve literal prompt placeholders in note bodies.
 - [x] Add regression tests for the above.
 
+### Closed In v4.2.12
+
+- [x] Run clean consreview against v4.2.11. Pipeline FAILED quorum (`3/8 voices`, `2/3 families`), so fixes are based only on directly verified raw findings.
+- [x] Index fallback Stop-hook signals under the active memory-system root.
+- [x] Keep cleanup signal scans and archive destinations in the same custom root.
+- [x] Protect cleanup candidates linked by frontmatter `name:` aliases.
+- [x] Route MCP `memory_lint` through the active index path.
+- [x] Refresh hook registrations with `EIDETIC_MEMORY_SYSTEM` during custom-root update.
+- [x] Make install/update/check-update metadata path handling robust to shell quotes.
+- [x] Ignore fenced/inline code examples when counting confidence-escalation history events.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
@@ -120,7 +131,7 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 ### Suggested Next Checks
 
-- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.11 agent recall behavior.
+- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.12 agent recall behavior.
 - [ ] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
 - [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.

@@ -15,12 +15,13 @@ import sqlite3
 import sys
 from datetime import datetime, timedelta
 
-SCAN_DIRS = [
+BASE_SCAN_DIRS = [
     os.path.expanduser("~/.claude/projects/*/memory/"),
     os.path.expanduser("~/.claude/projects/*/memory/signals/"),
     os.path.expanduser("~/.claude/agent-memory/"),
     os.path.expanduser("~/.claude/agent-memory/*/"),
 ]
+SCAN_DIRS = list(BASE_SCAN_DIRS)
 
 EXCLUDE = {"MEMORY.md", "BACKLOG.md"}
 STALE_DAYS = 30
@@ -29,6 +30,24 @@ LARGE_THRESHOLD = 5120
 
 def file_stem(path):
     return os.path.basename(path).replace(".md", "")
+
+
+def memory_system_from_db(db_path):
+    db_dir = os.path.dirname(os.path.abspath(os.path.expanduser(db_path)))
+    if os.path.basename(db_dir) == "db":
+        return os.path.dirname(db_dir)
+    return os.path.expanduser(
+        os.environ.get("EIDETIC_MEMORY_SYSTEM", "~/.claude/memory-system")
+    )
+
+
+def scan_dirs(memory_system=None):
+    dirs = list(SCAN_DIRS)
+    if memory_system:
+        signals_dir = os.path.join(memory_system, "signals") + os.sep
+        if signals_dir not in dirs:
+            dirs.append(signals_dir)
+    return dirs
 
 
 def unique_key(path, used):
@@ -52,10 +71,10 @@ def unique_key(path, used):
     return candidate
 
 
-def collect_files():
+def collect_files(memory_system=None):
     files = {}
     used = set()
-    for pattern in SCAN_DIRS:
+    for pattern in scan_dirs(memory_system):
         for dirpath in glob.glob(pattern):
             if not os.path.isdir(dirpath):
                 continue
@@ -127,7 +146,7 @@ def main():
         "~/.claude/memory-system/db/index.db"
     )
 
-    files = collect_files()
+    files = collect_files(memory_system_from_db(db_path))
 
     name_to_keys = {}
 

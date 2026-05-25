@@ -67,12 +67,13 @@ CREATE TABLE IF NOT EXISTS index_meta (
 );
 """
 
-SCAN_DIRS = [
+BASE_SCAN_DIRS = [
     os.path.expanduser("~/.claude/projects/*/memory/"),
     os.path.expanduser("~/.claude/projects/*/memory/signals/"),
     os.path.expanduser("~/.claude/agent-memory/"),
     os.path.expanduser("~/.claude/agent-memory/*/"),
 ]
+SCAN_DIRS = list(BASE_SCAN_DIRS)
 
 EXCLUDE_FILES = {"MEMORY.md", "BACKLOG.md"}
 DERIVED_COLUMNS = {
@@ -325,11 +326,29 @@ def needs_lifecycle_backfill(conn):
     return row is not None
 
 
-def collect_files():
+def memory_system_from_db(db_path):
+    db_dir = os.path.dirname(os.path.abspath(os.path.expanduser(db_path)))
+    if os.path.basename(db_dir) == "db":
+        return os.path.dirname(db_dir)
+    return os.path.expanduser(
+        os.environ.get("EIDETIC_MEMORY_SYSTEM", "~/.claude/memory-system")
+    )
+
+
+def scan_dirs(memory_system=None):
+    dirs = list(SCAN_DIRS)
+    if memory_system:
+        signals_dir = os.path.join(memory_system, "signals") + os.sep
+        if signals_dir not in dirs:
+            dirs.append(signals_dir)
+    return dirs
+
+
+def collect_files(memory_system=None):
     """Collect all .md files from scan dirs."""
     files = []
     seen = set()
-    for pattern in SCAN_DIRS:
+    for pattern in scan_dirs(memory_system):
         for dirpath in glob.glob(pattern):
             if not os.path.isdir(dirpath):
                 continue
@@ -505,7 +524,7 @@ def main():
     )
 
     t0 = time.time()
-    files = collect_files()
+    files = collect_files(memory_system_from_db(db_path))
     conn = init_db(db_path)
 
     if mode == "--full":
