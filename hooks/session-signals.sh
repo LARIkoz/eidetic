@@ -154,12 +154,16 @@ try:
         f.seek(0, os.SEEK_END)
         size = f.tell()
         start = max(0, size - max_bytes)
+        boundary_aligned = True
+        if start:
+            f.seek(start - 1)
+            boundary_aligned = f.read(1) == b'\n'
         f.seek(start)
         data = f.read(max_bytes)
 except OSError:
     sys.exit(0)
 
-if start:
+if start and not boundary_aligned:
     newline = data.find(b'\n')
     data = data[newline + 1:] if newline >= 0 else b''
 

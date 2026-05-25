@@ -185,6 +185,12 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Parse only complete JSONL lines from the capped tail window so partial oversized tool-result lines are not sent to the extractor.
 - [x] Add CI coverage for an oversized final `tool_result` line that previously bypassed the v4.2.19 exclusion through raw-tail fallback.
 
+### Closed In v4.2.21
+
+- [x] Run clean consreview against v4.2.20. Pipeline DEGRADED (`5/8 voices OK`; Anthropic voices/synth failed), so final fixes are based on raw voices and local source checks.
+- [x] Preserve a complete safe JSONL line when the capped tail window starts exactly on that line boundary.
+- [x] Add CI coverage for a complete 8000-byte JSONL user line starting exactly at the tail-window boundary.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
@@ -197,7 +203,7 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 ### Suggested Next Checks
 
-- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.20 agent recall behavior.
+- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.21 agent recall behavior.
 - [x] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
 - [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.

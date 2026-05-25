@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.2.20-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.2.21-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -353,7 +353,7 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 
 | Capability                   | Eidetic                            | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
 | ---------------------------- | ---------------------------------- | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
-|                              | **v4.2.20**                        | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
+|                              | **v4.2.21**                        | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
 | Search                       | FTS5 + vector                      | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
 | Recall benchmark             | **100%**                           | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
 | Auto-inject on session start | **rules/ (no cap)**                | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
@@ -457,10 +457,11 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.2.18** — degraded v4.2.17 review follow-up: real Claude transcript parsing for Stop-hook learning, real-schema CI fixtures, atomic fresh install writes
 - [x] **v4.2.19** — degraded v4.2.18 review follow-up: atomic updater metadata/settings writes, Stop-hook tool-result exclusion, full-reindex timeout regression coverage
 - [x] **v4.2.20** — degraded v4.2.19 review follow-up: remove unsafe raw-tail Stop-hook fallback for JSONL transcript excerpts
+- [x] **v4.2.21** — degraded v4.2.20 review follow-up: preserve complete JSONL lines that start exactly at the capped tail boundary
 
 ### Next
 
-- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.20
+- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.21
 - [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter.
 
 ### v5.0 (deferred)
@@ -474,6 +475,11 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v4.2.21 (2026-05-25)
+
+- Stop-hook tail-window parsing now checks whether the capped read starts on a JSONL line boundary before discarding the first line, preserving safe complete user/assistant turns at the exact boundary
+- Added regression coverage for a complete 8000-byte JSONL user line that starts exactly at the tail-window boundary
 
 ### v4.2.20 (2026-05-25)
 

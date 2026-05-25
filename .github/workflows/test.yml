@@ -1062,6 +1062,77 @@ jobs:
           assert not Path(os.environ["COMPOUND_LOG"]).exists()
           PY
 
+      - name: Test Stop hook keeps complete JSONL line at tail boundary
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          export HOME="$tmp/home"
+          export EIDETIC_MEMORY_SYSTEM="$tmp/custom-memory-system"
+          export COMPOUND_LOG="$tmp/compound.log"
+          mkdir -p "$HOME" "$EIDETIC_MEMORY_SYSTEM/bin" "$tmp/fakebin"
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/index.sh" << 'EOF'
+          #!/bin/bash
+          exit 0
+          EOF
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/compound.py" << 'EOF'
+          import os
+          import pathlib
+          import sys
+          pathlib.Path(os.environ["COMPOUND_LOG"]).write_text(sys.stdin.read(), encoding="utf-8")
+          EOF
+          chmod +x "$EIDETIC_MEMORY_SYSTEM/bin/index.sh"
+          cat > "$tmp/fakebin/claude-batch" << 'EOF'
+          #!/bin/bash
+          set -euo pipefail
+          prompt_file=""
+          while [ "$#" -gt 0 ]; do
+            case "$1" in
+              --prompt-file)
+                shift
+                prompt_file="${1:-}"
+                ;;
+              --model)
+                shift
+                ;;
+            esac
+            shift || true
+          done
+          test -n "$prompt_file"
+          grep -q "Boundary human request should survive" "$prompt_file"
+          printf '%s\n' "Decision: Boundary line survived."
+          EOF
+          cat > "$tmp/fakebin/codex-batch" << 'EOF'
+          #!/bin/bash
+          exit 1
+          EOF
+          chmod +x "$tmp/fakebin/claude-batch" "$tmp/fakebin/codex-batch"
+          python3 - << 'PY' "$tmp/transcript.jsonl"
+          import json
+          import sys
+
+          marker = "Boundary human request should survive. "
+          obj = {"type": "user", "message": {"role": "user", "content": marker}}
+          base = json.dumps(obj, separators=(",", ":")) + "\n"
+          filler_len = 8000 - len(base.encode("utf-8"))
+          assert filler_len > 0, len(base)
+          obj["message"]["content"] = marker + ("x" * filler_len)
+          line = json.dumps(obj, separators=(",", ":")) + "\n"
+          assert len(line.encode("utf-8")) == 8000, len(line.encode("utf-8"))
+          prefix = json.dumps({"type": "system", "message": {"role": "system", "content": "ignored"}}) + "\n"
+          with open(sys.argv[1], "w", encoding="utf-8") as f:
+              f.write(prefix)
+              f.write(line)
+          PY
+          printf '{"transcript_path":"%s"}\n' "$tmp/transcript.jsonl" \
+            | PATH="$tmp/fakebin:$PATH" bash hooks/session-signals.sh
+          python3 - << 'PY'
+          import os
+          from pathlib import Path
+
+          signal = Path(os.environ["COMPOUND_LOG"]).read_text(encoding="utf-8")
+          assert signal == "Decision: Boundary line survived.\n", signal
+          PY
+
       - name: Test Stop hook falls back after Claude EMPTY success
         run: |
           tmp=$(mktemp -d)
