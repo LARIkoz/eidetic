@@ -160,6 +160,16 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Install update files through temp-file plus atomic rename instead of in-place `cp`.
 - [x] Add CI regressions for these review findings.
 
+### Closed In v4.2.18
+
+- [x] Run clean consreview against v4.2.17. Pipeline was DEGRADED (`audit=ISSUES`, `mechanical=FAIL`, `redteam=REFUTED`), so final fixes are based on raw voices, redteam misses, and direct local repros.
+- [x] Fix Stop-hook transcript parsing for real Claude Code JSONL: read nested `message.role` / `message.content` and fall back to raw tail when parsing yields no turns.
+- [x] Replace Stop-hook CI transcript fixtures with real nested schema, including assistant text blocks, so automatic session learning is covered by tests.
+- [x] Make fresh install writes atomic for runtime files, hooks, skill, settings, and `.installed.json`.
+- [x] Clean up temp files if `update.sh` atomic replacement fails.
+- [x] Give MCP full reindex a longer timeout than incremental reindex.
+- [x] Add regression proving explicit frontmatter `status: fixed` remains `fixed` through status inference.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
@@ -172,7 +182,7 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 ### Suggested Next Checks
 
-- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.17 agent recall behavior.
+- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.18 agent recall behavior.
 - [x] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
 - [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.

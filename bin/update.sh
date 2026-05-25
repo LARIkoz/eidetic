@@ -77,7 +77,10 @@ atomic_install() {
     if [ -n "$mode" ]; then
         chmod "$mode" "$tmp"
     fi
-    mv -f "$tmp" "$dst"
+    if ! mv -f "$tmp" "$dst"; then
+        rm -f "$tmp"
+        return 1
+    fi
 }
 
 for src in "$TMP_DIR/eidetic/bin/"*.sh; do

@@ -12,6 +12,25 @@ META="$MEMORY_SYSTEM/.installed.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_URL="https://github.com/LARIkoz/eidetic.git"
 
+atomic_install() {
+    src="$1"
+    dst="$2"
+    mode="${3:-}"
+    mkdir -p "$(dirname "$dst")"
+    tmp=$(mktemp "${dst}.tmp.XXXXXX")
+    if ! cp "$src" "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if [ -n "$mode" ]; then
+        chmod "$mode" "$tmp"
+    fi
+    if ! mv -f "$tmp" "$dst"; then
+        rm -f "$tmp"
+        return 1
+    fi
+}
+
 echo "=== Eidetic Memory System — Install ==="
 echo ""
 
@@ -34,31 +53,38 @@ echo "   Backed up existing hooks"
 # Install memory system
 echo "2. Installing memory system..."
 mkdir -p "$MEMORY_SYSTEM"/{bin,db}
-cp bin/*.sh bin/*.py "$MEMORY_SYSTEM/bin/"
-cp mcp_server.py "$MEMORY_SYSTEM/mcp_server.py"
-chmod +x "$MEMORY_SYSTEM/bin/"*.sh
+for src in bin/*.sh; do
+    atomic_install "$src" "$MEMORY_SYSTEM/bin/$(basename "$src")" 755
+done
+for src in bin/*.py; do
+    mode=644
+    [ -x "$src" ] && mode=755
+    atomic_install "$src" "$MEMORY_SYSTEM/bin/$(basename "$src")" "$mode"
+done
+atomic_install mcp_server.py "$MEMORY_SYSTEM/mcp_server.py" 644
 
 # Install hooks
 echo "3. Installing hooks..."
 mkdir -p "$HOOKS_DIR"
-cp hooks/*.sh "$HOOKS_DIR/"
-chmod +x "$HOOKS_DIR/smart-memory-inject.sh" "$HOOKS_DIR/session-signals.sh"
+for src in hooks/*.sh; do
+    atomic_install "$src" "$HOOKS_DIR/$(basename "$src")" 755
+done
 
 # Install skill
 echo "4. Installing recall skill..."
 mkdir -p "$SKILLS_DIR"
-cp skill/SKILL.md "$SKILLS_DIR/"
+atomic_install skill/SKILL.md "$SKILLS_DIR/SKILL.md" 644
 if [ "$MEMORY_SYSTEM" != "$HOME/.claude/memory-system" ]; then
     python3 - "$SKILLS_DIR/SKILL.md" "$MEMORY_SYSTEM" << 'PYEOF'
-import pathlib, shlex, sys
+import os, pathlib, shlex, sys, tempfile
 
 path = pathlib.Path(sys.argv[1])
 memory_system = sys.argv[2]
 text = path.read_text(encoding="utf-8")
-path.write_text(
-    text.replace("~/.claude/memory-system", shlex.quote(memory_system)),
-    encoding="utf-8",
-)
+fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".tmp.")
+with os.fdopen(fd, "w", encoding="utf-8") as f:
+    f.write(text.replace("~/.claude/memory-system", shlex.quote(memory_system)))
+os.replace(tmp, path)
 PYEOF
 fi
 
@@ -69,7 +95,7 @@ mkdir -p "$RULES_DIR"
 echo "5. Registering hooks..."
 if [ -f "$SETTINGS" ]; then
     EIDETIC_INSTALL_MEMORY_SYSTEM="$MEMORY_SYSTEM" python3 << 'PYEOF'
-import json, sys, os, shlex
+import json, os, shlex, tempfile
 
 settings_path = os.path.expanduser("~/.claude/settings.json")
 with open(settings_path) as f:
@@ -130,8 +156,11 @@ elif not any("session-signals" in str(h) for h in stop):
 else:
     print("   session-signals already registered")
 
-with open(settings_path, "w") as f:
+settings_dir = os.path.dirname(settings_path) or "."
+fd, tmp = tempfile.mkstemp(dir=settings_dir, prefix=os.path.basename(settings_path) + ".tmp.")
+with os.fdopen(fd, "w") as f:
     json.dump(settings, f, indent=2)
+os.replace(tmp, settings_path)
 PYEOF
 fi
 
@@ -141,7 +170,7 @@ GIT_SHA=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo "unknown")
 VERSION=$(sed -n 's/.*version-\([0-9][0-9.]*\)-.*/\1/p' "$SCRIPT_DIR/README.md" 2>/dev/null | head -1)
 [ -z "$VERSION" ] && VERSION="unknown"
 python3 - "$META" "$VERSION" "$GIT_SHA" "$REPO_URL" << 'PYEOF'
-import json, os, sys, time
+import json, os, sys, tempfile, time
 
 meta_path, version, git_sha, repo_url = sys.argv[1:5]
 meta_path = os.path.expanduser(meta_path)
@@ -153,8 +182,11 @@ meta = {
     "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "update_method": "install"
 }
-with open(meta_path, "w", encoding="utf-8") as f:
+os.makedirs(os.path.dirname(meta_path), exist_ok=True)
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(meta_path), prefix=os.path.basename(meta_path) + ".tmp.")
+with os.fdopen(fd, "w", encoding="utf-8") as f:
     json.dump(meta, f, indent=2)
+os.replace(tmp, meta_path)
 print(f"   Version: {meta['version']} ({meta['git_sha'][:7]})")
 PYEOF
 
