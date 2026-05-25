@@ -32,7 +32,7 @@ CARD_KIND_AGE_THRESHOLDS = {
     "todo": 60,
     "bug": 60,
 }
-INACTIVE_STATUSES = {"archived", "deprecated", "obsolete", "resolved", "superseded"}
+INACTIVE_STATUSES = {"archived", "deprecated", "fixed", "obsolete", "resolved", "superseded"}
 DEFAULT_AGE_DAYS = 60
 
 try:
@@ -286,8 +286,12 @@ def check_age_drift(index_conn):
         SELECT path, type, evidence, last_verified, mtime, {card_kind_expr}, {status_expr}
         FROM memory_chunks
         WHERE evidence != 'hypothesis'
-        GROUP BY path
-        HAVING MIN(id)
+          AND id IN (
+              SELECT MIN(id)
+              FROM memory_chunks
+              WHERE evidence != 'hypothesis'
+              GROUP BY path
+          )
     """).fetchall()
 
     for path, mem_type, evidence, last_verified, mtime, card_kind, status in rows:

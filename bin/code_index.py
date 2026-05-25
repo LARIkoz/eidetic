@@ -59,6 +59,11 @@ SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".kurdyuk-l
 MAX_FILE_SIZE = 500_000
 
 
+def _escape_like(value):
+    """Escape SQL LIKE wildcards for literal path-prefix matching."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def ensure_agent_columns(conn):
     """Keep code indexing compatible with DBs created before v2.6."""
     try:
@@ -95,6 +100,13 @@ def find_code_files(project_dir, extensions=None):
                 if os.path.getsize(path) < MAX_FILE_SIZE:
                     files.append(path)
     return files
+
+
+def delete_code_rows_for_dir(conn, abs_dir):
+    conn.execute(
+        "DELETE FROM memory_chunks WHERE source = 'code-index' AND path LIKE ? ESCAPE '\\'",
+        (_escape_like(abs_dir) + "%",),
+    )
 
 
 def extract_entities(filepath, source_bytes, language):
@@ -189,10 +201,7 @@ def index_code(conn, project_dir, project_slug=None):
 
     try:
         with conn:
-            conn.execute(
-                "DELETE FROM memory_chunks WHERE source = 'code-index' AND path LIKE ?",
-                (abs_dir + "%",)
-            )
+            delete_code_rows_for_dir(conn, abs_dir)
             conn.executemany("""
                 INSERT INTO memory_chunks
                     (path, project, name, type, evidence, source,
