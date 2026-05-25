@@ -119,6 +119,13 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Make install/update/check-update metadata path handling robust to shell quotes.
 - [x] Ignore fenced/inline code examples when counting confidence-escalation history events.
 
+### Closed In v4.2.13
+
+- [x] Run clean consreview against v4.2.12. Pipeline FAILED quorum (`3/8 voices`, `2/3 families`), so fixes are based only on directly verified raw findings.
+- [x] Make markdown section splitting fence-aware so fenced `## History` examples stay inside one code block chunk and do not trigger confidence-escalation drift.
+- [x] Make SessionStart hook code/vector refresh pass custom-root paths through Python `argv` instead of interpolating paths into Python source strings.
+- [x] Add CI regressions for fenced headings and SessionStart custom roots with apostrophes.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
@@ -131,7 +138,7 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 ### Suggested Next Checks
 
-- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.12 agent recall behavior.
+- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.13 agent recall behavior.
 - [ ] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
 - [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.
