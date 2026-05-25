@@ -5,7 +5,15 @@ set -euo pipefail
 echo "=== Memory System Health ==="
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DB="$HOME/.claude/memory-system/db/index.db"
+INSTALLED_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+if [ -n "${EIDETIC_MEMORY_SYSTEM:-}" ]; then
+    MEMORY_SYSTEM="$EIDETIC_MEMORY_SYSTEM"
+elif [ -f "$INSTALLED_ROOT/.installed.json" ]; then
+    MEMORY_SYSTEM="$INSTALLED_ROOT"
+else
+    MEMORY_SYSTEM="$HOME/.claude/memory-system"
+fi
+DB="$MEMORY_SYSTEM/db/index.db"
 CURRENT_FILES=""
 CURRENT_CHUNKS=""
 if [ -f "$DB" ]; then
@@ -16,7 +24,7 @@ if [ -f "$DB" ]; then
     CURRENT_CHUNKS="$CHUNKS"
     echo "✅ Index: ${SIZE}, ${FILES} files, ${CHUNKS} chunks"
 
-    DRIFT_DB="$HOME/.claude/memory-system/db/drift_state.db"
+    DRIFT_DB="$MEMORY_SYSTEM/db/drift_state.db"
     if [ -f "$DRIFT_DB" ]; then
         ACTIVE_DRIFT=$(sqlite3 "$DRIFT_DB" "SELECT COUNT(*) FROM drift_findings WHERE resolved_at IS NULL" 2>/dev/null || echo "?")
         PENALIZED_DRIFT=$(sqlite3 "$DRIFT_DB" "SELECT COUNT(*) FROM drift_findings WHERE resolved_at IS NULL AND first_seen > 1" 2>/dev/null || echo "?")
@@ -51,7 +59,7 @@ elif [ -f "$DB" ]; then
     echo "⬜ Memory context not assembled yet"
 fi
 
-SEARCH_BIN="$HOME/.claude/memory-system/bin/search.sh"
+SEARCH_BIN="$MEMORY_SYSTEM/bin/search.sh"
 if [ ! -x "$SEARCH_BIN" ] && [ -x "$SCRIPT_DIR/search.sh" ]; then
     SEARCH_BIN="$SCRIPT_DIR/search.sh"
 fi

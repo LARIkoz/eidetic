@@ -24,7 +24,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECTS_GLOB = os.path.expanduser("~/.claude/projects/*/memory/*.md")
-DB_PATH = os.path.expanduser("~/.claude/memory-system/db/index.db")
+
+
+def default_memory_system():
+    installed_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if os.path.exists(os.path.join(installed_root, ".installed.json")):
+        return installed_root
+    return os.path.expanduser("~/.claude/memory-system")
+
+
+MEMORY_SYSTEM = os.path.expanduser(
+    os.environ.get("EIDETIC_MEMORY_SYSTEM") or default_memory_system()
+)
+DB_PATH = os.path.join(MEMORY_SYSTEM, "db", "index.db")
 
 MAX_FILE_SIZE = 50 * 1024
 MIN_NOTES_WARNING = 30
@@ -547,6 +559,11 @@ def render_template(meta, body, vault_type, link_map, project_slug, aliases, fil
 
 # ---------- polish (Haiku rewrite) ----------
 
+POLISH_MODEL_SONNET = os.environ.get("EIDETIC_POLISH_MODEL_SONNET", "claude-sonnet-4-6")
+POLISH_MODEL_HAIKU = os.environ.get("EIDETIC_POLISH_MODEL_HAIKU", "claude-haiku-4-5-20251001")
+TOPIC_CLUSTER_MODEL = os.environ.get("EIDETIC_TOPIC_CLUSTER_MODEL", POLISH_MODEL_SONNET)
+TOPIC_SYNTHESIS_MODEL = os.environ.get("EIDETIC_TOPIC_SYNTHESIS_MODEL", "claude-opus-4-6")
+
 POLISH_PROMPT = (
     "You are reformatting an internal AI-agent memory note for a human reader. "
     "Output ONLY the rewritten note body in Markdown. Do not add any preamble, "
@@ -569,12 +586,12 @@ POLISH_PROMPT = (
 
 
 def _build_polish_prompt(body, max_words):
-    # str.replace avoids KeyError when body contains '{...}' / JSON / dict literals
-    return (
-        POLISH_PROMPT
-        .replace("{max_words}", str(max_words))
-        .replace("{body}", body)
-    )
+    # Split on the body placeholder so literal "{...}" text inside the note
+    # cannot be interpreted as a prompt template token.
+    before, after = POLISH_PROMPT.split("{body}", 1)
+    before = before.replace("{max_words}", str(max_words))
+    after = after.replace("{max_words}", str(max_words))
+    return before + body + after
 
 
 def _split_frontmatter_body_footer(content):
@@ -609,12 +626,12 @@ def choose_polish_model(body):
 
     # Sonnet for: tables, code blocks, 3+ sections, long notes
     if has_table or has_code or section_count >= 3 or body_len > 2000:
-        return "claude-sonnet-4-6"
+        return POLISH_MODEL_SONNET
     # Haiku for: simple short notes
-    return "claude-haiku-4-5-20251001"
+    return POLISH_MODEL_HAIKU
 
 
-def polish_note(content, max_words=400, timeout=60, model="claude-sonnet-4-6"):
+def polish_note(content, max_words=400, timeout=60, model=None):
     """Rewrite note body via Haiku. Returns rewritten body or None on failure.
 
     Uses `claude-batch --prompt-file` per claude-cli-runtime contract:
@@ -624,6 +641,8 @@ def polish_note(content, max_words=400, timeout=60, model="claude-sonnet-4-6"):
     _, body, _ = _split_frontmatter_body_footer(content)
     if not body:
         return None
+    if model is None:
+        model = POLISH_MODEL_SONNET
     prompt = _build_polish_prompt(body, max_words)
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".txt", prefix="eidetic-polish-", delete=False, encoding="utf-8"
@@ -738,7 +757,7 @@ Notes:
         tmp.write(prompt)
         tmp.close()
         result = subprocess.run(
-            ["claude-batch", "--prompt-file", tmp.name, "--model", "claude-sonnet-4-6"],
+            ["claude-batch", "--prompt-file", tmp.name, "--model", TOPIC_CLUSTER_MODEL],
             capture_output=True, text=True, timeout=180,
         )
         if result.returncode == 0 and result.stdout.strip():
@@ -853,7 +872,7 @@ Notes:
         tmp.write(prompt)
         tmp.close()
         result = subprocess.run(
-            ["claude-batch", "--prompt-file", tmp.name, "--model", "claude-opus-4-6"],
+            ["claude-batch", "--prompt-file", tmp.name, "--model", TOPIC_SYNTHESIS_MODEL],
             capture_output=True, text=True, timeout=300,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -1369,9 +1388,9 @@ def export(target, project_filter=None, delta=False,
                 if polish_model == "auto":
                     model = choose_polish_model(body_text)
                 elif polish_model == "sonnet":
-                    model = "claude-sonnet-4-6"
+                    model = POLISH_MODEL_SONNET
                 else:
-                    model = "claude-haiku-4-5-20251001"
+                    model = POLISH_MODEL_HAIKU
                 print("  Polishing {}/{} ({})...".format(idx, total_polish, model), flush=True)
                 # B1: isolate per-note failures so one crash doesn't kill the loop
                 try:

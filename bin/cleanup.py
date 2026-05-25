@@ -18,8 +18,18 @@ import time
 from collections import defaultdict
 from datetime import datetime
 
-DB_PATH = os.path.expanduser("~/.claude/memory-system/db/index.db")
-ARCHIVE_DIR = os.path.expanduser("~/.claude/memory-system/archive/")
+def default_memory_system():
+    installed_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if os.path.exists(os.path.join(installed_root, ".installed.json")):
+        return installed_root
+    return os.path.expanduser("~/.claude/memory-system")
+
+
+MEMORY_SYSTEM = os.path.expanduser(
+    os.environ.get("EIDETIC_MEMORY_SYSTEM") or default_memory_system()
+)
+DB_PATH = os.path.join(MEMORY_SYSTEM, "db", "index.db")
+ARCHIVE_DIR = os.path.join(MEMORY_SYSTEM, "archive")
 STALE_DAYS = 90
 MIN_SIZE = 100
 
@@ -29,6 +39,9 @@ SCAN_DIRS = [
     os.path.expanduser("~/.claude/agent-memory/"),
     os.path.expanduser("~/.claude/agent-memory/*/"),
     os.path.expanduser("~/.claude/memory-system/signals/"),
+]
+LINK_SOURCE_DIRS = SCAN_DIRS + [
+    os.path.expanduser("~/.claude/skills/*/"),
 ]
 EXCLUDE = {"MEMORY.md", "BACKLOG.md"}
 PROTECTED_TYPES = {"feedback", "user"}
@@ -53,7 +66,7 @@ def collect_files():
 def get_type(filepath):
     try:
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-            text = f.read(500)
+            text = f.read()
     except Exception:
         return None
     if not text.startswith("---"):
@@ -69,14 +82,25 @@ def get_type(filepath):
     return None
 
 
+def collect_link_source_files(files):
+    sources = {info["path"] for info in files.values()}
+    for pattern in LINK_SOURCE_DIRS:
+        for dirpath in glob.glob(pattern):
+            if not os.path.isdir(dirpath):
+                continue
+            for f in os.listdir(dirpath):
+                if f.endswith(".md") and not f.endswith(".bak"):
+                    sources.add(os.path.join(dirpath, f))
+    return sorted(sources)
+
+
 def count_inbound(files):
     inbound = {key: 0 for key in files}
     targets = defaultdict(list)
     for key, info in files.items():
         targets[info["name"]].append(key)
 
-    for info in files.values():
-        path = info["path"]
+    for path in collect_link_source_files(files):
         try:
             with open(path, "r", errors="replace") as f:
                 text = f.read()

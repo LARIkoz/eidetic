@@ -59,6 +59,7 @@ def init_drift_db(drift_path):
     """)
     conn.commit()
     migrate_age_stale_details(conn)
+    migrate_confidence_escalation_details(conn)
     return conn
 
 
@@ -95,6 +96,55 @@ def migrate_age_stale_details(conn):
             SELECT rowid, first_seen, detected_at, resolved_at
             FROM drift_findings
             WHERE path = ? AND drift_type = 'age_stale' AND detail = ?
+        """, (path, stable_detail)).fetchone()
+
+        if existing and int(existing[0]) != int(rowid):
+            existing_rowid, existing_seen, existing_detected, existing_resolved = existing
+            merged_seen = max(int(existing_seen or 0), int(first_seen or 0))
+            merged_detected = max(existing_detected or "", detected_at or "")
+            merged_resolved = None if (resolved_at is None or existing_resolved is None) else existing_resolved
+            conn.execute("""
+                UPDATE drift_findings
+                SET first_seen = ?, detected_at = ?, resolved_at = ?,
+                    resolved_by = CASE WHEN ? IS NULL THEN NULL ELSE resolved_by END
+                WHERE rowid = ?
+            """, (merged_seen, merged_detected, merged_resolved, merged_resolved, existing_rowid))
+            conn.execute("DELETE FROM drift_findings WHERE rowid = ?", (rowid,))
+        else:
+            conn.execute(
+                "UPDATE drift_findings SET detail = ? WHERE rowid = ?",
+                (stable_detail, rowid),
+            )
+    conn.commit()
+
+
+def normalize_confidence_escalation_detail(detail):
+    """Keep confidence-escalation identity stable after the threshold is crossed."""
+    if re.search(r"\bagent=\d+\b", detail or ""):
+        return "threshold=3"
+    return detail or ""
+
+
+def migrate_confidence_escalation_details(conn):
+    """Normalize old changing details like `agent=3` to the stable threshold key."""
+    try:
+        rows = conn.execute("""
+            SELECT rowid, path, detail, first_seen, detected_at, resolved_at
+            FROM drift_findings
+            WHERE drift_type = 'confidence_escalation'
+        """).fetchall()
+    except sqlite3.OperationalError:
+        return
+
+    for rowid, path, detail, first_seen, detected_at, resolved_at in rows:
+        stable_detail = normalize_confidence_escalation_detail(detail)
+        if stable_detail == (detail or ""):
+            continue
+
+        existing = conn.execute("""
+            SELECT rowid, first_seen, detected_at, resolved_at
+            FROM drift_findings
+            WHERE path = ? AND drift_type = 'confidence_escalation' AND detail = ?
         """, (path, stable_detail)).fetchone()
 
         if existing and int(existing[0]) != int(rowid):
@@ -254,14 +304,17 @@ def check_age_drift(index_conn):
 
 def check_confidence_escalation(index_conn):
     rows = index_conn.execute("""
-        SELECT path, type FROM memory_chunks
+        SELECT path, type, section_heading, content
+        FROM memory_chunks
         WHERE source = 'agent-extracted'
     """).fetchall()
 
     path_counts = {}
-    for path, mem_type in rows:
-        path_counts.setdefault(path, {"agent": 0, "type": mem_type})
-        path_counts[path]["agent"] += 1
+    for path, mem_type, heading, content in rows:
+        info = path_counts.setdefault(path, {"agent": 1, "events": 0, "type": mem_type})
+        if info["type"] is None and mem_type is not None:
+            info["type"] = mem_type
+        info["events"] += len(re.findall(r'(?m)^-\s+\d{4}-\d{2}-\d{2}:', content or ""))
 
     user_paths = set()
     for row in index_conn.execute(
@@ -271,10 +324,12 @@ def check_confidence_escalation(index_conn):
 
     findings = []
     for path, info in path_counts.items():
+        if info["events"]:
+            info["agent"] = max(info["agent"], info["events"])
         if info["agent"] >= 3 and path not in user_paths:
             findings.append((
                 path, info["type"], "confidence_escalation",
-                f"agent={info['agent']}"
+                "threshold=3"
             ))
     return findings
 
