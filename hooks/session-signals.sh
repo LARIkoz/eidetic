@@ -9,6 +9,7 @@ MEMORY_SYSTEM="${EIDETIC_MEMORY_SYSTEM:-$HOME/.claude/memory-system}"
 COMPOUND="$MEMORY_SYSTEM/bin/compound.py"
 INDEX="$MEMORY_SYSTEM/bin/index.sh"
 SIGNAL_CLAUDE_MODEL="${EIDETIC_SIGNAL_CLAUDE_MODEL:-haiku}"
+SIGNAL_CLAUDE_TIMEOUT="${EIDETIC_SIGNAL_CLAUDE_TIMEOUT:-30}"
 SIGNAL_CODEX_MODEL="${EIDETIC_SIGNAL_CODEX_MODEL:-gpt-5.4-mini}"
 SIGNAL_CODEX_REASONING="${EIDETIC_SIGNAL_CODEX_REASONING:-low}"
 SIGNAL_CODEX_TIMEOUT="${EIDETIC_SIGNAL_CODEX_TIMEOUT:-120}"
@@ -74,12 +75,18 @@ is_empty_result() {
     [ -z "$normalized" ] || [ "$normalized" = "EMPTY" ]
 }
 
+filter_signal_lines() {
+    printf '%s\n' "${1:-}" | awk '
+        /^(Decision|Rule|Worked|Failed|Knowledge):[[:space:]]+[^[:space:]]/ { print }
+    '
+}
+
 run_claude_extraction() {
     local prompt_file="$1"
     local claude_batch_bin
     claude_batch_bin=$(find_claude_batch || true)
     [ -n "$claude_batch_bin" ] || return 1
-    "$claude_batch_bin" --prompt-file "$prompt_file" --model "$SIGNAL_CLAUDE_MODEL"
+    CLAUDE_BATCH_JOB_TIMEOUT="$SIGNAL_CLAUDE_TIMEOUT" "$claude_batch_bin" --prompt-file "$prompt_file" --model "$SIGNAL_CLAUDE_MODEL"
 }
 
 run_codex_extraction() {
@@ -172,14 +179,17 @@ Extract useful signals from this session transcript. For each signal, write ONE 
 Transcript:
 $EXCERPT"
 
-# Run via claude-batch first (Haiku for cost), then codex-batch if the Claude route is unavailable or empty.
+# Run via claude-batch first (Haiku for cost), then codex-batch if the Claude route is unavailable,
+# empty, or does not produce contract-shaped signal lines.
 PROMPT_FILE=$(mktemp "${TMPDIR:-/tmp}/eidetic-signals.XXXXXX")
 printf '%s\n' "$PROMPT" > "$PROMPT_FILE"
-if ! RESULT=$(run_claude_extraction "$PROMPT_FILE" 2>/dev/null); then
-    RESULT="EMPTY"
+RESULT="EMPTY"
+if CLAUDE_RESULT=$(run_claude_extraction "$PROMPT_FILE" 2>/dev/null); then
+    RESULT=$(filter_signal_lines "$CLAUDE_RESULT")
 fi
 if is_empty_result "$RESULT"; then
-    RESULT=$(run_codex_extraction "$PROMPT_FILE" || echo "EMPTY")
+    CODEX_RESULT=$(run_codex_extraction "$PROMPT_FILE" || echo "EMPTY")
+    RESULT=$(filter_signal_lines "$CODEX_RESULT")
 fi
 rm -f "$PROMPT_FILE"
 

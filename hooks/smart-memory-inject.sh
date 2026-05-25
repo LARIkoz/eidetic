@@ -40,17 +40,49 @@ RULES_FILE="$HOME/.claude/rules/memory-context.md"
 SEARCH="$MEMORY_SYSTEM/bin/search.sh"
 INDEX="$MEMORY_SYSTEM/bin/index.sh"
 
-# Fallback: if memory system not ready, use MEMORY.md head
-if [ ! -f "$DB" ] || [ ! -f "$SEARCH" ]; then
-    # Find first MEMORY.md
-    for f in "$HOME"/.claude/projects/*/memory/MEMORY.md; do
-        if [ -f "$f" ]; then
-            head -200 "$f" > "$RULES_FILE" 2>/dev/null || true
-            echo "Memory context: fallback to MEMORY.md (index not ready)"
-            exit 0
+find_project_memory_fallback() {
+    local sanitized project_dir project_name candidate suffix
+    sanitized="$(pwd)"
+    sanitized="${sanitized%/}"
+    sanitized="${sanitized//\//-}"
+    sanitized="${sanitized#-}"
+
+    for project_dir in "$HOME"/.claude/projects/*; do
+        [ -d "$project_dir" ] || continue
+        project_name="$(basename "$project_dir")"
+        candidate="$project_dir/memory/MEMORY.md"
+        [ -f "$candidate" ] || continue
+        if [ "$project_name" = "$sanitized" ] || [ "$project_name" = "-$sanitized" ]; then
+            printf '%s\n' "$candidate"
+            return 0
         fi
     done
-    echo "Memory context: no index, no MEMORY.md"
+
+    for project_dir in "$HOME"/.claude/projects/*; do
+        [ -d "$project_dir" ] || continue
+        project_name="$(basename "$project_dir")"
+        candidate="$project_dir/memory/MEMORY.md"
+        [ -f "$candidate" ] || continue
+        suffix="${project_name#-}"
+        if [ "${#suffix}" -gt 10 ] && [[ "$sanitized" = *"$suffix" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+# Fallback: if memory system is not ready, use only the CWD-matching project MEMORY.md.
+if [ ! -f "$DB" ] || [ ! -f "$SEARCH" ]; then
+    fallback_memory="$(find_project_memory_fallback || true)"
+    if [ -n "$fallback_memory" ]; then
+        mkdir -p "$(dirname "$RULES_FILE")"
+        head -200 "$fallback_memory" > "$RULES_FILE" 2>/dev/null || true
+        echo "Memory context: fallback to project MEMORY.md (index not ready)"
+        exit 0
+    fi
+    echo "Memory context: no index, no project MEMORY.md"
     exit 0
 fi
 
