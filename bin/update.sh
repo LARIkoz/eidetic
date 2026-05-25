@@ -82,7 +82,7 @@ if [ -d "$TMP_DIR/eidetic/hooks" ]; then
 fi
 
 SETTINGS="$HOME/.claude/settings.json"
-if [ -f "$SETTINGS" ] && [ "$MEMORY_SYSTEM" != "$HOME/.claude/memory-system" ]; then
+if [ -f "$SETTINGS" ]; then
     EIDETIC_INSTALL_MEMORY_SYSTEM="$MEMORY_SYSTEM" python3 << 'PYEOF'
 import json, os, shlex
 
@@ -116,7 +116,7 @@ stop = hooks.setdefault("Stop", [])
 signal_entry = {
     "type": "command",
     "command": hook_prefix + "~/.claude/hooks/session-signals.sh",
-    "timeout": 30000,
+    "timeout": 180000,
     "async": True,
 }
 signal_updated = False
@@ -134,7 +134,7 @@ if not signal_updated:
 with open(settings_path, "w", encoding="utf-8") as f:
     json.dump(settings, f, indent=2)
 PYEOF
-    echo "Hook routing updated for custom memory root"
+    echo "Hook routing updated"
 fi
 
 if [ -d "$TMP_DIR/eidetic/skill" ]; then

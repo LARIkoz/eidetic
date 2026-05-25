@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.2.14-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.2.15-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -54,7 +54,7 @@ Even if the limit were 10,000 lines — MEMORY.md is a flat file. A flat file ca
 | ------------------------------------------------------------- | ------------------------------------ | ----------------------------------------------------------------------- |
 | **Search** — "what did we decide about testing?"              | Read top to bottom, every time       | FTS5 + vector, 50ms, finds it across any project                        |
 | **Relevance** — show rules for THIS project, not all projects | Everything dumped together           | Filters by CWD, ranks by project relevance                              |
-| **Learning** — capture decisions from sessions automatically  | You manually edit after each session | Haiku extracts signals; Codex fallback preserves learning if unavailable |
+| **Learning** — capture decisions from sessions automatically  | You manually edit after each session | Haiku extracts prefix-validated signals; Codex fallback preserves learning if unavailable |
 | **Quality** — distinguish proven rules from agent guesses     | All lines have equal weight          | Evidence tiers: validated > observed > hypothesis. Agent-created = 0.5x |
 | **Freshness** — detect when a rule became outdated            | No way to know                       | Freshness decay, drift diagnostics, lifecycle status ranking            |
 | **Code search** — "where is the rate limiter?"                | Not possible                         | Tree-sitter parses functions/classes into searchable chunks             |
@@ -107,7 +107,7 @@ A bigger MEMORY.md is a longer sticky note. Eidetic is a searchable, self-updati
 
                          SESSION END (~5s, async)
                               |
-                    Extract signals (Haiku; Codex fallback)
+                    Extract signals (prefix-validated Haiku; Codex fallback)
                               |
                     Search existing memories
                               |
@@ -236,7 +236,7 @@ The quality gate filters out operational files (handoff states, synth failures),
 | FTS5 search                     | ~50ms                                                             |
 | Hybrid search (FTS5 + vector)   | ~200ms                                                            |
 | Code index (143 files)          | 0.1s                                                              |
-| Signal extraction cost          | Haiku primary (~$0.002/session); Codex CLI fallback when needed   |
+| Signal extraction cost          | Prefix-filtered Haiku primary (~$0.002/session); Codex CLI fallback when needed |
 | Index size                      | 9.5MB (FTS5) + 5.9MB (vectors)                                    |
 | External dependencies           | **zero for core**; optional fastembed/tree-sitter for v2 features |
 
@@ -310,8 +310,8 @@ MCP `export_vault` defaults to no LLM calls to avoid surprise API usage and time
 - **Atomic writes** — `tempfile` + `os.replace()`. Crash mid-write = no corruption
 - **Backup/restore** — full reindex creates backup, restores on failure
 - **Lock serialization** — shared `fcntl` lock file via `bin/lock_runner.py`
-- **Graceful degradation** — missing index? Falls back to `head -200 MEMORY.md`
-- **Anti-injection** — signal extraction prompt has safety rules against transcript content becoming memory
+- **Graceful degradation** — missing index? Falls back to the current project's `head -200 MEMORY.md`
+- **Anti-injection** — signal extraction prompt and prefix validator block transcript chatter from becoming memory
 - **FTS5 sanitization** — special characters stripped, queries quoted
 - **LIKE escape** — SQL wildcards in paths can't leak cross-project data
 - **Rollback** — one command, <5 seconds, restores everything
@@ -353,11 +353,11 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 
 | Capability                   | Eidetic                            | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
 | ---------------------------- | ---------------------------------- | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
-|                              | **v4.2.14**                        | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
+|                              | **v4.2.15**                        | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
 | Search                       | FTS5 + vector                      | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
 | Recall benchmark             | **100%**                           | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
 | Auto-inject on session start | **rules/ (no cap)**                | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
-| Signal extraction            | Haiku async + Codex fallback       | PostToolUse                                            | manual                                                    | —                                                    | —                                                                      |
+| Signal extraction            | Prefix-filtered Haiku async + Codex fallback | PostToolUse                                            | manual                                                    | —                                                    | —                                                                      |
 | Compounding                  | **yes**                            | —                                                      | —                                                         | —                                                    | —                                                                      |
 | Self-ref discount            | **0.5x**                           | —                                                      | —                                                         | —                                                    | —                                                                      |
 | Evidence tiers               | **3 tiers**                        | —                                                      | —                                                         | —                                                    | —                                                                      |
@@ -451,10 +451,11 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.2.12** — degraded v4.2.11 review follow-up: custom-root signal indexing, cleanup/MCP lint parity, hook update migration, quote-safe metadata reads
 - [x] **v4.2.13** — degraded v4.2.12 review follow-up: fenced-heading drift fix and SessionStart custom-root quoting fix
 - [x] **v4.2.14** — Stop-hook Codex fallback for signal extraction when Haiku/claude-batch is unavailable
+- [x] **v4.2.15** — degraded v4.2.14 review follow-up: prefix-filtered signals, project-scoped SessionStart fallback, Stop timeout alignment
 
 ### Next
 
-- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.14
+- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.15
 - [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter.
 
 ### v5.0 (deferred)
@@ -468,6 +469,13 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v4.2.15 (2026-05-25)
+
+- Stop-hook signal extraction now accepts only `Decision:`, `Rule:`, `Worked:`, `Failed:`, and `Knowledge:` lines before compounding, and falls back to Codex when Claude returns no valid signal lines
+- `compound.py` applies the same prefix filter as defense-in-depth for direct/manual stdin usage
+- SessionStart degraded fallback now injects only the CWD-matching project `MEMORY.md`, instead of the first project memory file on disk
+- Added `EIDETIC_SIGNAL_CLAUDE_TIMEOUT` and install/update registrations now give the async Stop hook a 180s budget, aligned with the 30s Claude extraction timeout plus 120s Codex fallback timeout
 
 ### v4.2.14 (2026-05-25)
 

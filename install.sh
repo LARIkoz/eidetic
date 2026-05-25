@@ -110,7 +110,7 @@ stop = hooks.setdefault("Stop", [])
 signal_entry = {
     "type": "command",
     "command": hook_prefix + "~/.claude/hooks/session-signals.sh",
-    "timeout": 30000,
+    "timeout": 180000,
     "async": True
 }
 signal_updated = False

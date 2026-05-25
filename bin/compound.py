@@ -69,6 +69,15 @@ def extract_keywords(signal_text):
 
 
 PROTECTED_TYPES = {"feedback", "user"}
+SIGNAL_PREFIX_RE = re.compile(r"^(Decision|Rule|Worked|Failed|Knowledge):\s+\S")
+
+
+def normalize_signals(raw):
+    return [
+        line.strip()
+        for line in raw.splitlines()
+        if SIGNAL_PREFIX_RE.match(line.strip())
+    ]
 
 
 def is_compound_candidate(path):
@@ -227,7 +236,7 @@ def main():
     if not raw or raw.upper() == "EMPTY":
         return
 
-    signals = [line.strip() for line in raw.split("\n") if line.strip()]
+    signals = normalize_signals(raw)
     if not signals:
         return
 
