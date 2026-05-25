@@ -114,20 +114,8 @@ jobs:
           tmp = tempfile.mkdtemp()
           inferred = os.path.join(tmp, "inferred.md")
           explicit = os.path.join(tmp, "explicit.md")
-          open(inferred, "w").write("""---
-type: feedback
-name: 2 FIXED 2 OPEN
-description: Deprecated route note but still active.
----
-body
-""")
-          open(explicit, "w").write("""---
-type: feedback
-name: archived rule
-status: archived
----
-body
-""")
+          open(inferred, "w").write("---\ntype: feedback\nname: 2 FIXED 2 OPEN\ndescription: Deprecated route note but still active.\n---\nbody\n")
+          open(explicit, "w").write("---\ntype: feedback\nname: archived rule\nstatus: archived\n---\nbody\n")
           conn = sqlite3.connect(":memory:")
           conn.execute("CREATE TABLE memory_chunks (path TEXT, type TEXT, status TEXT, superseded_by TEXT)")
           conn.execute("INSERT INTO memory_chunks VALUES (?, 'feedback', 'resolved', '')", (inferred,))
