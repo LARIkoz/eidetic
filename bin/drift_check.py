@@ -275,9 +275,15 @@ def check_wikilink_drift(index_conn, known_names):
 def check_age_drift(index_conn):
     now = datetime.now()
     findings = []
+    columns = {
+        row[1]
+        for row in index_conn.execute("PRAGMA table_info(memory_chunks)").fetchall()
+    }
+    card_kind_expr = "card_kind" if "card_kind" in columns else "'' AS card_kind"
+    status_expr = "status" if "status" in columns else "'' AS status"
 
-    rows = index_conn.execute("""
-        SELECT path, type, evidence, last_verified, mtime, card_kind, status
+    rows = index_conn.execute(f"""
+        SELECT path, type, evidence, last_verified, mtime, {card_kind_expr}, {status_expr}
         FROM memory_chunks
         WHERE evidence != 'hypothesis'
         GROUP BY path
