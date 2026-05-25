@@ -138,12 +138,31 @@ if [ "$TSIZE" -lt 1000 ]; then
     exit 0
 fi
 
-# Extract last ~4000 chars of transcript for signal extraction (cost control).
+# Extract the end of the transcript for signal extraction (cost control).
 # Claude Code JSONL stores role/content under message.*, while older tests used
-# top-level role/content. Support both, and fall back to raw tail if parsing
-# yields no usable user/assistant turns.
-EXCERPT=$(tail -c 8000 "$TRANSCRIPT" | python3 -c "
-import sys, json
+# top-level role/content. Support both. Keep parsing on complete JSONL lines and
+# do not fall back to raw tail; raw tool output is not safe extractor input.
+EXCERPT=$(python3 - "$TRANSCRIPT" << 'PYEOF' 2>/dev/null || true
+import json
+import os
+import sys
+
+path = sys.argv[1]
+max_bytes = 8000
+try:
+    with open(path, 'rb') as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        start = max(0, size - max_bytes)
+        f.seek(start)
+        data = f.read(max_bytes)
+except OSError:
+    sys.exit(0)
+
+if start:
+    newline = data.find(b'\n')
+    data = data[newline + 1:] if newline >= 0 else b''
+
 lines = []
 def content_text(content):
     if isinstance(content, str):
@@ -163,7 +182,7 @@ def content_text(content):
                     parts.append(nested)
         return ' '.join(parts)
     return ''
-for line in sys.stdin:
+for line in data.decode('utf-8', 'replace').splitlines():
     try:
         msg = json.loads(line.strip())
         message = msg.get('message') if isinstance(msg.get('message'), dict) else msg
@@ -174,9 +193,8 @@ for line in sys.stdin:
     except Exception:
         pass
 print('\n'.join(lines[-20:]))
-if not lines:
-    sys.exit(2)
-" 2>/dev/null || tail -c 4000 "$TRANSCRIPT")
+PYEOF
+)
 
 if [ -z "$EXCERPT" ]; then
     exit 0
