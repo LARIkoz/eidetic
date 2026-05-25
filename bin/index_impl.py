@@ -186,9 +186,28 @@ def split_sections(body, filepath):
     heading_counts = {}
     current_heading = os.path.basename(filepath).replace(".md", "")
     current_lines = []
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
 
     for line in body.split("\n"):
-        if line.startswith("## "):
+        fence_match = re.match(r"^\s*(`{3,}|~{3,})", line)
+        if fence_match:
+            marker = fence_match.group(1)
+            marker_char = marker[0]
+            marker_len = len(marker)
+            if in_fence and marker_char == fence_char and marker_len >= fence_len:
+                in_fence = False
+                fence_char = ""
+                fence_len = 0
+            elif not in_fence:
+                in_fence = True
+                fence_char = marker_char
+                fence_len = marker_len
+            current_lines.append(line)
+            continue
+
+        if not in_fence and line.startswith("## "):
             if current_lines:
                 content = "\n".join(current_lines).strip()
                 if content:

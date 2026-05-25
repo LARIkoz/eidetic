@@ -157,6 +157,7 @@ jobs:
           import tempfile
           sys.path.insert(0, "bin")
           import drift_check
+          import index_impl
 
           conn = sqlite3.connect(":memory:")
           conn.execute(
@@ -207,6 +208,29 @@ jobs:
           )
           assert (
               "/tmp/fenced-history-example.md",
+              "project",
+              "confidence_escalation",
+              "threshold=3",
+          ) not in drift_check.check_confidence_escalation(conn)
+
+          fenced_heading_body = (
+              "# Template\n\n"
+              "```md\n"
+              "## History\n"
+              "- 2026-01-01: Example only\n"
+              "- 2026-01-02: Example only\n"
+              "- 2026-01-03: Example only\n"
+              "```\n"
+          )
+          for heading, content in index_impl.split_sections(
+              fenced_heading_body, "/tmp/fenced-heading-example.md"
+          ):
+              conn.execute(
+                  "INSERT INTO memory_chunks (path, type, source, section_heading, content) VALUES (?, 'project', 'agent-extracted', ?, ?)",
+                  ("/tmp/fenced-heading-example.md", heading, content),
+              )
+          assert (
+              "/tmp/fenced-heading-example.md",
               "project",
               "confidence_escalation",
               "threshold=3",
@@ -608,6 +632,77 @@ jobs:
           (root / ".update-available").write_text("cached notice\n", encoding="utf-8")
           PY
           bash bin/check-update.sh | grep -q "cached notice"
+
+      - name: Test SessionStart hook handles apostrophes in custom root
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          export HOME="$tmp/home"
+          export EIDETIC_MEMORY_SYSTEM="$tmp/custom memory-system's"
+          real_python=$(command -v python3)
+          mkdir -p "$HOME/.claude/rules" "$HOME/.claude/projects/test-project/memory" "$EIDETIC_MEMORY_SYSTEM/bin" "$EIDETIC_MEMORY_SYSTEM/db" "$tmp/fakebin"
+          : > "$EIDETIC_MEMORY_SYSTEM/db/index.db"
+          : > "$EIDETIC_MEMORY_SYSTEM/db/vectors.db"
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/index.sh" << 'EOF'
+          #!/bin/bash
+          exit 0
+          EOF
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/search.sh" << 'EOF'
+          #!/bin/bash
+          exit 0
+          EOF
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/drift_check.py" << 'EOF'
+          import sys
+          sys.exit(0)
+          EOF
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/session_counter.py" << 'EOF'
+          print("session hint")
+          EOF
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/assemble_context.py" << 'EOF'
+          import pathlib
+          import sys
+          pathlib.Path(sys.argv[2]).write_text("context\n", encoding="utf-8")
+          EOF
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/code_index.py" << 'EOF'
+          import os
+          import pathlib
+          import sys
+          pathlib.Path(os.environ["HOOK_LOG"]).write_text("|".join(sys.argv[1:]) + "\n", encoding="utf-8")
+          EOF
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/embed.py" << 'EOF'
+          import os
+          import pathlib
+          import sys
+          with pathlib.Path(os.environ["HOOK_LOG"]).open("a", encoding="utf-8") as f:
+              f.write("|".join(sys.argv[1:]) + "\n")
+          EOF
+          chmod +x "$EIDETIC_MEMORY_SYSTEM/bin/index.sh" "$EIDETIC_MEMORY_SYSTEM/bin/search.sh"
+          cat > "$tmp/fakebin/python3" << 'EOF'
+          #!/bin/bash
+          if [ "${1:-}" = "-c" ] && [ "${2:-}" = "import tree_sitter" ]; then
+            exit 0
+          fi
+          exec "$REAL_PYTHON" "$@"
+          EOF
+          chmod +x "$tmp/fakebin/python3"
+          export REAL_PYTHON="$real_python"
+          export HOOK_LOG="$tmp/hook.log"
+          PATH="$tmp/fakebin:$PATH" bash hooks/smart-memory-inject.sh >/tmp/hook.out 2>/tmp/hook.err
+          python3 - << 'PY'
+          import os
+          from pathlib import Path
+
+          memory_system = os.environ["EIDETIC_MEMORY_SYSTEM"]
+          log = Path(os.environ["HOOK_LOG"]).read_text(encoding="utf-8").splitlines()
+          assert log[0].split("|") == [
+              f"{memory_system}/db/index.db",
+              os.getcwd(),
+          ], log
+          assert log[1].split("|") == [
+              f"{memory_system}/db/index.db",
+              f"{memory_system}/db/vectors.db",
+          ], log
+          PY
 
       - name: Test wikilink lint ignores markdown examples
         run: |
