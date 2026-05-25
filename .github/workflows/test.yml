@@ -99,6 +99,7 @@ jobs:
           assert index_impl.infer_status({"type": "feedback", "name": "2 FIXED 2 OPEN", "description": "deprecated route note"}, "/tmp/rule.md") == "current"
           assert index_impl.infer_status({"type": "user", "name": "closed loop preference"}, "/tmp/profile.md") == "current"
           assert index_impl.infer_status({"type": "feedback", "name": "old rule", "status": "archived"}, "/tmp/rule.md") == "archived"
+          assert index_impl.infer_status({"name": "closed issue", "status": "fixed"}, "/tmp/bug.md") == "fixed"
           PY
 
       - name: Test feedback status migration corrects inferred inactive rows only
@@ -905,8 +906,8 @@ jobs:
           import sys
           filler = "x" * 1200
           with open(sys.argv[1], "w", encoding="utf-8") as f:
-              f.write(json.dumps({"role": "user", "content": "Persist the prefix filter test. " + filler}) + "\n")
-              f.write(json.dumps({"role": "assistant", "content": "Added the prefix filter. " + filler}) + "\n")
+              f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "Persist the prefix filter test. " + filler}}) + "\n")
+              f.write(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Added the prefix filter. " + filler}]}}) + "\n")
           PY
           printf '{"transcript_path":"%s"}\n' "$tmp/transcript.jsonl" \
             | PATH="$tmp/fakebin:$PATH" bash hooks/session-signals.sh
@@ -972,8 +973,8 @@ jobs:
           import sys
           filler = "x" * 1200
           with open(sys.argv[1], "w", encoding="utf-8") as f:
-              f.write(json.dumps({"role": "user", "content": "Persist the empty fallback test. " + filler}) + "\n")
-              f.write(json.dumps({"role": "assistant", "content": "Added the empty fallback path. " + filler}) + "\n")
+              f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "Persist the empty fallback test. " + filler}}) + "\n")
+              f.write(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Added the empty fallback path. " + filler}]}}) + "\n")
           PY
           printf '{"transcript_path":"%s"}\n' "$tmp/transcript.jsonl" \
             | PATH="$tmp/fakebin:$PATH" bash hooks/session-signals.sh
@@ -1041,8 +1042,8 @@ jobs:
           import sys
           filler = "x" * 1200
           with open(sys.argv[1], "w", encoding="utf-8") as f:
-              f.write(json.dumps({"role": "user", "content": "Please persist this fallback test. " + filler}) + "\n")
-              f.write(json.dumps({"role": "assistant", "content": "Implemented the fallback path. " + filler}) + "\n")
+              f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "Please persist this fallback test. " + filler}}) + "\n")
+              f.write(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Implemented the fallback path. " + filler}]}}) + "\n")
           PY
           printf '{"transcript_path":"%s"}\n' "$tmp/transcript.jsonl" \
             | PATH="$tmp/fakebin:$PATH" bash hooks/session-signals.sh
