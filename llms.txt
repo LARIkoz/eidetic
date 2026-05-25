@@ -22,7 +22,7 @@ Claude Code forgets between sessions. The built-in MEMORY.md has a 200-line plat
 - Age drift uses lifecycle/card-kind thresholds, and code-index chunks are exempt from calendar-age drift, so archived/resolved/fixed/superseded cards, historical findings, and unchanged source files do not create active stale noise
 - Feedback/user memories stay current unless lifecycle status is explicit, preventing active behavioral rules from being demoted by words like fixed, closed, or deprecated in descriptions
 - Auto context injection: 59+ behavioral rules always visible (no 10K hook stdout cap)
-- Session signal extraction parses real Claude Code nested JSONL transcripts, uses prefix-filtered Haiku primary, and falls back to Codex CLI when the Claude route is unavailable or returns no valid signal lines
+- Session signal extraction parses real Claude Code nested JSONL transcripts, ignores tool-result blocks, uses prefix-filtered Haiku primary, and falls back to Codex CLI when the Claude route is unavailable or returns no valid signal lines
 - Compounding: updates existing memories instead of creating duplicates
 - Evidence tiers: hypothesis/observed/validated with compound ranking
 - Self-referential discount: agent-created memories = 0.5x weight

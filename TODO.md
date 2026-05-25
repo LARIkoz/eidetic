@@ -170,6 +170,14 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Give MCP full reindex a longer timeout than incremental reindex.
 - [x] Add regression proving explicit frontmatter `status: fixed` remains `fixed` through status inference.
 
+### Closed In v4.2.19
+
+- [x] Run clean consreview against v4.2.18. Pipeline FAILED after voice fanout (`5/8 voices OK`; Anthropic voices failed before synthesis), so final fixes are based on raw voice outputs and local source checks.
+- [x] Make `update.sh` hook settings, custom-root skill rewrite, and `.installed.json` metadata writes atomic with temp-file plus `os.replace`.
+- [x] Exclude `tool_result` and other non-text transcript blocks from Stop-hook signal excerpts so command output is not labeled as user conversation.
+- [x] Add CI coverage for Stop-hook tool-result exclusion.
+- [x] Add CI coverage proving MCP full reindex uses the 300s timeout path.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
@@ -182,7 +190,7 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 ### Suggested Next Checks
 
-- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.18 agent recall behavior.
+- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.19 agent recall behavior.
 - [x] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
 - [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.
