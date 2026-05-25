@@ -20,8 +20,19 @@ AGE_THRESHOLDS = {
     "user": 180,
     "reference": 90,
     "project": 30,
-    "code": 30,
+    "code": None,
 }
+CARD_KIND_AGE_THRESHOLDS = {
+    "finding": 90,
+    "research": 90,
+    "reference": 90,
+    "handoff": 90,
+    "decision": 90,
+    "status": 60,
+    "todo": 60,
+    "bug": 60,
+}
+INACTIVE_STATUSES = {"archived", "deprecated", "obsolete", "resolved", "superseded"}
 DEFAULT_AGE_DAYS = 60
 
 try:
@@ -264,17 +275,28 @@ def check_wikilink_drift(index_conn, known_names):
 def check_age_drift(index_conn):
     now = datetime.now()
     findings = []
+    columns = {
+        row[1]
+        for row in index_conn.execute("PRAGMA table_info(memory_chunks)").fetchall()
+    }
+    card_kind_expr = "card_kind" if "card_kind" in columns else "'' AS card_kind"
+    status_expr = "status" if "status" in columns else "'' AS status"
 
-    rows = index_conn.execute("""
-        SELECT path, type, evidence, last_verified, mtime
+    rows = index_conn.execute(f"""
+        SELECT path, type, evidence, last_verified, mtime, {card_kind_expr}, {status_expr}
         FROM memory_chunks
         WHERE evidence != 'hypothesis'
         GROUP BY path
         HAVING MIN(id)
     """).fetchall()
 
-    for path, mem_type, evidence, last_verified, mtime in rows:
-        threshold = AGE_THRESHOLDS.get(mem_type or "", DEFAULT_AGE_DAYS)
+    for path, mem_type, evidence, last_verified, mtime, card_kind, status in rows:
+        if (status or "").lower() in INACTIVE_STATUSES:
+            continue
+        threshold = CARD_KIND_AGE_THRESHOLDS.get(
+            (card_kind or "").lower(),
+            AGE_THRESHOLDS.get(mem_type or "", DEFAULT_AGE_DAYS),
+        )
         if threshold is None:
             continue
 
