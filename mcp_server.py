@@ -362,7 +362,7 @@ def handle_request(request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "eidetic",
-                "version": "4.2.18"
+                "version": "4.2.19"
             }
         })
 

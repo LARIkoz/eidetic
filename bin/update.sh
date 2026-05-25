@@ -108,7 +108,7 @@ fi
 SETTINGS="$HOME/.claude/settings.json"
 if [ -f "$SETTINGS" ]; then
     EIDETIC_INSTALL_MEMORY_SYSTEM="$MEMORY_SYSTEM" python3 << 'PYEOF'
-import json, os, shlex
+import json, os, shlex, tempfile
 
 settings_path = os.path.expanduser("~/.claude/settings.json")
 with open(settings_path, encoding="utf-8") as f:
@@ -155,8 +155,11 @@ if not signal_updated:
     else:
         stop.append({"hooks": [signal_entry]})
 
-with open(settings_path, "w", encoding="utf-8") as f:
+settings_dir = os.path.dirname(settings_path) or "."
+fd, tmp = tempfile.mkstemp(dir=settings_dir, prefix=os.path.basename(settings_path) + ".tmp.")
+with os.fdopen(fd, "w", encoding="utf-8") as f:
     json.dump(settings, f, indent=2)
+os.replace(tmp, settings_path)
 PYEOF
     echo "Hook routing updated"
 fi
@@ -166,15 +169,15 @@ if [ -d "$TMP_DIR/eidetic/skill" ]; then
     atomic_install "$TMP_DIR/eidetic/skill/SKILL.md" "$HOME/.claude/skills/memory-recall/SKILL.md" 644
     if [ "$MEMORY_SYSTEM" != "$HOME/.claude/memory-system" ]; then
         python3 - "$HOME/.claude/skills/memory-recall/SKILL.md" "$MEMORY_SYSTEM" << 'PYEOF'
-import pathlib, shlex, sys
+import os, pathlib, shlex, sys, tempfile
 
 path = pathlib.Path(sys.argv[1])
 memory_system = sys.argv[2]
 text = path.read_text(encoding="utf-8")
-path.write_text(
-    text.replace("~/.claude/memory-system", shlex.quote(memory_system)),
-    encoding="utf-8",
-)
+fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".tmp.")
+with os.fdopen(fd, "w", encoding="utf-8") as f:
+    f.write(text.replace("~/.claude/memory-system", shlex.quote(memory_system)))
+os.replace(tmp, path)
 PYEOF
     fi
     echo "Skill updated"
@@ -204,7 +207,7 @@ fi
 run_refresh_step "memory-context" python3 "$MEMORY_SYSTEM/bin/assemble_context.py" "$MEMORY_SYSTEM/db/index.db" "$HOME/.claude/rules/memory-context.md" "$(pwd)"
 
 python3 - "$META" "$NEW_VER" "$NEW_SHA" "$REPO" << 'PYEOF'
-import json, os, sys, time
+import json, os, sys, tempfile, time
 
 meta_path, new_ver, new_sha, repo = sys.argv[1:5]
 installed_at = ""
@@ -219,8 +222,11 @@ meta = {
     "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "update_method": "auto",
 }
-with open(meta_path, "w", encoding="utf-8") as f:
+os.makedirs(os.path.dirname(meta_path), exist_ok=True)
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(meta_path), prefix=os.path.basename(meta_path) + ".tmp.")
+with os.fdopen(fd, "w", encoding="utf-8") as f:
     json.dump(meta, f, indent=2)
+os.replace(tmp, meta_path)
 PYEOF
 
 rm -f "$MEMORY_SYSTEM/.update-available"
