@@ -152,6 +152,9 @@ def content_text(content):
         parts = []
         for item in content:
             if isinstance(item, dict):
+                item_type = item.get('type')
+                if item_type not in (None, '', 'text'):
+                    continue
                 text = item.get('text')
                 if isinstance(text, str):
                     parts.append(text)
