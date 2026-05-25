@@ -263,10 +263,12 @@ def handle_health(params):
 
 
 def handle_reindex(params):
-    mode = "--full" if params.get("full") else "--incremental"
+    full = bool(params.get("full"))
+    mode = "--full" if full else "--incremental"
+    timeout = 300 if full else 30
     cmd = [os.path.join(BIN, "index.sh"), mode]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         output = result.stdout + result.stderr
         if result.returncode != 0:
             return mcp_error(output.strip() or f"index.sh exited {result.returncode}")
@@ -360,7 +362,7 @@ def handle_request(request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "eidetic",
-                "version": "4.2.17"
+                "version": "4.2.18"
             }
         })
 

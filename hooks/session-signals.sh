@@ -138,22 +138,41 @@ if [ "$TSIZE" -lt 1000 ]; then
     exit 0
 fi
 
-# Extract last ~4000 chars of transcript for signal extraction (cost control)
+# Extract last ~4000 chars of transcript for signal extraction (cost control).
+# Claude Code JSONL stores role/content under message.*, while older tests used
+# top-level role/content. Support both, and fall back to raw tail if parsing
+# yields no usable user/assistant turns.
 EXCERPT=$(tail -c 8000 "$TRANSCRIPT" | python3 -c "
 import sys, json
 lines = []
+def content_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get('text')
+                if isinstance(text, str):
+                    parts.append(text)
+                nested = item.get('content')
+                if isinstance(nested, str):
+                    parts.append(nested)
+        return ' '.join(parts)
+    return ''
 for line in sys.stdin:
     try:
         msg = json.loads(line.strip())
-        role = msg.get('role', '')
-        content = msg.get('content', '')
-        if isinstance(content, list):
-            content = ' '.join(c.get('text','') for c in content if isinstance(c,dict))
+        message = msg.get('message') if isinstance(msg.get('message'), dict) else msg
+        role = message.get('role', '')
+        content = content_text(message.get('content', ''))
         if role in ('user','assistant') and content:
             lines.append(f'{role}: {content[:500]}')
     except Exception:
         pass
 print('\n'.join(lines[-20:]))
+if not lines:
+    sys.exit(2)
 " 2>/dev/null || tail -c 4000 "$TRANSCRIPT")
 
 if [ -z "$EXCERPT" ]; then
