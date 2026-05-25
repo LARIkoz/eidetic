@@ -96,6 +96,46 @@ jobs:
           assert index_impl.infer_status({"name": "active rule"}, archive_path) == "current"
           assert index_impl.infer_card_kind({"type": "project", "name": "debug tips"}, "/tmp/memory/debug-tips.md") != "bug"
           assert index_impl.infer_status({"name": "old rule", "status": "archived"}, "/tmp/active/old-rule.md") == "archived"
+          assert index_impl.infer_status({"type": "feedback", "name": "2 FIXED 2 OPEN", "description": "deprecated route note"}, "/tmp/rule.md") == "current"
+          assert index_impl.infer_status({"type": "user", "name": "closed loop preference"}, "/tmp/profile.md") == "current"
+          assert index_impl.infer_status({"type": "feedback", "name": "old rule", "status": "archived"}, "/tmp/rule.md") == "archived"
+          PY
+
+      - name: Test feedback status migration corrects inferred inactive rows only
+        run: |
+          python3 - << 'PY'
+          import os
+          import sqlite3
+          import sys
+          import tempfile
+          sys.path.insert(0, "bin")
+          import index_impl
+
+          tmp = tempfile.mkdtemp()
+          inferred = os.path.join(tmp, "inferred.md")
+          explicit = os.path.join(tmp, "explicit.md")
+          open(inferred, "w").write("""---
+type: feedback
+name: 2 FIXED 2 OPEN
+description: Deprecated route note but still active.
+---
+body
+""")
+          open(explicit, "w").write("""---
+type: feedback
+name: archived rule
+status: archived
+---
+body
+""")
+          conn = sqlite3.connect(":memory:")
+          conn.execute("CREATE TABLE memory_chunks (path TEXT, type TEXT, status TEXT, superseded_by TEXT)")
+          conn.execute("INSERT INTO memory_chunks VALUES (?, 'feedback', 'resolved', '')", (inferred,))
+          conn.execute("INSERT INTO memory_chunks VALUES (?, 'feedback', 'archived', '')", (explicit,))
+          index_impl.migrate_feedback_user_inferred_statuses(conn)
+          rows = dict(conn.execute("SELECT path, status FROM memory_chunks").fetchall())
+          assert rows[inferred] == "current", rows
+          assert rows[explicit] == "archived", rows
           PY
 
       - name: Test recall smoke contract assertions
@@ -178,6 +218,7 @@ jobs:
               ("/tmp/current-todo.md", "project", "observed", old_for_60, 0, "todo", "current"),
               ("/tmp/recent-todo.md", "project", "observed", recent_for_60, 0, "todo", "current"),
               ("/tmp/archived-status.md", "project", "observed", very_old, 0, "status", "archived"),
+              ("/tmp/fixed-bug.md", "project", "observed", very_old, 0, "bug", "fixed"),
               ("/tmp/reference.md", "project", "observed", old_for_60, 0, "reference", "current"),
               ("/tmp/source.py", "code", "observed", very_old, 0, "code", "current"),
           ]
@@ -1491,6 +1532,29 @@ jobs:
           root = sys.argv[1]
           files = code_index.find_code_files(root, {".py"})
           assert sorted(os.path.basename(path) for path in files) == ["a.py", "b.py"], files
+          PY
+
+      - name: Test code index directory delete escapes LIKE wildcards
+        run: |
+          python3 - << 'PY'
+          import sqlite3
+          import sys
+          sys.path.insert(0, "bin")
+          import code_index
+
+          conn = sqlite3.connect(":memory:")
+          conn.execute("CREATE TABLE memory_chunks (path TEXT, source TEXT)")
+          conn.executemany(
+              "INSERT INTO memory_chunks VALUES (?, 'code-index')",
+              [
+                  ("/tmp/my_project/a.py",),
+                  ("/tmp/myXproject/a.py",),
+                  ("/tmp/my%project/a.py",),
+              ],
+          )
+          code_index.delete_code_rows_for_dir(conn, "/tmp/my_project/")
+          rows = [r[0] for r in conn.execute("SELECT path FROM memory_chunks ORDER BY path")]
+          assert rows == ["/tmp/my%project/a.py", "/tmp/myXproject/a.py"], rows
           PY
 
       - name: Test code index preserves old rows on parse failure
