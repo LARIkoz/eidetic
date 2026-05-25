@@ -64,9 +64,31 @@ fi
 echo ""
 echo "Updating bin/ and mcp_server.py (preserving db/, rules, hooks registration)..."
 
-cp "$TMP_DIR/eidetic/bin/"*.sh "$TMP_DIR/eidetic/bin/"*.py "$MEMORY_SYSTEM/bin/"
-chmod +x "$MEMORY_SYSTEM/bin/"*.sh
-cp "$TMP_DIR/eidetic/mcp_server.py" "$MEMORY_SYSTEM/mcp_server.py"
+atomic_install() {
+    src="$1"
+    dst="$2"
+    mode="${3:-}"
+    mkdir -p "$(dirname "$dst")"
+    tmp=$(mktemp "${dst}.tmp.XXXXXX")
+    if ! cp "$src" "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    if [ -n "$mode" ]; then
+        chmod "$mode" "$tmp"
+    fi
+    mv -f "$tmp" "$dst"
+}
+
+for src in "$TMP_DIR/eidetic/bin/"*.sh; do
+    atomic_install "$src" "$MEMORY_SYSTEM/bin/$(basename "$src")" 755
+done
+for src in "$TMP_DIR/eidetic/bin/"*.py; do
+    mode=644
+    [ -x "$src" ] && mode=755
+    atomic_install "$src" "$MEMORY_SYSTEM/bin/$(basename "$src")" "$mode"
+done
+atomic_install "$TMP_DIR/eidetic/mcp_server.py" "$MEMORY_SYSTEM/mcp_server.py" 644
 
 if [ -d "$TMP_DIR/eidetic/hooks" ]; then
     for hook in "$TMP_DIR/eidetic/hooks/"*.sh; do
@@ -75,8 +97,7 @@ if [ -d "$TMP_DIR/eidetic/hooks" ]; then
         if [ -f "$TARGET" ]; then
             cp "$TARGET" "$TARGET.pre-update"
         fi
-        cp "$hook" "$TARGET"
-        chmod +x "$TARGET"
+        atomic_install "$hook" "$TARGET" 755
     done
     echo "Hooks updated (pre-update backups saved)"
 fi
@@ -139,7 +160,7 @@ fi
 
 if [ -d "$TMP_DIR/eidetic/skill" ]; then
     mkdir -p "$HOME/.claude/skills/memory-recall"
-    cp "$TMP_DIR/eidetic/skill/SKILL.md" "$HOME/.claude/skills/memory-recall/"
+    atomic_install "$TMP_DIR/eidetic/skill/SKILL.md" "$HOME/.claude/skills/memory-recall/SKILL.md" 644
     if [ "$MEMORY_SYSTEM" != "$HOME/.claude/memory-system" ]; then
         python3 - "$HOME/.claude/skills/memory-recall/SKILL.md" "$MEMORY_SYSTEM" << 'PYEOF'
 import pathlib, shlex, sys

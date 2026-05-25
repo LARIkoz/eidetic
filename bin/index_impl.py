@@ -76,6 +76,7 @@ BASE_SCAN_DIRS = [
 SCAN_DIRS = list(BASE_SCAN_DIRS)
 
 EXCLUDE_FILES = {"MEMORY.md", "BACKLOG.md"}
+STATUS_INFERENCE_EXEMPT_TYPES = {"feedback", "user"}
 DERIVED_COLUMNS = {
     "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
     "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
@@ -296,6 +297,8 @@ def infer_status(meta, filepath):
         return explicit
     if (meta.get("superseded_by") or "").strip():
         return "superseded"
+    if (meta.get("type") or "").strip().lower() in STATUS_INFERENCE_EXEMPT_TYPES:
+        return "current"
 
     name = meta.get("name") or os.path.basename(filepath).replace(".md", "")
     text = _slug_text(name, meta.get("description"))
@@ -330,6 +333,30 @@ def migrate_schema(conn):
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
+
+
+def migrate_feedback_user_inferred_statuses(conn):
+    """Correct derived inactive statuses inferred from feedback/user wording."""
+    try:
+        rows = conn.execute("""
+            SELECT DISTINCT path
+            FROM memory_chunks
+            WHERE type IN ('feedback', 'user')
+              AND IFNULL(status, 'current') != 'current'
+              AND IFNULL(superseded_by, '') = ''
+        """).fetchall()
+    except sqlite3.OperationalError:
+        return
+
+    for (path,) in rows:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                meta, _ = parse_frontmatter(f.read())
+        except OSError:
+            continue
+        if (meta.get("status") or "").strip() or (meta.get("superseded_by") or "").strip():
+            continue
+        conn.execute("UPDATE memory_chunks SET status = 'current' WHERE path = ?", (path,))
 
 
 def needs_lifecycle_backfill(conn):
@@ -400,6 +427,7 @@ def init_db(db_path):
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(DB_SCHEMA)
     migrate_schema(conn)
+    migrate_feedback_user_inferred_statuses(conn)
     conn.commit()
     return conn
 

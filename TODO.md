@@ -150,6 +150,16 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Stop applying calendar-age drift to code-index chunks; code freshness is covered by source mtime reindexing and vector identity, not by "file older than N days".
 - [x] Add CI regression proving the old blanket `type: project` 30-day threshold no longer turns historical project memory into review noise.
 
+### Closed In v4.2.17
+
+- [x] Run clean consreview against v4.2.16. Pipeline was DEGRADED (`audit=ISSUES`, `mechanical=FAIL`, `redteam=WEAK`), so final fixes are based on raw voices, redteam misses, and direct local repros.
+- [x] Treat explicit `status: fixed` as inactive for age drift, matching search/context lifecycle weighting.
+- [x] Keep feedback/user memories `current` unless lifecycle status is explicit frontmatter or `superseded_by`; this prevents active P3 rules from being demoted by words like "fixed", "closed", or "deprecated" in descriptions.
+- [x] Migrate existing derived feedback/user rows that were inferred inactive without explicit frontmatter status.
+- [x] Escape SQL `LIKE` wildcards in code-index directory deletion to avoid deleting sibling project code rows when a path contains `_` or `%`.
+- [x] Install update files through temp-file plus atomic rename instead of in-place `cp`.
+- [x] Add CI regressions for these review findings.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
@@ -162,7 +172,7 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 ### Suggested Next Checks
 
-- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.16 agent recall behavior.
+- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.17 agent recall behavior.
 - [x] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
 - [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.
