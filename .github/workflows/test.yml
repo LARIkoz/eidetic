@@ -704,6 +704,88 @@ jobs:
           ], log
           PY
 
+      - name: Test Stop hook falls back to Codex signal extraction
+        run: |
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          export HOME="$tmp/home"
+          export EIDETIC_MEMORY_SYSTEM="$tmp/custom memory-system's"
+          export COMPOUND_LOG="$tmp/compound.log"
+          export CODEX_ARG_LOG="$tmp/codex-args.log"
+          mkdir -p "$HOME" "$EIDETIC_MEMORY_SYSTEM/bin" "$tmp/fakebin"
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/index.sh" << 'EOF'
+          #!/bin/bash
+          exit 0
+          EOF
+          cat > "$EIDETIC_MEMORY_SYSTEM/bin/compound.py" << 'EOF'
+          import os
+          import pathlib
+          import sys
+          pathlib.Path(os.environ["COMPOUND_LOG"]).write_text(sys.stdin.read(), encoding="utf-8")
+          EOF
+          chmod +x "$EIDETIC_MEMORY_SYSTEM/bin/index.sh"
+          cat > "$tmp/fakebin/claude-batch" << 'EOF'
+          #!/bin/bash
+          echo "claude wrapper noise"
+          exit 1
+          EOF
+          cat > "$tmp/fakebin/codex-batch" << 'EOF'
+          #!/bin/bash
+          set -euo pipefail
+          out_dir=""
+          : > "$CODEX_ARG_LOG"
+          while [ "$#" -gt 0 ]; do
+            printf '%s\n' "$1" >> "$CODEX_ARG_LOG"
+            case "$1" in
+              --out-dir|-o)
+                shift
+                out_dir="${1:-}"
+                printf '%s\n' "$1" >> "$CODEX_ARG_LOG"
+                ;;
+              --prompt-file|--model|--reasoning|--timeout|--validate|-C)
+                shift
+                printf '%s\n' "$1" >> "$CODEX_ARG_LOG"
+                ;;
+            esac
+            shift || true
+          done
+          test -n "$out_dir"
+          mkdir -p "$out_dir/results"
+          printf '%s\n' "Decision: Codex fallback captured signal." > "$out_dir/results/single.md"
+          EOF
+          chmod +x "$tmp/fakebin/claude-batch" "$tmp/fakebin/codex-batch"
+          python3 - << 'PY' "$tmp/transcript.jsonl"
+          import json
+          import sys
+          filler = "x" * 1200
+          with open(sys.argv[1], "w", encoding="utf-8") as f:
+              f.write(json.dumps({"role": "user", "content": "Please persist this fallback test. " + filler}) + "\n")
+              f.write(json.dumps({"role": "assistant", "content": "Implemented the fallback path. " + filler}) + "\n")
+          PY
+          printf '{"transcript_path":"%s"}\n' "$tmp/transcript.jsonl" \
+            | PATH="$tmp/fakebin:$PATH" bash hooks/session-signals.sh
+          python3 - << 'PY'
+          import os
+          from pathlib import Path
+
+          args = Path(os.environ["CODEX_ARG_LOG"]).read_text(encoding="utf-8").splitlines()
+          signal = Path(os.environ["COMPOUND_LOG"]).read_text(encoding="utf-8")
+
+          def assert_pair(flag, value):
+              assert flag in args, args
+              pos = args.index(flag)
+              assert pos + 1 < len(args), args
+              assert args[pos + 1] == value, args
+
+          assert_pair("--model", "gpt-5.4-mini")
+          assert_pair("--reasoning", "low")
+          assert_pair("--validate", "nonempty")
+          assert "--quiet" in args, args
+          assert "--skip-route-preflight" not in args, args
+          assert "Decision: Codex fallback captured signal." in signal, signal
+          assert "claude wrapper noise" not in signal, signal
+          PY
+
       - name: Test wikilink lint ignores markdown examples
         run: |
           tmp=$(mktemp -d)
