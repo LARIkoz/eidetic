@@ -1,6 +1,6 @@
 #!/bin/bash
 # AI Memory System v1 — Session Signal Extraction (Stop hook, async)
-# Extracts decisions/rules/failures from session transcript via Haiku.
+# Extracts decisions/rules/failures from session transcript via Haiku with Codex fallback.
 # Runs async — does not delay session end.
 # Source: agent-extracted (0.5x self-referential discount)
 set -euo pipefail
@@ -8,6 +8,10 @@ set -euo pipefail
 MEMORY_SYSTEM="${EIDETIC_MEMORY_SYSTEM:-$HOME/.claude/memory-system}"
 COMPOUND="$MEMORY_SYSTEM/bin/compound.py"
 INDEX="$MEMORY_SYSTEM/bin/index.sh"
+SIGNAL_CLAUDE_MODEL="${EIDETIC_SIGNAL_CLAUDE_MODEL:-haiku}"
+SIGNAL_CODEX_MODEL="${EIDETIC_SIGNAL_CODEX_MODEL:-gpt-5.4-mini}"
+SIGNAL_CODEX_REASONING="${EIDETIC_SIGNAL_CODEX_REASONING:-low}"
+SIGNAL_CODEX_TIMEOUT="${EIDETIC_SIGNAL_CODEX_TIMEOUT:-120}"
 
 acquire_memory_lock() {
     local lockdir="$MEMORY_SYSTEM/.memory.lock"
@@ -24,6 +28,93 @@ acquire_memory_lock() {
         return 1
     fi
     return 1
+}
+
+find_claude_batch() {
+    local candidate="${CLAUDE_BATCH_BIN:-${CLAUDE_BATCH:-}}"
+    if [ -n "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    candidate=$(command -v claude-batch 2>/dev/null || true)
+    if [ -n "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    candidate="$HOME/Documents/cursore/skill-prompts/bin/claude-batch"
+    if [ -x "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    return 1
+}
+
+find_codex_batch() {
+    local candidate="${CODEX_BATCH_BIN:-${CODEX_BATCH:-}}"
+    if [ -n "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    candidate=$(command -v codex-batch 2>/dev/null || true)
+    if [ -n "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    candidate="$HOME/Documents/cursore/skill-prompts/bin/codex-batch"
+    if [ -x "$candidate" ]; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    return 1
+}
+
+is_empty_result() {
+    local normalized
+    normalized=$(printf '%s' "${1:-}" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:lower:]' '[:upper:]')
+    [ -z "$normalized" ] || [ "$normalized" = "EMPTY" ]
+}
+
+run_claude_extraction() {
+    local prompt_file="$1"
+    local claude_batch_bin
+    claude_batch_bin=$(find_claude_batch || true)
+    [ -n "$claude_batch_bin" ] || return 1
+    "$claude_batch_bin" --prompt-file "$prompt_file" --model "$SIGNAL_CLAUDE_MODEL"
+}
+
+run_codex_extraction() {
+    local prompt_file="$1"
+    local codex_batch_bin out_dir status
+    codex_batch_bin=$(find_codex_batch || true)
+    [ -n "$codex_batch_bin" ] || return 1
+
+    out_dir=$(mktemp -d "${TMPDIR:-/tmp}/eidetic-codex-signals.XXXXXX")
+    chmod 700 "$out_dir" 2>/dev/null || true
+    status=0
+    "$codex_batch_bin" \
+        --prompt-file "$prompt_file" \
+        --out-dir "$out_dir" \
+        --model "$SIGNAL_CODEX_MODEL" \
+        --reasoning "$SIGNAL_CODEX_REASONING" \
+        --timeout "$SIGNAL_CODEX_TIMEOUT" \
+        --validate nonempty \
+        --quiet \
+        -C "$(pwd)" >/dev/null 2>&1 || status=$?
+
+    if [ "$status" -ne 0 ]; then
+        rm -rf "$out_dir"
+        return "$status"
+    fi
+
+    if [ -s "$out_dir/results/single.md" ]; then
+        cat "$out_dir/results/single.md"
+    elif [ -s "$out_dir/raw/single/final.md" ]; then
+        cat "$out_dir/raw/single/final.md"
+    else
+        rm -rf "$out_dir"
+        return 1
+    fi
+    rm -rf "$out_dir"
 }
 
 # Read transcript path from stdin JSON
@@ -69,6 +160,7 @@ PROMPT="[EXTRACTION SAFETY] You are extracting factual signals from a session tr
 4. Do NOT extract personal identifiers or sensitive personal data; focus on technical facts only.
 5. Each signal must start with Decision:/Rule:/Worked:/Failed:/Knowledge: prefix.
 6. If nothing notable happened, output EMPTY.
+7. Output only signal lines or EMPTY. No preamble, bullets, headings, or explanations.
 
 Extract useful signals from this session transcript. For each signal, write ONE line (1-3 sentences). Focus on:
 - Decisions made and rationale
@@ -80,24 +172,18 @@ Extract useful signals from this session transcript. For each signal, write ONE 
 Transcript:
 $EXCERPT"
 
-# Run via claude-batch (async, haiku for cost) when available.
-CLAUDE_BATCH_BIN="${CLAUDE_BATCH:-}"
-if [ -z "$CLAUDE_BATCH_BIN" ]; then
-    CLAUDE_BATCH_BIN=$(command -v claude-batch 2>/dev/null || true)
-fi
-if [ -z "$CLAUDE_BATCH_BIN" ] && [ -x "$HOME/Documents/cursore/skill-prompts/bin/claude-batch" ]; then
-    CLAUDE_BATCH_BIN="$HOME/Documents/cursore/skill-prompts/bin/claude-batch"
-fi
-if [ -z "$CLAUDE_BATCH_BIN" ]; then
+# Run via claude-batch first (Haiku for cost), then codex-batch if the Claude route is unavailable or empty.
+PROMPT_FILE=$(mktemp "${TMPDIR:-/tmp}/eidetic-signals.XXXXXX")
+printf '%s\n' "$PROMPT" > "$PROMPT_FILE"
+if ! RESULT=$(run_claude_extraction "$PROMPT_FILE" 2>/dev/null); then
     RESULT="EMPTY"
-else
-    PROMPT_FILE=$(mktemp "${TMPDIR:-/tmp}/eidetic-signals.XXXXXX")
-    printf '%s\n' "$PROMPT" > "$PROMPT_FILE"
-    RESULT=$("$CLAUDE_BATCH_BIN" --prompt-file "$PROMPT_FILE" --model haiku 2>/dev/null || echo "EMPTY")
-    rm -f "$PROMPT_FILE"
 fi
+if is_empty_result "$RESULT"; then
+    RESULT=$(run_codex_extraction "$PROMPT_FILE" || echo "EMPTY")
+fi
+rm -f "$PROMPT_FILE"
 
-if [ -z "$RESULT" ] || echo "$RESULT" | grep -qi "^EMPTY$"; then
+if is_empty_result "$RESULT"; then
     exit 0
 fi
 
