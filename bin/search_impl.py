@@ -34,9 +34,9 @@ STATUS_WEIGHTS = {
 FRESHNESS_CUTOFF_DAYS = 30
 MAX_LIMIT = 50
 MAX_QUERY_TERMS = 8
-VECTOR_MIN_SIM = 0.55
-VECTOR_MEDIUM_CONFIDENCE = 0.78
-VECTOR_HIGH_CONFIDENCE = 0.88
+VECTOR_MIN_SIM = 0.30
+VECTOR_MEDIUM_CONFIDENCE = 0.35
+VECTOR_HIGH_CONFIDENCE = 0.55
 CONFIDENCE_ORDER = {"low": 0, "medium": 1, "high": 2}
 DETAIL_ID_PREFIX = "mem_"
 STOPWORDS = {
@@ -585,6 +585,17 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False, json_o
     drift_data = _load_drift_data(db_path)
     rows = _fetch_fts_rows(conn, query, limit, type_filter)
 
+    has_non_ascii = any(ord(c) > 127 for c in query)
+    if not rows and has_non_ascii:
+        ascii_words = [w for w in query.split() if all(ord(c) < 128 for c in w) and len(w) >= 3]
+        if ascii_words:
+            rows = _fetch_fts_rows(conn, " ".join(ascii_words), limit, type_filter)
+        if not rows and ascii_words:
+            for aw in ascii_words:
+                rows = _fetch_fts_rows(conn, aw, limit, type_filter)
+                if rows:
+                    break
+
     results = []
     for row, strategy, match_quality in rows:
         ev_w = EVIDENCE_WEIGHTS.get(row["evidence"], 0.7)
@@ -617,7 +628,8 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False, json_o
 
     vector_db = db_path.replace("index.db", "vectors.db")
     has_phrase = any(r.get("match") == "phrase" for r in results[:3])
-    if _needs_vector(results, limit) and os.path.exists(vector_db):
+    force_vector = has_non_ascii
+    if (force_vector or _needs_vector(results, limit)) and os.path.exists(vector_db):
         vec_results = _vector_search(
             vector_db, conn, query, limit, type_filter, drift_data,
             warn=not (output_json or json_object)

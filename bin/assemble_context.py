@@ -218,17 +218,21 @@ def _format_cluster(cluster_def, member_names):
     return "".join(lines)
 
 
-def fetch_feedback(conn, budget_chars):
+def fetch_feedback(conn, budget_chars, current_slug=""):
     """Fetch ALL feedback memories with v1.3 smart compression.
 
     P3: never invisible. Three compression strategies:
     1. Clustering: group related rules (consilium, model-routing) into compact blocks
     2. Tiered display: top=full desc, mid=name+50chars, low=name-only
     3. Overflow: name-only for anything that doesn't fit
+
+    v5.2: project-aware discount — rules from other projects get 0.3x weight,
+    pushing them to lower display tiers (name-only or hidden).
     """
     rows = conn.execute("""
         SELECT c.path, c.name, c.description, c.content,
                c.evidence, c.source, c.last_verified, c.status, c.superseded_by,
+               c.project,
                MIN(c.id) as first_id
         FROM memory_chunks c
         WHERE c.type = 'feedback'
@@ -240,8 +244,10 @@ def fetch_feedback(conn, budget_chars):
     individual = []  # (weight, name, desc)
 
     for row in rows:
-        path, name, desc, content, evidence, source, lv, status, superseded_by, _ = row
+        path, name, desc, content, evidence, source, lv, status, superseded_by, project, _ = row
         w = compound_weight(evidence, source, lv, status=status, superseded_by=superseded_by)
+        if current_slug and project and current_slug not in (project or ""):
+            w *= 0.3
         display_name = name or os.path.basename(path).replace(".md", "")
         display_desc = desc or (content[:150].replace("\n", " ").strip() if content else "")
 
@@ -476,7 +482,7 @@ def main():
     recent_text, recent_used = fetch_recent(conn, recent_budget, slug, drift_map)
 
     feedback_budget = max(1000, TOKEN_BUDGET_CHARS - project_used - recent_used - handoff_used - drift_used)
-    feedback_text, feedback_used, feedback_total = fetch_feedback(conn, feedback_budget)
+    feedback_text, feedback_used, feedback_total = fetch_feedback(conn, feedback_budget, slug)
 
     total_chars = feedback_used + project_used + recent_used + handoff_used + drift_used
     total_tokens = total_chars // 4
