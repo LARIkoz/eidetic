@@ -1,0 +1,19 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "sess_redacted_bash_success",
+  "cwd": "__PROJECT__",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_redacted_bash_success",
+  "duration_ms": 42,
+  "tool_input": {
+    "command": "pytest tests SENTINEL_COMMAND",
+    "description": "SENTINEL_DESCRIPTION",
+    "timeout": 9999,
+    "run_in_background": false
+  },
+  "tool_response": {
+    "stdout": "SENTINEL_STDOUT",
+    "stderr": "SENTINEL_STDERR",
+    "content": "SENTINEL_RESPONSE"
+  }
+}

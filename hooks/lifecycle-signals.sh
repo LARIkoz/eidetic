@@ -1,6 +1,6 @@
 #!/bin/bash
-# Eidetic v4.3 — metadata-only lifecycle event capture.
-# Synchronous PostToolUse hook with timeout configured in Claude settings.
+# Eidetic v5.0.1 — metadata-only lifecycle event capture.
+# Synchronous PostToolUse/PostToolUseFailure hook with timeout in Claude settings.
 set -euo pipefail
 
 MEMORY_SYSTEM="${EIDETIC_MEMORY_SYSTEM:-$HOME/.claude/memory-system}"

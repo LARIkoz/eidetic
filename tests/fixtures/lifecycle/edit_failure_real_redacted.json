@@ -1,0 +1,20 @@
+{
+  "hook_event_name": "PostToolUseFailure",
+  "session_id": "sess_redacted_edit_failure",
+  "cwd": "__PROJECT__",
+  "tool_name": "Edit",
+  "tool_use_id": "toolu_redacted_edit_failure",
+  "duration_ms": 12,
+  "tool_input": {
+    "file_path": "__PROJECT__/sentinel_secret_name.py",
+    "old_string": "SENTINEL_OLD",
+    "new_string": "SENTINEL_NEW",
+    "description": "SENTINEL_DESCRIPTION"
+  },
+  "error": "Permission denied for SENTINEL_ERROR",
+  "is_interrupt": false,
+  "tool_response": {
+    "stdout": "SENTINEL_STDOUT",
+    "stderr": "SENTINEL_STDERR"
+  }
+}

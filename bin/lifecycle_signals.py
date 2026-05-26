@@ -13,20 +13,26 @@ import hmac
 import hashlib
 import json
 import os
+import re
 import secrets
 import stat
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
 
-SCHEMA_VERSION = 1
+FILE_SCHEMA_VERSION = 1
+PHASE_B_SCHEMA_VERSION = 2
+SCHEMA_VERSION = FILE_SCHEMA_VERSION
 MAX_EVENT_BYTES = 512
 EVENT_DIR = Path("events") / "lifecycle"
 KEY_NAME = ".hmac_key"
 ALLOWED_TOOLS = {"Write", "Edit", "MultiEdit"}
+FAILURE_TOOLS = {"Bash", "Write", "Edit", "MultiEdit"}
 OPERATION_BY_TOOL = {
+    "Bash": "bash",
     "Write": "write",
     "Edit": "edit",
     "MultiEdit": "multi_edit",
@@ -185,6 +191,120 @@ def _edit_count(tool_name: str, tool_input: Dict[str, Any]) -> int:
     return 1
 
 
+def _timeout_ms_bucket(value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return "none"
+    if value < 10_000:
+        return "lt_10s"
+    if value <= 60_000:
+        return "10s_60s"
+    if value <= 300_000:
+        return "1m_5m"
+    return "gt_5m"
+
+
+def _matches_any(command: str, patterns: Iterable[str]) -> bool:
+    return any(re.match(pattern, command, flags=re.IGNORECASE) for pattern in patterns)
+
+
+def _command_class(command: Any) -> Optional[str]:
+    if not isinstance(command, str):
+        return None
+    value = command.strip()
+    if not value:
+        return None
+
+    test_patterns = (
+        r"^(?:python3?|uv\s+run)\s+-m\s+(?:unittest|pytest)(?:\s|$)",
+        r"^(?:pytest|bats|rspec)(?:\s|$)",
+        r"^(?:npm|pnpm|yarn)\s+(?:run\s+)?test(?:\s|$|:)",
+        r"^go\s+test(?:\s|$)",
+        r"^cargo\s+test(?:\s|$)",
+    )
+    lint_patterns = (
+        r"^(?:ruff|flake8|mypy|eslint|prettier|shellcheck)(?:\s|$)",
+        r"^(?:black|isort)(?:\s|$).*--check(?:\s|$)",
+        r"^(?:python3?|uv\s+run)\s+-m\s+(?:ruff|flake8|mypy)(?:\s|$)",
+        r"^tsc(?:\s|$)",
+        r"^go\s+vet(?:\s|$)",
+        r"^cargo\s+clippy(?:\s|$)",
+    )
+    git_patterns = (r"^git(?:\s|$)",)
+    build_patterns = (
+        r"^(?:make|cmake|ninja)(?:\s|$)",
+        r"^cargo\s+build(?:\s|$)",
+        r"^go\s+build(?:\s|$)",
+        r"^(?:npm|pnpm|yarn)\s+(?:run\s+)?build(?:\s|$|:)",
+    )
+    package_patterns = (
+        r"^(?:pip3?|python3?\s+-m\s+pip)\s+(?:install|uninstall|list|show)(?:\s|$)",
+        r"^uv\s+(?:add|remove|sync|pip\s+(?:install|uninstall|sync))(?:\s|$)",
+        r"^poetry\s+(?:add|remove|install|update)(?:\s|$)",
+        r"^(?:npm|pnpm|yarn)\s+(?:install|i|ci|add|update|upgrade)(?:\s|$)",
+        r"^brew\s+(?:install|upgrade|update)(?:\s|$)",
+        r"^cargo\s+add(?:\s|$)",
+    )
+    network_patterns = (r"^(?:curl|wget|http|https)(?:\s|$)",)
+    shell_patterns = (
+        r"^(?:bash|sh|zsh|fish)(?:\s|$)",
+        r"^(?:cd|source|export|unset|alias|printf|echo|true|false|set|ulimit|command|exec)(?:\s|$)",
+        r"^(?:\.|\[)(?:\s|$)",
+        r"^(?:&&|\|\||;)",
+    )
+
+    for label, patterns in (
+        ("test", test_patterns),
+        ("lint", lint_patterns),
+        ("git", git_patterns),
+        ("build", build_patterns),
+        ("package", package_patterns),
+        ("network", network_patterns),
+        ("shell", shell_patterns),
+    ):
+        if _matches_any(value, patterns):
+            return label
+    return "unknown"
+
+
+def _failure_class(payload: Dict[str, Any]) -> str:
+    if payload.get("is_interrupt") is True:
+        return "interrupted"
+    error = payload.get("error")
+    if not isinstance(error, str) or not error:
+        return "unknown"
+    lowered = error.lower()
+    if "timed out" in lowered or "timeout" in lowered or "deadline" in lowered:
+        return "timeout"
+    if (
+        "permission" in lowered
+        or "denied" in lowered
+        or "not allowed" in lowered
+        or "operation not permitted" in lowered
+        or "eacces" in lowered
+    ):
+        return "permission_denied"
+    if "non-zero" in lowered or "nonzero" in lowered or "exit code" in lowered or "status" in lowered:
+        return "nonzero_exit"
+    return "tool_error"
+
+
+def _phase_b_cwd(payload: Dict[str, Any]) -> Optional[Path]:
+    raw_cwd = payload.get("cwd")
+    if not isinstance(raw_cwd, str) or not raw_cwd:
+        return None
+    return _resolve_path(Path(raw_cwd).expanduser())
+
+
+def _sensitive_cwd(cwd: Path, memory_system: Path) -> bool:
+    if _is_relative_to(cwd, memory_system / "db"):
+        return True
+    if _looks_sensitive(cwd):
+        return True
+    if _is_in_vault_projection(cwd):
+        return True
+    return False
+
+
 def _event_path(memory_system: Path, now: Optional[datetime] = None) -> Path:
     now = now or datetime.now(timezone.utc)
     return memory_system / EVENT_DIR / f"{now.strftime('%Y-%m-%d')}.jsonl"
@@ -224,16 +344,18 @@ def _load_or_create_key(memory_system: Path) -> Optional[bytes]:
         except OSError:
             return None
 
-    try:
-        mode = stat.S_IMODE(key_path.stat().st_mode)
-        if mode != 0o600:
-            os.chmod(key_path, 0o600)
-        key = key_path.read_bytes().strip()
-    except OSError:
-        return None
-    if len(key) < 32:
-        return None
-    return key
+    for _ in range(20):
+        try:
+            mode = stat.S_IMODE(key_path.stat().st_mode)
+            if mode != 0o600:
+                os.chmod(key_path, 0o600)
+            key = key_path.read_bytes().strip()
+        except OSError:
+            return None
+        if len(key) >= 32:
+            return key
+        time.sleep(0.01)
+    return None
 
 
 def _hmac_hex(key: bytes, value: str) -> str:
@@ -295,7 +417,7 @@ def _atomic_append_jsonl(path: Path, data: bytes) -> bool:
         return False
 
 
-def build_record(payload: Dict[str, Any], memory_system: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+def _build_file_record(payload: Dict[str, Any], memory_system: Path) -> Optional[Dict[str, Any]]:
     if payload.get("hook_event_name") != "PostToolUse":
         return None
     tool_name = payload.get("tool_name")
@@ -323,21 +445,16 @@ def build_record(payload: Dict[str, Any], memory_system: Optional[Path] = None) 
     if not target_resolved:
         return None
 
-    memory_system = memory_system or memory_system_from_env()
-    memory_resolved = _resolve_path(memory_system)
-    if not memory_resolved:
+    if not (_is_relative_to(target_resolved, cwd_resolved) or _is_relative_to(target_resolved, memory_system)):
         return None
-
-    if not (_is_relative_to(target_resolved, cwd_resolved) or _is_relative_to(target_resolved, memory_resolved)):
-        return None
-    if _is_relative_to(target_resolved, memory_resolved / "db"):
+    if _is_relative_to(target_resolved, memory_system / "db"):
         return None
     if _looks_sensitive(target_resolved):
         return None
     if _is_in_vault_projection(target_resolved):
         return None
 
-    key = _load_or_create_key(memory_resolved)
+    key = _load_or_create_key(memory_system)
     if not key:
         return None
 
@@ -361,6 +478,90 @@ def build_record(payload: Dict[str, Any], memory_system: Optional[Path] = None) 
         "edit_count": _edit_count(tool_name, tool_input),
     }
     return record
+
+
+def _phase_b_base_record(
+    payload: Dict[str, Any],
+    memory_system: Path,
+    tool_name: str,
+    operation: str,
+    require_cwd: bool,
+) -> Optional[Dict[str, Any]]:
+    cwd_resolved = _phase_b_cwd(payload)
+    if require_cwd and not cwd_resolved:
+        return None
+    if cwd_resolved and _sensitive_cwd(cwd_resolved, memory_system):
+        return None
+
+    record: Dict[str, Any] = {
+        "schema_version": PHASE_B_SCHEMA_VERSION,
+        "recorded_at": _recorded_at(),
+        "hook_event_name": str(payload.get("hook_event_name") or ""),
+        "session_id": str(payload.get("session_id") or ""),
+        "tool_name": tool_name,
+        "tool_use_id": str(payload.get("tool_use_id") or ""),
+        "duration_ms": _duration_ms(payload.get("duration_ms")),
+        "operation": operation,
+    }
+    if cwd_resolved:
+        key = _load_or_create_key(memory_system)
+        if not key:
+            return None
+        cwd_hash = _hmac_hex(key, str(cwd_resolved))
+        record["project_slug"] = f"project_{cwd_hash[:8]}"
+        record["cwd_hash"] = f"hmac_sha256:{cwd_hash}"
+    return record
+
+
+def _build_bash_record(payload: Dict[str, Any], memory_system: Path) -> Optional[Dict[str, Any]]:
+    if payload.get("hook_event_name") != "PostToolUse" or payload.get("tool_name") != "Bash":
+        return None
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    command_class = _command_class(tool_input.get("command"))
+    if not command_class:
+        return None
+    record = _phase_b_base_record(payload, memory_system, "Bash", "bash", require_cwd=True)
+    if not record:
+        return None
+    record["command_class"] = command_class
+    record["background"] = tool_input.get("run_in_background") is True
+    record["timeout_ms_bucket"] = _timeout_ms_bucket(tool_input.get("timeout"))
+    return record
+
+
+def _build_failure_record(payload: Dict[str, Any], memory_system: Path) -> Optional[Dict[str, Any]]:
+    if payload.get("hook_event_name") != "PostToolUseFailure":
+        return None
+    tool_name = payload.get("tool_name")
+    if tool_name not in FAILURE_TOOLS:
+        return None
+    record = _phase_b_base_record(payload, memory_system, str(tool_name), "tool_failure", require_cwd=False)
+    if not record:
+        return None
+    failed_operation = OPERATION_BY_TOOL.get(str(tool_name), "unknown")
+    record["failed_operation"] = failed_operation
+    record["failure_class"] = _failure_class(payload)
+    record["interrupted"] = payload.get("is_interrupt") is True
+    tool_input = payload.get("tool_input")
+    if failed_operation == "bash" and isinstance(tool_input, dict):
+        command_class = _command_class(tool_input.get("command"))
+        if command_class:
+            record["command_class"] = command_class
+    return record
+
+
+def build_record(payload: Dict[str, Any], memory_system: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    memory_system = memory_system or memory_system_from_env()
+    memory_resolved = _resolve_path(memory_system)
+    if not memory_resolved:
+        return None
+    if payload.get("hook_event_name") == "PostToolUse" and payload.get("tool_name") == "Bash":
+        return _build_bash_record(payload, memory_resolved)
+    if payload.get("hook_event_name") == "PostToolUseFailure":
+        return _build_failure_record(payload, memory_resolved)
+    return _build_file_record(payload, memory_resolved)
 
 
 def write_event(payload: Dict[str, Any], memory_system: Optional[Path] = None) -> bool:
@@ -387,38 +588,41 @@ def _hook_prefix(memory_system: str) -> str:
 
 
 def ensure_lifecycle_hook(settings: Dict[str, Any], memory_system: str = "") -> bool:
-    """Add/update the dedicated PostToolUse lifecycle hook entry.
+    """Add/update the dedicated lifecycle hook entries.
 
     Returns True if an existing lifecycle hook was replaced, False if it was
-    newly appended. Other PostToolUse entries are preserved.
+    newly appended. Other hook entries are preserved.
     """
 
     hooks = settings.setdefault("hooks", {})
-    post_tool = hooks.setdefault("PostToolUse", [])
-    if not isinstance(post_tool, list):
-        hooks["PostToolUse"] = post_tool = []
-
     found = False
-    kept_entries = []
-    for entry in post_tool:
-        if not isinstance(entry, dict):
-            kept_entries.append(entry)
-            continue
-        old_hooks = entry.get("hooks", [])
-        if not isinstance(old_hooks, list):
-            kept_entries.append(entry)
-            continue
-        new_hooks = []
-        for hook in old_hooks:
-            command = str(hook.get("command", "")) if isinstance(hook, dict) else ""
-            if "lifecycle-signals" in command:
-                found = True
-            else:
-                new_hooks.append(hook)
-        if new_hooks:
-            copied = dict(entry)
-            copied["hooks"] = new_hooks
-            kept_entries.append(copied)
+
+    def strip_lifecycle_entries(event_name: str) -> list[Any]:
+        nonlocal found
+        entries = hooks.setdefault(event_name, [])
+        if not isinstance(entries, list):
+            hooks[event_name] = entries = []
+        kept_entries = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                kept_entries.append(entry)
+                continue
+            old_hooks = entry.get("hooks", [])
+            if not isinstance(old_hooks, list):
+                kept_entries.append(entry)
+                continue
+            new_hooks = []
+            for hook in old_hooks:
+                command = str(hook.get("command", "")) if isinstance(hook, dict) else ""
+                if "lifecycle-signals" in command:
+                    found = True
+                else:
+                    new_hooks.append(hook)
+            if new_hooks:
+                copied = dict(entry)
+                copied["hooks"] = new_hooks
+                kept_entries.append(copied)
+        return kept_entries
 
     lifecycle_hook = {
         "type": "command",
@@ -426,11 +630,15 @@ def ensure_lifecycle_hook(settings: Dict[str, Any], memory_system: str = "") -> 
         # Claude Code hook timeout is in seconds in the current hooks docs.
         "timeout": 2,
     }
-    kept_entries.append({
-        "matcher": "Write|Edit|MultiEdit",
-        "hooks": [lifecycle_hook],
-    })
-    hooks["PostToolUse"] = kept_entries
+
+    post_tool = strip_lifecycle_entries("PostToolUse")
+    post_tool.append({"matcher": "Write|Edit|MultiEdit", "hooks": [dict(lifecycle_hook)]})
+    post_tool.append({"matcher": "Bash", "hooks": [dict(lifecycle_hook)]})
+    hooks["PostToolUse"] = post_tool
+
+    post_tool_failure = strip_lifecycle_entries("PostToolUseFailure")
+    post_tool_failure.append({"matcher": "Bash|Write|Edit|MultiEdit", "hooks": [dict(lifecycle_hook)]})
+    hooks["PostToolUseFailure"] = post_tool_failure
     return found
 
 
