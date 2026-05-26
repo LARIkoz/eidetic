@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Eidetic v2.0 — Vector embeddings for hybrid search.
 
-Generates embeddings for all memory chunks using fastembed (ONNX, ~33MB model).
+Generates embeddings for all memory chunks using fastembed (ONNX).
 Stores in vectors.db alongside index.db. Used as fallback when FTS5 returns < 3 results.
+
+v5.2: switched to multilingual model for cross-language search (RU queries → EN memories).
 """
 
 import json
@@ -12,7 +14,7 @@ import sqlite3
 import sys
 import time
 
-MODEL_NAME = "BAAI/bge-small-en-v1.5"
+MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 VECTOR_DIM = 384
 
 _model = None
