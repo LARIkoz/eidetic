@@ -64,6 +64,7 @@ def ensure_agent_columns(conn):
     except sqlite3.OperationalError:
         return
     migrations = {
+        "project": "ALTER TABLE memory_chunks ADD COLUMN project TEXT DEFAULT ''",
         "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
         "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
         "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",

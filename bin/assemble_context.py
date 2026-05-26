@@ -99,6 +99,7 @@ def ensure_agent_columns(conn):
     except sqlite3.OperationalError:
         return
     migrations = {
+        "project": "ALTER TABLE memory_chunks ADD COLUMN project TEXT DEFAULT ''",
         "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
         "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
         "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
@@ -229,6 +230,7 @@ def fetch_feedback(conn, budget_chars, current_slug=""):
     v5.2: project-aware discount — rules from other projects get 0.3x weight,
     pushing them to lower display tiers (name-only or hidden).
     """
+    ensure_agent_columns(conn)
     rows = conn.execute("""
         SELECT c.path, c.name, c.description, c.content,
                c.evidence, c.source, c.last_verified, c.status, c.superseded_by,
