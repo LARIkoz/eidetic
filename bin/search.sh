@@ -1,6 +1,7 @@
 #!/bin/bash
 # AI Memory System v1 — FTS5 Search
-# Usage: search.sh "<query>" [--limit N] [--type feedback|project|user|reference|code] [--json|--json-object]
+# Usage: search.sh "<query>" [--limit N] [--type feedback|project|user|reference|code] [--brief|--full] [--json|--json-object]
+#        search.sh --detail <detail_id|path> [--section SECTION] [--json-object]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

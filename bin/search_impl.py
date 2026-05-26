@@ -9,6 +9,7 @@ Core deps: python3 stdlib + sqlite3. Optional: fastembed (for vector search).
 """
 
 import json
+import hashlib
 import importlib.util
 import os
 import re
@@ -37,6 +38,7 @@ VECTOR_MIN_SIM = 0.55
 VECTOR_MEDIUM_CONFIDENCE = 0.78
 VECTOR_HIGH_CONFIDENCE = 0.88
 CONFIDENCE_ORDER = {"low": 0, "medium": 1, "high": 2}
+DETAIL_ID_PREFIX = "mem_"
 STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "how",
     "i", "in", "is", "it", "me", "my", "of", "on", "or", "our", "the",
@@ -142,6 +144,54 @@ def _normalize_limit(limit):
         return max(1, min(int(limit), MAX_LIMIT))
     except (TypeError, ValueError):
         return 10
+
+
+def _stable_detail_id(path, section):
+    """Deterministic chunk selector stable across index rebuild rowids."""
+    normalized = os.path.expanduser(path or "")
+    material = json.dumps(
+        [normalized, section or ""],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return DETAIL_ID_PREFIX + hashlib.sha256(material).hexdigest()[:16]
+
+
+def _short_path(path):
+    return (path or "").replace(os.path.expanduser("~"), "~")
+
+
+def _snippet(content, max_chars=200):
+    text = (content or "")[:max_chars].replace("\n", " ").strip()
+    if content and len(content) > max_chars:
+        text += "..."
+    return text
+
+
+def _base_result(row, drift_info=None, drift_penalty=None, freshness=None, status_weight=None):
+    section = row["section_heading"] or ""
+    content = row["content"] or ""
+    return {
+        "detail_id": _stable_detail_id(row["path"], section),
+        "path": row["path"],
+        "project": row["project"] or "",
+        "name": row["name"] or "",
+        "type": row["type"] or "",
+        "card_kind": row["card_kind"] or "",
+        "status": row["status"] or "current",
+        "area": row["area"] or "",
+        "supersedes": row["supersedes"] or "",
+        "superseded_by": row["superseded_by"] or "",
+        "section": section,
+        "snippet": _snippet(content),
+        "content_chars": len(content),
+        "evidence": row["evidence"] or "observed",
+        "source": row["source"] or "user-explicit",
+        "freshness": freshness if freshness is not None else compute_freshness(row["last_verified"]),
+        "status_weight": status_weight if status_weight is not None else compute_status_weight(row["status"], row["superseded_by"]),
+        "drift_penalty": drift_penalty,
+        "drift_findings": (drift_info or {}).get("findings", []),
+    }
 
 
 def _tokenize_query(query):
@@ -360,7 +410,165 @@ def _search_response(query, limit, type_filter, results):
     }
 
 
-def search(db_path, query, limit=10, type_filter=None, output_json=False, json_object=False):
+def _is_broad_query(query, results):
+    terms = _tokenize_query(query)
+    return len(terms) <= 2 and len(results) > 1
+
+
+def _print_full_results(query, results):
+    for i, r in enumerate(results, 1):
+        source_tag = r.get("match") if r.get("match") in ("vector", "hybrid") else "fts5"
+        extra = ""
+        if r.get("retrieval_score") != r.get("score"):
+            extra = f" retrieval={r['retrieval_score']}"
+        print(f"\n--- [{i}] score={r['score']}{extra} confidence={r['confidence']} ({r['evidence']}/{r['source']}) [{source_tag}] ---")
+        print(f"  Confidence: {r['confidence_reason']}")
+        print(f"  Detail id: {r['detail_id']}")
+        print(f"  File: {_short_path(r['path'])}")
+        if r["name"]:
+            print(f"  Name: {r['name']}")
+        print(f"  Type: {r['type']}  Kind: {r.get('card_kind') or '?'}  Status: {r.get('status') or 'current'}  Section: {r['section']}")
+        if r.get("superseded_by"):
+            print(f"  Superseded by: {r['superseded_by']}")
+        if r.get("drift_findings"):
+            drift = ", ".join(
+                f"{d.get('type')}:{d.get('detail')}"
+                for d in r["drift_findings"][:3]
+            )
+            print(f"  Drift: {drift}")
+        print(f"  {r['snippet']}")
+
+
+def _print_brief_results(query, results, auto_broad=False):
+    if auto_broad:
+        print(f"Compact broad-query results for: {query}")
+    else:
+        print(f"Compact results for: {query}")
+    print("Use --full for snippets or --detail <detail_id> for full content.")
+    for i, r in enumerate(results, 1):
+        title = r.get("name") or os.path.basename(r.get("path") or "")
+        section = f" — {r['section']}" if r.get("section") else ""
+        kind = r.get("card_kind") or "?"
+        print(
+            f"[{i}] score={r['score']} confidence={r['confidence']} "
+            f"type={r.get('type') or '?'} kind={kind} status={r.get('status') or 'current'} "
+            f"id={r['detail_id']}"
+        )
+        print(f"    {title}{section}")
+        print(f"    {_short_path(r.get('path') or '')}")
+
+
+def _detail_row_payload(row):
+    base = _base_result(row)
+    base["content"] = row["content"] or ""
+    return base
+
+
+def _detail_lookup(conn, selector, section=None):
+    selector = (selector or "").strip()
+    if not selector:
+        return []
+
+    if selector.startswith(DETAIL_ID_PREFIX):
+        rows = conn.execute("""
+            SELECT path, project, name, type, evidence, source, confidence,
+                   last_verified, card_kind, status, area, supersedes,
+                   superseded_by, section_heading, content, description, mtime
+            FROM memory_chunks
+            ORDER BY path, section_heading
+        """).fetchall()
+        result = []
+        for row in rows:
+            if _stable_detail_id(row["path"], row["section_heading"] or "") != selector:
+                continue
+            if section is not None and (row["section_heading"] or "") != section:
+                continue
+            result.append(row)
+        return result
+
+    candidates = []
+    expanded = os.path.expanduser(selector)
+    candidates.append(selector)
+    candidates.append(expanded)
+    if not os.path.isabs(expanded):
+        candidates.append(os.path.abspath(expanded))
+    seen = set()
+    unique = []
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            unique.append(candidate)
+
+    rows = []
+    for path in unique:
+        if section is None:
+            rows.extend(conn.execute("""
+                SELECT path, project, name, type, evidence, source, confidence,
+                       last_verified, card_kind, status, area, supersedes,
+                       superseded_by, section_heading, content, description, mtime
+                FROM memory_chunks
+                WHERE path = ?
+                ORDER BY section_heading
+            """, (path,)).fetchall())
+        else:
+            rows.extend(conn.execute("""
+                SELECT path, project, name, type, evidence, source, confidence,
+                       last_verified, card_kind, status, area, supersedes,
+                       superseded_by, section_heading, content, description, mtime
+                FROM memory_chunks
+                WHERE path = ? AND COALESCE(section_heading, '') = ?
+                ORDER BY section_heading
+            """, (path, section)).fetchall())
+        if rows:
+            break
+    return rows
+
+
+def _detail_response(selector, rows, section=None):
+    found = bool(rows)
+    return {
+        "selector": selector,
+        "section": section,
+        "found": found,
+        "result_count": len(rows),
+        "no_confident_results": not found,
+        "message": "" if found else "No memory detail matched the selector.",
+        "results": [_detail_row_payload(row) for row in rows],
+    }
+
+
+def search_detail(db_path, selector, section=None, output_json=False, json_object=False):
+    if not os.path.exists(db_path):
+        print("ERROR: Index not found. Run: ~/.claude/memory-system/bin/index.sh --full", file=sys.stderr)
+        sys.exit(1)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.row_factory = sqlite3.Row
+    ensure_agent_columns(conn)
+    rows = _detail_lookup(conn, selector, section)
+    payload = _detail_response(selector, rows, section)
+    conn.close()
+
+    if output_json or json_object:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
+
+    if not rows:
+        print(f"No memory detail matched: {selector}")
+        return
+
+    for i, result in enumerate(payload["results"], 1):
+        print(f"\n--- Detail [{i}] id={result['detail_id']} ---")
+        print(f"File: {_short_path(result['path'])}")
+        if result.get("name"):
+            print(f"Name: {result['name']}")
+        print(f"Type: {result.get('type') or '?'}  Kind: {result.get('card_kind') or '?'}  Status: {result.get('status') or 'current'}  Section: {result.get('section') or ''}")
+        print("")
+        print(result["content"])
+
+
+def search(db_path, query, limit=10, type_filter=None, output_json=False, json_object=False, output_mode="auto"):
     """Search FTS5 index with compound ranking."""
     if not os.path.exists(db_path):
         print("ERROR: Index not found. Run: ~/.claude/memory-system/bin/index.sh --full", file=sys.stderr)
@@ -388,34 +596,21 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False, json_o
         raw_rank = abs(row["fts_rank"])
         compound = raw_rank * ev_w * src_w * fr_w * status_w * max(0.1, match_quality)
 
-        snippet = row["content"][:200].replace("\n", " ").strip()
-        if len(row["content"]) > 200:
-            snippet += "..."
-
-        results.append({
-            "path": row["path"],
-            "project": row["project"] or "",
-            "name": row["name"] or "",
-            "type": row["type"] or "",
-            "card_kind": row["card_kind"] or "",
-            "status": row["status"] or "current",
-            "area": row["area"] or "",
-            "supersedes": row["supersedes"] or "",
-            "superseded_by": row["superseded_by"] or "",
-            "section": row["section_heading"] or "",
-            "snippet": snippet,
-            "evidence": row["evidence"] or "observed",
-            "source": row["source"] or "user-explicit",
-            "freshness": fr_w,
-            "status_weight": status_w,
-            "drift_penalty": dp,
-            "drift_findings": drift_info.get("findings", []),
+        result = _base_result(
+            row,
+            drift_info=drift_info,
+            drift_penalty=dp,
+            freshness=fr_w,
+            status_weight=status_w,
+        )
+        result.update({
             "score": round(compound, 4),
             "retrieval_score": round(compound, 4),
             "fts_rank": round(raw_rank, 4),
             "match": strategy,
             "match_quality": round(match_quality, 3),
         })
+        results.append(result)
 
     results.sort(key=lambda x: x["score"], reverse=True)
     results = results[:limit]
@@ -445,27 +640,11 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False, json_o
             print("Weak candidates suppressed. Rephrase, add --type, or use --json to inspect them.")
             return
 
-        for i, r in enumerate(results, 1):
-            short_path = r["path"].replace(os.path.expanduser("~"), "~")
-            source_tag = r.get("match") if r.get("match") in ("vector", "hybrid") else "fts5"
-            extra = ""
-            if r.get("retrieval_score") != r.get("score"):
-                extra = f" retrieval={r['retrieval_score']}"
-            print(f"\n--- [{i}] score={r['score']}{extra} confidence={r['confidence']} ({r['evidence']}/{r['source']}) [{source_tag}] ---")
-            print(f"  Confidence: {r['confidence_reason']}")
-            print(f"  File: {short_path}")
-            if r["name"]:
-                print(f"  Name: {r['name']}")
-            print(f"  Type: {r['type']}  Kind: {r.get('card_kind') or '?'}  Status: {r.get('status') or 'current'}  Section: {r['section']}")
-            if r.get("superseded_by"):
-                print(f"  Superseded by: {r['superseded_by']}")
-            if r.get("drift_findings"):
-                drift = ", ".join(
-                    f"{d.get('type')}:{d.get('detail')}"
-                    for d in r["drift_findings"][:3]
-                )
-                print(f"  Drift: {drift}")
-            print(f"  {r['snippet']}")
+        auto_broad = output_mode == "auto" and _is_broad_query(query, results)
+        if output_mode == "brief" or auto_broad:
+            _print_brief_results(query, results, auto_broad=auto_broad)
+        else:
+            _print_full_results(query, results)
 
     conn.close()
 
@@ -520,35 +699,38 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=
         fr_w = dp if dp is not None else compute_freshness(lv)
         compound = sim * ev_w * src_w * fr_w * status_w
 
-        snippet = content[:200].replace("\n", " ").strip() if content else ""
-        if content and len(content) > 200:
-            snippet += "..."
-
-        result = {
+        row_dict = {
             "path": path,
             "project": project or "",
             "name": name or "",
             "type": typ or "",
+            "evidence": evidence or "observed",
+            "source": source or "user-explicit",
+            "last_verified": lv,
             "card_kind": card_kind or "",
             "status": status or "current",
             "area": area or "",
             "supersedes": supersedes or "",
             "superseded_by": superseded_by or "",
-            "section": heading or "",
-            "snippet": snippet,
-            "evidence": evidence or "observed",
-            "source": source or "user-explicit",
-            "freshness": fr_w,
-            "status_weight": status_w,
-            "drift_penalty": dp,
-            "drift_findings": drift_info.get("findings", []),
+            "section_heading": heading or "",
+            "content": content or "",
+            "description": desc or "",
+        }
+        result = _base_result(
+            row_dict,
+            drift_info=drift_info,
+            drift_penalty=dp,
+            freshness=fr_w,
+            status_weight=status_w,
+        )
+        result.update({
             "score": round(compound, 4),
             "retrieval_score": round(compound, 4),
             "fts_rank": 0,
             "vector_score": round(sim, 4),
             "match": "vector",
             "match_quality": round(sim, 3),
-        }
+        })
         previous = best_per_path.get(path)
         if previous and previous["score"] >= result["score"]:
             continue
@@ -601,15 +783,23 @@ def _rrf_merge(fts_results, vec_results, limit, k=60, has_phrase=False):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: search.sh <query> [--limit N] [--type TYPE] [--json|--json-object]", file=sys.stderr)
+        print(
+            "Usage: search.sh <query> [--limit N] [--type TYPE] [--brief|--full] [--json|--json-object]\n"
+            "       search.sh --detail <detail_id|path> [--section SECTION] [--json-object]",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     db_path = sys.argv[1]
     query = None
+    detail_selector = None
+    detail_requested = False
+    section = None
     limit = 10
     type_filter = None
     output_json = False
     json_object = False
+    output_mode = "auto"
 
     i = 2
     while i < len(sys.argv):
@@ -626,6 +816,23 @@ def main():
         elif arg == "--json-object":
             json_object = True
             i += 1
+        elif arg == "--brief":
+            output_mode = "brief"
+            i += 1
+        elif arg == "--full":
+            output_mode = "full"
+            i += 1
+        elif arg in ("--detail", "--search-detail"):
+            detail_requested = True
+            if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith("--"):
+                detail_selector = sys.argv[i + 1]
+                i += 2
+            else:
+                detail_selector = ""
+                i += 1
+        elif arg == "--section" and i + 1 < len(sys.argv):
+            section = sys.argv[i + 1]
+            i += 2
         elif query is None:
             query = arg
             i += 1
@@ -633,11 +840,18 @@ def main():
             query = (query or "") + " " + arg
             i += 1
 
+    if detail_requested:
+        if not (detail_selector or "").strip():
+            print("ERROR: detail selector is required", file=sys.stderr)
+            sys.exit(1)
+        search_detail(db_path, detail_selector, section, output_json, json_object)
+        return
+
     if not query:
         print("ERROR: No query provided", file=sys.stderr)
         sys.exit(1)
 
-    search(db_path, query, limit, type_filter, output_json, json_object)
+    search(db_path, query, limit, type_filter, output_json, json_object, output_mode)
 
 
 if __name__ == "__main__":

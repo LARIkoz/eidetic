@@ -63,11 +63,11 @@ recall, hooks, search, injection, or compounding. Therefore:
    supersession, drift diagnostics, recall regression coverage, lifecycle-aware
    age drift, and Stop-hook transcript safety must stay healthy before adding
    human-facing IA.
-3. Treat v4.3 Lifecycle Signals and v5.0 Progressive Search as the next
-   agent-facing roadmap gates. The v4.3 design gate is `SHIP-WITH-EDITS` after
-   R4 `/qreview`; apply the listed edits before implementation. v3.0 Task
-   Planner remains planned but is not the automatic next gate unless explicitly
-   routed.
+3. Treat v4.3 Lifecycle Signals and v5.0 Progressive Search as the completed
+   agent-facing roadmap gates before distribution work. Lifecycle Phase B
+   remains the next safe signal-expansion candidate and must stay
+   metadata-only. v3.0 Task Planner remains planned but is not the automatic
+   next gate unless explicitly routed.
 4. Treat weak/noisy retrieval as a product bug, not as acceptable "more context."
 
 ## Hook Write-Lock Exception

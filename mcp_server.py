@@ -31,7 +31,7 @@ INDEX_DB = os.path.join(MEMORY_SYSTEM, "db", "index.db")
 TOOLS = [
     {
         "name": "memory_search",
-        "description": "Search long-term memory across all projects. Returns a structured payload with ranked results, confidence metadata, no_confident_results, lifecycle status, and drift diagnostics. Do not treat weak candidates as usable memory when no_confident_results=true.",
+        "description": "Search long-term memory across all projects. Returns a structured payload with ranked results, stable detail_id selectors, confidence metadata, no_confident_results, lifecycle status, and drift diagnostics. Do not treat weak candidates as usable memory when no_confident_results=true. Use memory_search_detail with detail_id or path when full content is needed.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -51,6 +51,24 @@ TOOLS = [
                 }
             },
             "required": ["query"]
+        }
+    },
+    {
+        "name": "memory_search_detail",
+        "description": "Fetch full content for an exact memory search result by stable detail_id or exact path. Use this after memory_search returns a useful candidate. This is not a broad search; if no selector matches, no_confident_results=true.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector": {
+                    "type": "string",
+                    "description": "Stable detail_id from memory_search, or an exact memory file path"
+                },
+                "section": {
+                    "type": "string",
+                    "description": "Optional section heading when selecting by path"
+                }
+            },
+            "required": ["selector"]
         }
     },
     {
@@ -245,6 +263,40 @@ def handle_search(params):
     return mcp_text(json.dumps(payload, ensure_ascii=False, indent=2), structured=payload)
 
 
+def handle_search_detail(params):
+    if not isinstance(params, dict):
+        params = {}
+
+    selector = str(params.get("selector", "")).strip()
+    if not selector:
+        return mcp_error("selector is required")
+
+    args = ["--detail", selector, "--json-object"]
+    section = params.get("section")
+    if section is not None:
+        args.extend(["--section", str(section)])
+
+    cmd = [sys.executable, os.path.join(BIN, "search_impl.py"), INDEX_DB] + args
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return mcp_error("memory_search_detail timed out")
+    except FileNotFoundError:
+        return mcp_error("Script not found: search_impl.py")
+
+    if result.returncode != 0:
+        err = result.stderr.strip() or result.stdout.strip() or "non-zero exit"
+        return mcp_error(f"memory_search_detail failed: {err}")
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        detail = result.stdout.strip()[:500] or result.stderr.strip()[:500]
+        return mcp_error(f"memory_search_detail returned invalid JSON: {exc}; output={detail}")
+
+    return mcp_text(json.dumps(payload, ensure_ascii=False, indent=2), structured=payload)
+
+
 def handle_serendipity(params):
     query = params.get("query", "")
     return run_script("serendipity.py", [query, INDEX_DB])
@@ -331,6 +383,7 @@ def handle_export_vault(params):
 
 HANDLERS = {
     "memory_search": handle_search,
+    "memory_search_detail": handle_search_detail,
     "memory_serendipity": handle_serendipity,
     "memory_health": handle_health,
     "memory_reindex": handle_reindex,
@@ -362,7 +415,7 @@ def handle_request(request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "eidetic",
-                "version": "4.3.0"
+                "version": "5.0.0"
             }
         })
 
