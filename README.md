@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.3.0-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-5.0.0-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -133,10 +133,16 @@ How: keyword clustering (24 related rules compressed into 1 block), tiered displ
 FTS5 for keywords (50ms). Vector search as fallback when keyword quality is low. Results merged via Reciprocal Rank Fusion. Search output includes a conservative confidence label; if every candidate is weak, the CLI reports `No confident results` instead of surfacing random-looking vector neighbors as actionable memory.
 
 Structured agent consumers can use `--json-object` or MCP `memory_search`.
-Those responses include `no_confident_results`, `best_confidence`, lifecycle
-fields (`card_kind`, `status`, `area`, `supersedes`, `superseded_by`), and
-visible drift diagnostics. If `no_confident_results=true`, treat returned rows
-as weak candidates to inspect, not as usable memory.
+Those responses include `no_confident_results`, `best_confidence`, stable
+`detail_id` selectors, lifecycle fields (`card_kind`, `status`, `area`,
+`supersedes`, `superseded_by`), and visible drift diagnostics. If
+`no_confident_results=true`, treat returned rows as weak candidates to inspect,
+not as usable memory.
+
+Progressive search keeps broad human queries compact by default. Use
+`search.sh --full` for snippets or `search.sh --detail <detail_id|path>` to
+fetch the full indexed chunk after a candidate looks relevant. MCP clients use
+`memory_search_detail` for the same exact-detail step.
 
 | Query type                  | FTS5 only   | Hybrid                   |
 | --------------------------- | ----------- | ------------------------ |
@@ -296,10 +302,12 @@ Works with Cursor, Windsurf, Cline, and any MCP-compatible agent:
 
 For custom-root installs, point `args` at that root's `mcp_server.py`; the MCP server derives its active index from the installed root or `EIDETIC_MEMORY_SYSTEM`.
 
-6 tools: `memory_search`, `memory_serendipity`, `memory_health`, `memory_reindex`, `memory_lint`, `export_vault`.
+7 tools: `memory_search`, `memory_search_detail`, `memory_serendipity`, `memory_health`, `memory_reindex`, `memory_lint`, `export_vault`.
 
 `memory_search` returns a structured payload with `no_confident_results`. Agent
-clients should not act on weak candidates when that flag is true.
+clients should not act on weak candidates when that flag is true. Each result
+also includes a stable `detail_id`; pass it to `memory_search_detail` when a
+client needs the full indexed chunk content.
 
 MCP `export_vault` defaults to no LLM calls to avoid surprise API usage and timeouts. Pass `polish=true` when you want the v4.1 enrichment path. `synthesize=true` remains available as an experimental topic-candidate path, but it is not recommended for normal vault exports until the deferred Vault IA pass lands.
 
@@ -353,7 +361,7 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 
 | Capability                   | Eidetic                            | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
 | ---------------------------- | ---------------------------------- | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
-|                              | **v4.3.0**                         | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
+|                              | **v5.0.0**                         | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
 | Search                       | FTS5 + vector                      | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
 | Recall benchmark             | **100%**                           | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
 | Auto-inject on session start | **rules/ (no cap)**                | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
@@ -462,10 +470,10 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v5+ roadmap split** — old v5 human-facing items separated from agent-facing lifecycle/search work
 - [x] **v4.3 design review** — Lifecycle Signals `/qreview` R4 returned `SHIP-WITH-EDITS` with audit `OK`; canonical plan now pins path privacy, vault exclusion, hook coexistence, lockless append, real fixtures, retention, timeout units, and HMAC key safety
 - [x] **v4.3.0 — Lifecycle Signals Phase A** — metadata-only `PostToolUse` capture for file edits, with hash-only paths, vault/sensitive-path exclusion, lifecycle retention, and CI smoke coverage
+- [x] **v5.0.0 — Progressive Search** — compact broad search, stable `detail_id`, CLI `--detail`, and MCP `memory_search_detail` while preserving the structured no-confident contract
 
 ### Next
 
-- [ ] **v5.0 — Progressive Search** — compact broad search plus `search_detail` / `memory_search_detail` by stable path/id. Preserve `no_confident_results=true`.
 - [ ] **v5.1 — Distribution** — package/install/docs polish after lifecycle and progressive-search gates are clean.
 
 ### Planned, Not Next
@@ -483,6 +491,13 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v5.0.0 (2026-05-26)
+
+- Added stable per-result `detail_id` selectors to CLI JSON, `--json-object`, and MCP `memory_search` payloads without removing existing fields
+- Added `search.sh --detail <detail_id|path>` and MCP `memory_search_detail` for exact full-content retrieval after a compact search result looks relevant
+- Added `--brief` / `--full`; broad CLI queries now default to compact rows while `--full` preserves the previous snippet-rich output
+- Preserved the hard `no_confident_results=true` contract for structured search responses and added regression coverage for progressive search/detail behavior
 
 ### v4.3.0 (2026-05-26)
 

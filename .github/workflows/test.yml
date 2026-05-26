@@ -1960,6 +1960,10 @@ jobs:
           python3 -m unittest discover -s tests -p '*lifecycle*'
           python3 tests/smoke_lifecycle_hook.py --timeout 2.0 --concurrency 16 --assert-settings-timeout 2
 
+      - name: Test progressive search
+        run: |
+          python3 -m unittest discover -s tests -p '*progressive*'
+
       - name: Test index rebuild idempotency
         run: |
           BEFORE=$(sqlite3 ~/.claude/memory-system/db/index.db "SELECT COUNT(*) FROM memory_chunks")
