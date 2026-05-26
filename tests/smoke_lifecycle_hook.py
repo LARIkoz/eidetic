@@ -71,10 +71,20 @@ def main():
         project = base / "project"
         project.mkdir()
 
-        settings = {"hooks": {"PostToolUse": []}}
+        settings = {"hooks": {"PostToolUse": [], "PostToolUseFailure": []}}
         lifecycle_signals.ensure_lifecycle_hook(settings, str(memory))
-        hook = settings["hooks"]["PostToolUse"][0]["hooks"][0]
-        assert hook["timeout"] == args.assert_settings_timeout, hook
+        lifecycle_matchers = []
+        for event_name in ("PostToolUse", "PostToolUseFailure"):
+            for entry in settings["hooks"][event_name]:
+                if any("lifecycle-signals" in hook.get("command", "") for hook in entry.get("hooks", [])):
+                    lifecycle_matchers.append((event_name, entry["matcher"], entry["hooks"][0]))
+        assert [(event, matcher) for event, matcher, _ in lifecycle_matchers] == [
+            ("PostToolUse", "Write|Edit|MultiEdit"),
+            ("PostToolUse", "Bash"),
+            ("PostToolUseFailure", "Bash|Write|Edit|MultiEdit"),
+        ], lifecycle_matchers
+        for _, _, hook in lifecycle_matchers:
+            assert hook["timeout"] == args.assert_settings_timeout, hook
 
         targets = []
         for i in range(args.concurrency):

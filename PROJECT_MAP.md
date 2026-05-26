@@ -59,14 +59,15 @@ visibility through a read-only projection layer, but it must not affect core
 recall, hooks, search, injection, or compounding. Therefore:
 
 1. Keep Obsidian/Vault IA in maintenance mode unless explicitly requested.
-2. Keep v4.2.21 as the current runtime baseline: card kind, status,
+2. Keep v5.0.1 as the current runtime baseline: card kind, status,
    supersession, drift diagnostics, recall regression coverage, lifecycle-aware
-   age drift, and Stop-hook transcript safety must stay healthy before adding
+   age drift, Stop-hook transcript safety, progressive search detail retrieval,
+   and metadata-only lifecycle signals must stay healthy before adding
    human-facing IA.
 3. Treat v4.3 Lifecycle Signals and v5.0 Progressive Search as the completed
-   agent-facing roadmap gates before distribution work. Lifecycle Phase B
-   remains the next safe signal-expansion candidate and must stay
-   metadata-only. v3.0 Task Planner remains planned but is not the automatic
+   agent-facing roadmap gates before distribution work. v5.0.1 Lifecycle Phase
+   B is the completed metadata-only signal-expansion pass for Bash and selected
+   tool failures. v3.0 Task Planner remains planned but is not the automatic
    next gate unless explicitly routed.
 4. Keep SkillOpt-style skill optimization as post-v6 research, not a current
    gate. It may propose patches to skills or agent instructions only after
@@ -77,12 +78,13 @@ recall, hooks, search, injection, or compounding. Therefore:
 ## Hook Write-Lock Exception
 
 SessionStart and Stop hooks use the shared `fcntl` lock via
-`bin/lock_runner.py` before runtime writes. The v4.3 Lifecycle Signals design is
-the narrow exception: lifecycle event JSONL uses one bounded `O_APPEND` write per
-event line with a conservative 512-byte cap, or the documented file-lock fallback
-if a future larger cap is needed. This avoids dropping normal concurrent
-`PostToolUse` events under the shared non-blocking lock. Do not apply this
-exception to DB writes, `rules/memory-context.md`, or curated memory compounding.
+`bin/lock_runner.py` before runtime writes. The v5.0.1 Lifecycle Signals design
+is the narrow exception: lifecycle event JSONL uses one bounded `O_APPEND` write
+per event line with a conservative 512-byte cap, or the documented file-lock
+fallback if a future larger cap is needed. This avoids dropping normal
+concurrent `PostToolUse` / `PostToolUseFailure` metadata events under the shared
+non-blocking lock. Do not apply this exception to DB writes,
+`rules/memory-context.md`, or curated memory compounding.
 
 ## Cold Start Checklist
 
