@@ -1,0 +1,13 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "redacted-session",
+  "cwd": "__PROJECT__",
+  "tool_name": "Write",
+  "tool_use_id": "toolu_redacted_write",
+  "duration_ms": 7,
+  "tool_input": {
+    "file_path": "__PROJECT__/write_target.py",
+    "content": "REDACTED_SENTINEL_WRITE_CONTENT"
+  },
+  "tool_response": {}
+}

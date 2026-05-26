@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-4.2.21-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-4.3.0-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -198,7 +198,7 @@ eidetic export-vault ~/my-vault/ --no-polish
 # Fast export, no API calls
 ```
 
-Opens in Obsidian with pre-configured graph colors, backlinks, and Maps of Content. Topic synthesis is experimental and off by default until the v4.3 Vault IA pass replaces the current topic model.
+Opens in Obsidian with pre-configured graph colors, backlinks, and Maps of Content. Topic synthesis is experimental and off by default until a deferred Vault IA pass replaces the current topic model.
 
 **What makes this different from "open memory folder in Obsidian":**
 
@@ -301,7 +301,7 @@ For custom-root installs, point `args` at that root's `mcp_server.py`; the MCP s
 `memory_search` returns a structured payload with `no_confident_results`. Agent
 clients should not act on weak candidates when that flag is true.
 
-MCP `export_vault` defaults to no LLM calls to avoid surprise API usage and timeouts. Pass `polish=true` when you want the v4.1 enrichment path. `synthesize=true` remains available as an experimental topic-candidate path, but it is not recommended for normal vault exports until v4.3 Vault IA lands.
+MCP `export_vault` defaults to no LLM calls to avoid surprise API usage and timeouts. Pass `polish=true` when you want the v4.1 enrichment path. `synthesize=true` remains available as an experimental topic-candidate path, but it is not recommended for normal vault exports until the deferred Vault IA pass lands.
 
 ---
 
@@ -353,11 +353,11 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 
 | Capability                   | Eidetic                            | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
 | ---------------------------- | ---------------------------------- | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
-|                              | **v4.2.21**                        | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
+|                              | **v4.3.0**                         | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
 | Search                       | FTS5 + vector                      | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
 | Recall benchmark             | **100%**                           | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
 | Auto-inject on session start | **rules/ (no cap)**                | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
-| Signal extraction            | Prefix-filtered Haiku async + Codex fallback | PostToolUse                                            | manual                                                    | —                                                    | —                                                                      |
+| Signal extraction            | Stop-hook Haiku/Codex + safe PostToolUse metadata | PostToolUse                                            | manual                                                    | —                                                    | —                                                                      |
 | Compounding                  | **yes**                            | —                                                      | —                                                         | —                                                    | —                                                                      |
 | Self-ref discount            | **0.5x**                           | —                                                      | —                                                         | —                                                    | —                                                                      |
 | Evidence tiers               | **3 tiers**                        | —                                                      | —                                                         | —                                                    | —                                                                      |
@@ -438,7 +438,7 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.1** — LLM polish, smart Sonnet/Haiku routing, MCP `export_vault`, plug-and-play Obsidian open
 - [x] **v4.2** — LLM topic clustering and wiki-style topic synthesis
 - [x] **v4.2.1** — Runtime hardening: non-interactive install, MCP export flags/timeouts, docs/version sync, CI export smoke
-- [x] **v4.2.2** — Disable topic synthesis by default; keep it explicit/experimental pending v4.3 IA
+- [x] **v4.2.2** — Disable topic synthesis by default; keep it explicit/experimental pending deferred Vault IA
 - [x] **v4.2.3** — v2.6 foundations: confidence-aware search, stale-context health signal, operator recall smoke
 - [x] **v4.2.4** — v2.6 agent recall contract: structured no-confident JSON/MCP, card/status schema, drift diagnostics, 21-case recall smoke
 - [x] **v4.2.5** — v2.7 recall hardening: structured MCP result, strict smoke contract, lifecycle inference fix, stable age drift identity
@@ -459,12 +459,20 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.2.20** — degraded v4.2.19 review follow-up: remove unsafe raw-tail Stop-hook fallback for JSONL transcript excerpts
 - [x] **v4.2.21** — degraded v4.2.20 review follow-up: preserve complete JSONL lines that start exactly at the capped tail boundary
 - [x] **v2.8 quick-review gate** — v4.2.21 `/qreview` passed with no blocker/important/check findings; full consreview reserved for broader or accumulated high-risk changes
+- [x] **v5+ roadmap split** — old v5 human-facing items separated from agent-facing lifecycle/search work
+- [x] **v4.3 design review** — Lifecycle Signals `/qreview` R4 returned `SHIP-WITH-EDITS` with audit `OK`; canonical plan now pins path privacy, vault exclusion, hook coexistence, lockless append, real fixtures, retention, timeout units, and HMAC key safety
+- [x] **v4.3.0 — Lifecycle Signals Phase A** — metadata-only `PostToolUse` capture for file edits, with hash-only paths, vault/sensitive-path exclusion, lifecycle retention, and CI smoke coverage
 
 ### Next
 
-- [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter.
+- [ ] **v5.0 — Progressive Search** — compact broad search plus `search_detail` / `memory_search_detail` by stable path/id. Preserve `no_confident_results=true`.
+- [ ] **v5.1 — Distribution** — package/install/docs polish after lifecycle and progressive-search gates are clean.
 
-### v5.0 (deferred)
+### Planned, Not Next
+
+- [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter. Deferred behind lifecycle/search unless explicitly routed.
+
+### v6+ (deferred)
 
 - Vault IA — replace flat projects/references/topics with areas, card kinds, deterministic MOCs, and topic-candidate review gates
 - Soul layer — personality profile, tension detection, decision style adaptation
@@ -475,6 +483,13 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v4.3.0 (2026-05-26)
+
+- Added Eidetic-owned `PostToolUse` lifecycle capture for `Write`, `Edit`, and `MultiEdit` with metadata-only JSONL events
+- Lifecycle events store HMAC path/cwd hashes, extension, operation, edit count, and duration only; raw paths, filenames, content, diffs, stdout/stderr, tool results, and transcript text are never persisted
+- Added safe hook registration with a dedicated `PostToolUse` matcher and `timeout: 2` seconds
+- Added vault/projection-root exclusion, symlink-sensitive path checks, atomic HMAC key creation, bounded append-only JSONL writes, lifecycle retention cleanup, and lifecycle unit/smoke coverage
 
 ### v4.2.21 (2026-05-25)
 
@@ -633,7 +648,7 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 
 - Topic synthesis is now opt-in via `--synthesize`; normal CLI exports no longer create `topics/`
 - Existing `--no-synthesize` remains accepted as a compatibility no-op
-- Documentation marks current topic synthesis as experimental pending v4.3 Vault IA
+- Documentation marks current topic synthesis as experimental pending deferred Vault IA
 - MCP `synthesize=true` remains available for explicit experiments only
 
 ### v4.2.1 (2026-05-24)
