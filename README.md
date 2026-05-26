@@ -458,10 +458,10 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.2.19** — degraded v4.2.18 review follow-up: atomic updater metadata/settings writes, Stop-hook tool-result exclusion, full-reindex timeout regression coverage
 - [x] **v4.2.20** — degraded v4.2.19 review follow-up: remove unsafe raw-tail Stop-hook fallback for JSONL transcript excerpts
 - [x] **v4.2.21** — degraded v4.2.20 review follow-up: preserve complete JSONL lines that start exactly at the capped tail boundary
+- [x] **v2.8 quick-review gate** — v4.2.21 `/qreview` passed with no blocker/important/check findings; full consreview reserved for broader or accumulated high-risk changes
 
 ### Next
 
-- [ ] **v2.8 — Agent Memory Review Loop** — re-run clean v2.x/v2.6 consreview against v4.2.21
 - [ ] **v3.0 — Task Planner Bridge** — sync memory signals to YouGile/Linear/GitHub Issues. Pluggable adapter.
 
 ### v5.0 (deferred)
