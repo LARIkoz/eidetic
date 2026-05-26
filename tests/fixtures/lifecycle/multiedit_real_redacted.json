@@ -1,0 +1,22 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "redacted-session",
+  "cwd": "__PROJECT__",
+  "tool_name": "MultiEdit",
+  "tool_use_id": "toolu_redacted_multiedit",
+  "duration_ms": 11,
+  "tool_input": {
+    "file_path": "__PROJECT__/multiedit_target.py",
+    "edits": [
+      {
+        "old_string": "REDACTED_SENTINEL_OLD_A",
+        "new_string": "REDACTED_SENTINEL_NEW_A"
+      },
+      {
+        "old_string": "REDACTED_SENTINEL_OLD_B",
+        "new_string": "REDACTED_SENTINEL_NEW_B"
+      }
+    ]
+  },
+  "tool_response": {}
+}

@@ -20,7 +20,7 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Disable topic synthesis by default for CLI exports.
 - [x] Keep `--synthesize` as an explicit experimental flag.
 - [x] Keep `--no-synthesize` accepted as a compatibility no-op.
-- [x] Mark topic synthesis as experimental in docs until v4.3 Vault IA lands.
+- [x] Mark topic synthesis as experimental in docs until deferred Vault IA lands.
 
 ### Closed In v4.2.3
 
@@ -205,16 +205,24 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 - [x] Run `/qreview` against v4.2.21 because the patch was minor, test-backed, and already CI-green. Verdict: SHIP; no blocker/important/check findings.
 - [x] Use `/qreview` for narrow, test-backed follow-up diffs without schema/provider/security/update-boundary changes; keep full consreview for broad/high-risk changes or accumulated minor batches.
-- [ ] Start v3.0 Task Planner Bridge with a small design/implementation plan review.
+- [x] Split old mixed v5 roadmap into agent-facing lifecycle/search/distribution work and deferred human-facing Vault/Soul/dashboard work.
+- [x] Draft canonical v4.3 Lifecycle Signals design plan: `plan-v4.3-lifecycle-signals.md`.
+- [x] Run `/qreview` R1-R3 on the v4.3 Lifecycle Signals design plan and revise for findings: no raw paths/cwd, vault-root skip, lockless append, separate hook entry, real redacted fixtures, retention, timeout units, HMAC key safety, and custom-root edge cases.
+- [x] Run `/qreview` R4 on the revised v4.3 plan. Verdict: `SHIP-WITH-EDITS`; audit: `OK`; mechanical: `PASS`. No further design review required after listed edits.
+- [x] Apply R4 listed edits in the canonical plan and repo docs: symlink sanitization, O_APPEND fallback, full sensitive-path fixtures, lock-invariant docs, bounded ancestor scan, operation enum, and schema cleanup.
+- [x] Implement v4.3 Lifecycle Signals Phase A from the approved canonical plan: hook, parser, install/update registration, cleanup retention, tests, smoke, and CI.
+- [x] Resolve implementation `/qreview` R2 `SHIP-WITH-EDITS` closeout and run final local checks. Applied docs/fd/copy/env fixes; kept `timeout: 2` because current Claude Code docs define hook timeout in seconds.
+- [ ] Revisit v3.0 Task Planner Bridge after lifecycle signals are stable, or earlier if explicitly routed.
 - [x] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
 - [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.
 - [x] Verify schema migration/backfill with an old-DB reproducer before changing update behavior.
 - [ ] Keep Obsidian export in maintenance mode only: no new human-facing IA until agent recall quality stays stable after review.
 
-### Deferred: v4.3 Vault IA
+### Deferred: v6+ Vault IA / Human-Facing Layers
 
 - [ ] Replace flat `projects/` with deterministic `areas/<area>/_MOC.md` pages.
 - [ ] Split `references/` into stable library, research archive, tools/provider KB, and data inventory.
 - [ ] Rework topics as `topic_candidates`: generated, scored, reviewed, then promoted.
 - [ ] Add `_review/topic_quality_report.md` with rejected/mixed/coherent candidate groups.
+- [ ] Keep Soul/personality adaptation deferred until lifecycle signal quality has evidence-weighted guardrails and reset controls.

@@ -108,7 +108,7 @@ fi
 SETTINGS="$HOME/.claude/settings.json"
 if [ -f "$SETTINGS" ]; then
     EIDETIC_INSTALL_MEMORY_SYSTEM="$MEMORY_SYSTEM" python3 << 'PYEOF'
-import json, os, shlex, tempfile
+import json, os, shlex, sys, tempfile
 
 settings_path = os.path.expanduser("~/.claude/settings.json")
 with open(settings_path, encoding="utf-8") as f:
@@ -117,6 +117,9 @@ with open(settings_path, encoding="utf-8") as f:
 hooks = settings.setdefault("hooks", {})
 memory_system = os.environ.get("EIDETIC_INSTALL_MEMORY_SYSTEM", "")
 default_memory_system = os.path.expanduser("~/.claude/memory-system")
+sys.path.insert(0, os.path.join(memory_system or default_memory_system, "bin"))
+from lifecycle_signals import ensure_lifecycle_hook
+
 hook_prefix = ""
 if memory_system and os.path.abspath(os.path.expanduser(memory_system)) != os.path.abspath(default_memory_system):
     hook_prefix = "EIDETIC_MEMORY_SYSTEM={} ".format(shlex.quote(memory_system))
@@ -154,6 +157,8 @@ if not signal_updated:
         stop[0]["hooks"].append(signal_entry)
     else:
         stop.append({"hooks": [signal_entry]})
+
+ensure_lifecycle_hook(settings, memory_system)
 
 settings_dir = os.path.dirname(settings_path) or "."
 fd, tmp = tempfile.mkstemp(dir=settings_dir, prefix=os.path.basename(settings_path) + ".tmp.")
