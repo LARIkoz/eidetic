@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.0.0-blue.svg)](#changelog)
+[![Version](https://img.shields.io/badge/version-5.0.1-blue.svg)](#changelog)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -143,6 +143,11 @@ Progressive search keeps broad human queries compact by default. Use
 `search.sh --full` for snippets or `search.sh --detail <detail_id|path>` to
 fetch the full indexed chunk after a candidate looks relevant. MCP clients use
 `memory_search_detail` for the same exact-detail step.
+
+Lifecycle signals now capture metadata-only file edits, Bash runs, and selected
+tool failures. They store enums, buckets, and HMAC-only project/path identity,
+never raw commands, descriptions, errors, paths, filenames, content, diffs,
+stdout/stderr, or tool responses.
 
 | Query type                  | FTS5 only   | Hybrid                   |
 | --------------------------- | ----------- | ------------------------ |
@@ -361,7 +366,7 @@ These features exist in no other Claude Code memory tool (as of May 2026, based 
 
 | Capability                   | Eidetic                            | [claude-mem](https://github.com/anthropics/claude-mem) | [engram](https://github.com/Gentleman-Programming/engram) | [memsearch](https://github.com/zilliztech/memsearch) | [lucasrosati](https://github.com/lucasrosati/claude-code-memory-setup) |
 | ---------------------------- | ---------------------------------- | ------------------------------------------------------ | --------------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------- |
-|                              | **v5.0.0**                         | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
+|                              | **v5.0.1**                         | **76K stars**                                          | **3.7K stars**                                            | **1.8K stars**                                       | **684 stars**                                                          |
 | Search                       | FTS5 + vector                      | SQLite + Chroma                                        | Vector + BM25                                             | Milvus + BM25                                        | Obsidian                                                               |
 | Recall benchmark             | **100%**                           | —                                                      | —                                                         | ~95%                                                 | —                                                                      |
 | Auto-inject on session start | **rules/ (no cap)**                | MCP                                                    | hooks                                                     | hint                                                 | Obsidian vault                                                         |
@@ -471,6 +476,7 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - [x] **v4.3 design review** — Lifecycle Signals `/qreview` R4 returned `SHIP-WITH-EDITS` with audit `OK`; canonical plan now pins path privacy, vault exclusion, hook coexistence, lockless append, real fixtures, retention, timeout units, and HMAC key safety
 - [x] **v4.3.0 — Lifecycle Signals Phase A** — metadata-only `PostToolUse` capture for file edits, with hash-only paths, vault/sensitive-path exclusion, lifecycle retention, and CI smoke coverage
 - [x] **v5.0.0 — Progressive Search** — compact broad search, stable `detail_id`, CLI `--detail`, and MCP `memory_search_detail` while preserving the structured no-confident contract
+- [x] **v5.0.1 — Lifecycle Signals Phase B** — metadata-only Bash success and tool-failure capture with command/failure enums, sensitive-cwd exclusion, and expanded lifecycle privacy tests
 
 ### Next
 
@@ -499,6 +505,13 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 ---
 
 ## Changelog
+
+### v5.0.1 (2026-05-26)
+
+- Added metadata-only `PostToolUse` Bash lifecycle events with `command_class`, `background`, and bucketed timeout fields only
+- Added metadata-only `PostToolUseFailure` events for `Bash`, `Write`, `Edit`, and `MultiEdit` with failure enums and no raw command, error, path, description, stdout/stderr, or tool-response persistence
+- Extended lifecycle hook registration to manage dedicated `PostToolUse` file/Bash entries plus a `PostToolUseFailure` entry while preserving unrelated hooks
+- Added sensitive-cwd exclusion, missing-cwd fallback behavior, redacted Bash/failure fixtures, classifier anchoring tests, and malformed failure-payload coverage
 
 ### v5.0.0 (2026-05-26)
 

@@ -205,6 +205,13 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Add `--brief` / `--full`; broad CLI queries now default to compact rows while `--full` keeps snippet-rich output.
 - [x] Preserve `no_confident_results=true` as the hard structured search contract and add progressive-search regression tests.
 
+### Closed In v5.0.1
+
+- [x] Add metadata-only `PostToolUse` Bash lifecycle events with command class, background flag, and timeout bucket only.
+- [x] Add metadata-only `PostToolUseFailure` capture for Bash/Write/Edit/MultiEdit with failure enums and no raw command, description, error, path, content, stdout/stderr, or tool response.
+- [x] Extend lifecycle hook registration to dedicated file-edit, Bash, and failure entries while preserving unrelated hooks.
+- [x] Add sensitive-cwd exclusion, missing-cwd fallback, real redacted Bash/failure fixtures, classifier anchoring regressions, and malformed failure-payload tests.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
