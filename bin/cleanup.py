@@ -31,6 +31,7 @@ MEMORY_SYSTEM = os.path.expanduser(
 DB_PATH = os.path.join(MEMORY_SYSTEM, "db", "index.db")
 ARCHIVE_DIR = os.path.join(MEMORY_SYSTEM, "archive")
 STALE_DAYS = 90
+LIFECYCLE_RETENTION_DAYS = int(os.environ.get("EIDETIC_LIFECYCLE_RETENTION_DAYS", "30"))
 MIN_SIZE = 100
 
 SCAN_DIRS = [
@@ -240,9 +241,32 @@ def unique_archive_dest(path, name):
     raise RuntimeError(f"Could not allocate archive destination for {path}")
 
 
+def cleanup_lifecycle_events(retention_days=LIFECYCLE_RETENTION_DAYS):
+    lifecycle_dir = os.path.join(MEMORY_SYSTEM, "events", "lifecycle")
+    if not os.path.isdir(lifecycle_dir):
+        print("Lifecycle events: directory not present")
+        return 0
+
+    cutoff = time.time() - retention_days * 86400
+    removed = 0
+    for path in glob.glob(os.path.join(lifecycle_dir, "*.jsonl")):
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+                removed += 1
+        except OSError as exc:
+            print(f"  FAILED lifecycle cleanup: {path}: {exc}")
+    print(f"Lifecycle events: removed {removed} files older than {retention_days} days")
+    return removed
+
+
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "--report"
     max_items = int(sys.argv[2]) if len(sys.argv) > 2 else 10
+
+    if mode == "--lifecycle-events":
+        cleanup_lifecycle_events()
+        return
 
     files = collect_files()
     inbound = count_inbound(files)

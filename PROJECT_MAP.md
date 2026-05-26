@@ -59,10 +59,26 @@ visibility through a read-only projection layer, but it must not affect core
 recall, hooks, search, injection, or compounding. Therefore:
 
 1. Keep Obsidian/Vault IA in maintenance mode unless explicitly requested.
-2. Keep v2.6 Agent Memory Quality as the current baseline: card kind, status,
-   supersession, drift diagnostics, and recall regression coverage must stay
-   healthy before adding human-facing IA.
-3. Treat weak/noisy retrieval as a product bug, not as acceptable "more context."
+2. Keep v4.2.21 as the current runtime baseline: card kind, status,
+   supersession, drift diagnostics, recall regression coverage, lifecycle-aware
+   age drift, and Stop-hook transcript safety must stay healthy before adding
+   human-facing IA.
+3. Treat v4.3 Lifecycle Signals and v5.0 Progressive Search as the next
+   agent-facing roadmap gates. The v4.3 design gate is `SHIP-WITH-EDITS` after
+   R4 `/qreview`; apply the listed edits before implementation. v3.0 Task
+   Planner remains planned but is not the automatic next gate unless explicitly
+   routed.
+4. Treat weak/noisy retrieval as a product bug, not as acceptable "more context."
+
+## Hook Write-Lock Exception
+
+SessionStart and Stop hooks use the shared `fcntl` lock via
+`bin/lock_runner.py` before runtime writes. The v4.3 Lifecycle Signals design is
+the narrow exception: lifecycle event JSONL uses one bounded `O_APPEND` write per
+event line with a conservative 512-byte cap, or the documented file-lock fallback
+if a future larger cap is needed. This avoids dropping normal concurrent
+`PostToolUse` events under the shared non-blocking lock. Do not apply this
+exception to DB writes, `rules/memory-context.md`, or curated memory compounding.
 
 ## Cold Start Checklist
 
