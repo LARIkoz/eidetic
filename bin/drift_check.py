@@ -71,6 +71,7 @@ def init_drift_db(drift_path):
     conn.commit()
     migrate_age_stale_details(conn)
     migrate_confidence_escalation_details(conn)
+    migrate_broken_wikilink_details(conn)
     return conn
 
 
@@ -107,6 +108,48 @@ def migrate_age_stale_details(conn):
             SELECT rowid, first_seen, detected_at, resolved_at
             FROM drift_findings
             WHERE path = ? AND drift_type = 'age_stale' AND detail = ?
+        """, (path, stable_detail)).fetchone()
+
+        if existing and int(existing[0]) != int(rowid):
+            existing_rowid, existing_seen, existing_detected, existing_resolved = existing
+            merged_seen = max(int(existing_seen or 0), int(first_seen or 0))
+            merged_detected = max(existing_detected or "", detected_at or "")
+            merged_resolved = None if (resolved_at is None or existing_resolved is None) else existing_resolved
+            conn.execute("""
+                UPDATE drift_findings
+                SET first_seen = ?, detected_at = ?, resolved_at = ?,
+                    resolved_by = CASE WHEN ? IS NULL THEN NULL ELSE resolved_by END
+                WHERE rowid = ?
+            """, (merged_seen, merged_detected, merged_resolved, merged_resolved, existing_rowid))
+            conn.execute("DELETE FROM drift_findings WHERE rowid = ?", (rowid,))
+        else:
+            conn.execute(
+                "UPDATE drift_findings SET detail = ? WHERE rowid = ?",
+                (stable_detail, rowid),
+            )
+    conn.commit()
+
+
+def migrate_broken_wikilink_details(conn):
+    """Normalize old `[[X]] not found` details to `[[X]]`."""
+    try:
+        rows = conn.execute("""
+            SELECT rowid, path, detail, first_seen, detected_at, resolved_at
+            FROM drift_findings
+            WHERE drift_type = 'broken_wikilink' AND detail LIKE '%% not found'
+        """).fetchall()
+    except sqlite3.OperationalError:
+        return
+
+    for rowid, path, detail, first_seen, detected_at, resolved_at in rows:
+        stable_detail = re.sub(r"\s+not found$", "", detail or "")
+        if stable_detail == (detail or ""):
+            continue
+
+        existing = conn.execute("""
+            SELECT rowid, first_seen, detected_at, resolved_at
+            FROM drift_findings
+            WHERE path = ? AND drift_type = 'broken_wikilink' AND detail = ?
         """, (path, stable_detail)).fetchone()
 
         if existing and int(existing[0]) != int(rowid):
@@ -297,12 +340,12 @@ def check_age_drift(index_conn):
     for path, mem_type, evidence, last_verified, mtime, card_kind, status in rows:
         if (status or "").lower() in INACTIVE_STATUSES:
             continue
-        threshold = CARD_KIND_AGE_THRESHOLDS.get(
-            (card_kind or "").lower(),
-            AGE_THRESHOLDS.get(mem_type or "", DEFAULT_AGE_DAYS),
-        )
-        if threshold is None:
+        type_thresh = AGE_THRESHOLDS.get(mem_type or "", DEFAULT_AGE_DAYS)
+        kind_thresh = CARD_KIND_AGE_THRESHOLDS.get((card_kind or "").lower())
+        candidates = [t for t in (type_thresh, kind_thresh) if t is not None]
+        if not candidates:
             continue
+        threshold = min(candidates)
 
         verified_dt = None
         if last_verified:
@@ -400,14 +443,22 @@ def auto_resolve(drift_conn, findings):
         "SELECT path, drift_type, detail FROM drift_findings WHERE resolved_at IS NULL"
     ).fetchall()
 
+    would_resolve = [e for e in existing if (e[0], e[1], e[2]) not in finding_keys]
+    if existing and len(would_resolve) > len(existing) * 0.5 and len(would_resolve) > 5:
+        print(
+            f"WARNING: auto-resolve blocked — {len(would_resolve)}/{len(existing)} "
+            f"active findings would be resolved in one run (possible detector regression)",
+            file=sys.stderr,
+        )
+        return 0
+
     resolved = 0
-    for path, drift_type, detail in existing:
-        if (path, drift_type, detail) not in finding_keys:
-            drift_conn.execute("""
-                UPDATE drift_findings SET resolved_at = ?, resolved_by = 'auto-resolve'
-                WHERE path = ? AND drift_type = ? AND detail = ?
-            """, (now_iso, path, drift_type, detail))
-            resolved += 1
+    for path, drift_type, detail in would_resolve:
+        drift_conn.execute("""
+            UPDATE drift_findings SET resolved_at = ?, resolved_by = 'auto-resolve'
+            WHERE path = ? AND drift_type = ? AND detail = ?
+        """, (now_iso, path, drift_type, detail))
+        resolved += 1
     drift_conn.commit()
     return resolved
 
