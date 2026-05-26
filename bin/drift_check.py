@@ -340,12 +340,13 @@ def check_age_drift(index_conn):
     for path, mem_type, evidence, last_verified, mtime, card_kind, status in rows:
         if (status or "").lower() in INACTIVE_STATUSES:
             continue
-        type_thresh = AGE_THRESHOLDS.get(mem_type or "", DEFAULT_AGE_DAYS)
         kind_thresh = CARD_KIND_AGE_THRESHOLDS.get((card_kind or "").lower())
-        candidates = [t for t in (type_thresh, kind_thresh) if t is not None]
-        if not candidates:
+        if kind_thresh is not None:
+            threshold = kind_thresh
+        else:
+            threshold = AGE_THRESHOLDS.get(mem_type or "", DEFAULT_AGE_DAYS)
+        if threshold is None:
             continue
-        threshold = min(candidates)
 
         verified_dt = None
         if last_verified:
