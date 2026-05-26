@@ -82,6 +82,12 @@ else
     echo "⬜ Signal hook not installed yet"
 fi
 
+if grep -q "lifecycle-signals" "$HOME/.claude/settings.json" 2>/dev/null; then
+    echo "✅ Lifecycle hook installed"
+else
+    echo "⬜ Lifecycle hook not installed yet"
+fi
+
 if ls "$HOME/.claude/hooks/"*.bak >/dev/null 2>&1; then
     echo "✅ Hook backups present"
 else

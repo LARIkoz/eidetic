@@ -23,6 +23,7 @@ Claude Code forgets between sessions. The built-in MEMORY.md has a 200-line plat
 - Feedback/user memories stay current unless lifecycle status is explicit, preventing active behavioral rules from being demoted by words like fixed, closed, or deprecated in descriptions
 - Auto context injection: 59+ behavioral rules always visible (no 10K hook stdout cap)
 - Session signal extraction parses complete real Claude Code nested JSONL transcript lines from a capped tail window, preserves exact-boundary safe turns, ignores tool-result blocks, uses prefix-filtered Haiku primary, and falls back to Codex CLI when the Claude route is unavailable or returns no valid signal lines
+- PostToolUse lifecycle capture records metadata-only file-edit events for Write/Edit/MultiEdit with HMAC path hashes, vault/sensitive-path exclusion, and no raw paths/content/diffs/tool output
 - Compounding: updates existing memories instead of creating duplicates
 - Evidence tiers: hypothesis/observed/validated with compound ranking
 - Self-referential discount: agent-created memories = 0.5x weight

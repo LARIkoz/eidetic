@@ -1,0 +1,14 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "redacted-session",
+  "cwd": "__PROJECT__",
+  "tool_name": "Edit",
+  "tool_use_id": "toolu_redacted_edit",
+  "duration_ms": 9,
+  "tool_input": {
+    "file_path": "__PROJECT__/edit_target.py",
+    "old_string": "REDACTED_SENTINEL_OLD",
+    "new_string": "REDACTED_SENTINEL_NEW"
+  },
+  "tool_response": {}
+}
