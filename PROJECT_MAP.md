@@ -68,7 +68,11 @@ recall, hooks, search, injection, or compounding. Therefore:
    remains the next safe signal-expansion candidate and must stay
    metadata-only. v3.0 Task Planner remains planned but is not the automatic
    next gate unless explicitly routed.
-4. Treat weak/noisy retrieval as a product bug, not as acceptable "more context."
+4. Keep SkillOpt-style skill optimization as post-v6 research, not a current
+   gate. It may propose patches to skills or agent instructions only after
+   scored rollouts, train/validation/test separation, regression evidence, and
+   qreview/consreview.
+5. Treat weak/noisy retrieval as a product bug, not as acceptable "more context."
 
 ## Hook Write-Lock Exception
 
