@@ -441,20 +441,21 @@ def auto_resolve(drift_conn, findings):
     now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
 
     existing = drift_conn.execute(
-        "SELECT path, drift_type, detail FROM drift_findings WHERE resolved_at IS NULL"
+        "SELECT path, drift_type, detail, first_seen FROM drift_findings WHERE resolved_at IS NULL"
     ).fetchall()
 
     would_resolve = [e for e in existing if (e[0], e[1], e[2]) not in finding_keys]
-    if existing and len(would_resolve) > len(existing) * 0.5 and len(would_resolve) > 5:
+    penalized_resolves = [e for e in would_resolve if int(e[3] or 0) > 1]
+    if existing and len(penalized_resolves) > len(existing) * 0.5 and len(penalized_resolves) > 5:
         print(
-            f"WARNING: auto-resolve blocked — {len(would_resolve)}/{len(existing)} "
-            f"active findings would be resolved in one run (possible detector regression)",
+            f"WARNING: auto-resolve blocked — {len(penalized_resolves)}/{len(existing)} "
+            f"penalized active findings would be resolved in one run (possible detector regression)",
             file=sys.stderr,
         )
         return 0
 
     resolved = 0
-    for path, drift_type, detail in would_resolve:
+    for path, drift_type, detail, _first_seen in would_resolve:
         drift_conn.execute("""
             UPDATE drift_findings SET resolved_at = ?, resolved_by = 'auto-resolve'
             WHERE path = ? AND drift_type = ? AND detail = ?
