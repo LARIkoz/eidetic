@@ -203,7 +203,9 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 
 ### Suggested Next Checks
 
-- [ ] Re-run clean v2.x/v2.6 consreview against v4.2.21 agent recall behavior.
+- [x] Run `/qreview` against v4.2.21 because the patch was minor, test-backed, and already CI-green. Verdict: SHIP; no blocker/important/check findings.
+- [x] Use `/qreview` for narrow, test-backed follow-up diffs without schema/provider/security/update-boundary changes; keep full consreview for broad/high-risk changes or accumulated minor batches.
+- [ ] Start v3.0 Task Planner Bridge with a small design/implementation plan review.
 - [x] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
 - [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.
 - [ ] Add recall miss taxonomy output to `bin/recall_smoke.py` if future misses appear.
