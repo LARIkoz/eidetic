@@ -204,5 +204,60 @@ class ProgressiveSearchTests(unittest.TestCase):
         self.assertEqual(structured["results"][0]["content"], DETAIL_CONTENT)
 
 
+class VectorConfidenceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("eidetic_search_impl_test", SEARCH_IMPL)
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+
+    def test_ascii_vector_only_result_requires_strict_similarity(self):
+        level, reason = self.module._classify_confidence({
+            "match": "vector",
+            "match_quality": 0.56,
+            "vector_score": 0.56,
+            "vector_profile": "strict",
+            "source": "user-explicit",
+            "freshness": 1.0,
+            "status": "current",
+        })
+
+        self.assertEqual(level, "low")
+        self.assertIn("weak", reason)
+
+    def test_multilingual_vector_only_result_uses_relaxed_similarity(self):
+        level, reason = self.module._classify_confidence({
+            "match": "vector",
+            "match_quality": 0.56,
+            "vector_score": 0.56,
+            "vector_profile": "multilingual",
+            "source": "user-explicit",
+            "freshness": 1.0,
+            "status": "current",
+        })
+
+        self.assertEqual(level, "high")
+        self.assertIn("semantic", reason)
+
+    def test_or_match_requires_substantial_term_coverage(self):
+        medium, _ = self.module._classify_confidence({
+            "match": "or",
+            "match_quality": 0.8,
+            "source": "user-explicit",
+            "freshness": 1.0,
+            "status": "current",
+        })
+        low, _ = self.module._classify_confidence({
+            "match": "or",
+            "match_quality": 0.667,
+            "source": "user-explicit",
+            "freshness": 1.0,
+            "status": "current",
+        })
+
+        self.assertEqual(medium, "medium")
+        self.assertEqual(low, "low")
+
+
 if __name__ == "__main__":
     unittest.main()
