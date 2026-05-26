@@ -191,6 +191,20 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Preserve a complete safe JSONL line when the capped tail window starts exactly on that line boundary.
 - [x] Add CI coverage for a complete 8000-byte JSONL user line starting exactly at the tail-window boundary.
 
+### Closed In v4.3.0
+
+- [x] Add metadata-only Claude `PostToolUse` lifecycle capture for `Write`, `Edit`, and `MultiEdit`.
+- [x] Store lifecycle events as append-only JSONL facts with HMAC path hashes and no raw paths, filenames, content, diffs, stdout/stderr, tool results, or transcript text.
+- [x] Register the dedicated lifecycle hook through install/update and cover retention, sanitization, custom-root routing, and hook registration in tests.
+
+### Closed In v5.0.0
+
+- [x] Add stable per-result `detail_id` selectors to JSON and MCP search payloads without removing existing fields.
+- [x] Add `search.sh --detail <detail_id|path>` for exact full-content retrieval after a search candidate looks relevant.
+- [x] Add MCP `memory_search_detail` for the same detail step in structured agent clients.
+- [x] Add `--brief` / `--full`; broad CLI queries now default to compact rows while `--full` keeps snippet-rich output.
+- [x] Preserve `no_confident_results=true` as the hard structured search contract and add progressive-search regression tests.
+
 ### v2.6 Agent Memory Quality Goals
 
 - [x] Add durable schema fields for agent retrieval: `card_kind`, `status`, `area`, `supersedes`, `superseded_by`, `last_verified`.
@@ -212,6 +226,7 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [x] Apply R4 listed edits in the canonical plan and repo docs: symlink sanitization, O_APPEND fallback, full sensitive-path fixtures, lock-invariant docs, bounded ancestor scan, operation enum, and schema cleanup.
 - [x] Implement v4.3 Lifecycle Signals Phase A from the approved canonical plan: hook, parser, install/update registration, cleanup retention, tests, smoke, and CI.
 - [x] Resolve implementation `/qreview` R2 `SHIP-WITH-EDITS` closeout and run final local checks. Applied docs/fd/copy/env fixes; kept `timeout: 2` because current Claude Code docs define hook timeout in seconds.
+- [x] Implement v5.0 Progressive Search: compact broad search, stable `detail_id`, CLI/MCP detail retrieval, and structured-contract regressions.
 - [ ] Revisit v3.0 Task Planner Bridge after lifecycle signals are stable, or earlier if explicitly routed.
 - [x] Decide whether to refresh or explicitly accept the current `age_stale=88` drift set before clean review.
 - [x] Triage residual lint debt: broken links are 0; remaining orphans/large files are accepted corpus curation debt.

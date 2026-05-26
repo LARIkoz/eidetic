@@ -64,6 +64,7 @@ The system runs in parallel with MEMORY.md auto-load (Phase A). Nothing breaks. 
 ```bash
 ~/.claude/memory-system/bin/search.sh "query" --limit 5    # Search
 ~/.claude/memory-system/bin/search.sh "query" --json-object # Agent-safe structured search
+~/.claude/memory-system/bin/search.sh --detail mem_...      # Fetch full content for a search result
 ~/.claude/memory-system/bin/index.sh --incremental          # Reindex
 ~/.claude/memory-system/bin/health.sh                       # Health check
 ~/.claude/memory-system/bin/lint.sh                         # Find issues
