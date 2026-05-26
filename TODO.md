@@ -241,3 +241,9 @@ Canonical product governance lives in `~/Documents/cursore/claude-native-kurdyuk
 - [ ] Rework topics as `topic_candidates`: generated, scored, reviewed, then promoted.
 - [ ] Add `_review/topic_quality_report.md` with rejected/mixed/coherent candidate groups.
 - [ ] Keep Soul/personality adaptation deferred until lifecycle signal quality has evidence-weighted guardrails and reset controls.
+
+### Post-v6 Research: SkillOpt-Style Skill Optimization
+
+- [ ] Evaluate SkillOpt-style optimizer as a later prototype after current lifecycle, distribution, planner, and v6 deferred tracks.
+- [ ] Treat optimized skills as proposed patches only: require scored rollouts, train/validation/test split, regression suite, and qreview/consreview before accepting changes to SKILL.md, CLAUDE.md, or command docs.
+- [ ] Prefer local Eidetic signals, recall-smoke misses, qreview findings, and real task failures as training/evaluation material; do not rewrite skills from unvalidated chat impressions.

@@ -488,6 +488,14 @@ Eidetic solves this: the AI agent maintains its own knowledge base. Maintenance 
 - Progressive summarization — memories mature via LLM distillation
 - Bi-directional vault sync
 
+### Post-v6 Research
+
+- SkillOpt-style skill optimization — prototype only after current lifecycle,
+  distribution, planner, and v6 deferred tracks. Use scored rollouts and
+  train/validation/test gates to propose patches to local skills or agent
+  instructions; never auto-merge skill rewrites without regression evidence,
+  qreview/consreview, and explicit maintainer approval.
+
 ---
 
 ## Changelog

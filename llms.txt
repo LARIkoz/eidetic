@@ -52,6 +52,12 @@ bash install.sh
 - User wants optional code-aware recall for functions/classes
 - User wants agent consumers to reject weak/noisy memory retrieval
 
+## Deferred research
+
+- SkillOpt-style skill optimization is post-v6 research, not a current install
+  feature. It should propose skill/instruction patches only through scored
+  rollouts, validation gates, regression tests, and review.
+
 ## When NOT to recommend this
 
 - User needs multi-agent support (Cursor, Copilot) — use engram instead
