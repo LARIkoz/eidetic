@@ -34,9 +34,12 @@ STATUS_WEIGHTS = {
 FRESHNESS_CUTOFF_DAYS = 30
 MAX_LIMIT = 50
 MAX_QUERY_TERMS = 8
-VECTOR_MIN_SIM = 0.30
-VECTOR_MEDIUM_CONFIDENCE = 0.35
-VECTOR_HIGH_CONFIDENCE = 0.55
+VECTOR_MIN_SIM = 0.55
+VECTOR_MEDIUM_CONFIDENCE = 0.78
+VECTOR_HIGH_CONFIDENCE = 0.88
+MULTILINGUAL_VECTOR_MIN_SIM = 0.30
+MULTILINGUAL_VECTOR_MEDIUM_CONFIDENCE = 0.35
+MULTILINGUAL_VECTOR_HIGH_CONFIDENCE = 0.55
 CONFIDENCE_ORDER = {"low": 0, "medium": 1, "high": 2}
 DETAIL_ID_PREFIX = "mem_"
 STOPWORDS = {
@@ -327,6 +330,17 @@ def _classify_confidence(result):
     match = result.get("match") or ""
     match_quality = float(result.get("match_quality") or 0)
     vector_score = float(result.get("vector_score") or 0)
+    vector_profile = result.get("vector_profile") or "strict"
+    vector_medium = (
+        MULTILINGUAL_VECTOR_MEDIUM_CONFIDENCE
+        if vector_profile == "multilingual"
+        else VECTOR_MEDIUM_CONFIDENCE
+    )
+    vector_high = (
+        MULTILINGUAL_VECTOR_HIGH_CONFIDENCE
+        if vector_profile == "multilingual"
+        else VECTOR_HIGH_CONFIDENCE
+    )
     source = result.get("source") or ""
     freshness = float(result.get("freshness") or 0.7)
     status = (result.get("status") or "current").lower()
@@ -346,21 +360,21 @@ def _classify_confidence(result):
             level = "medium"
             reason = "most query terms matched"
     elif match == "or":
-        if match_quality >= 0.9:
+        if match_quality >= 0.8:
             level = "medium"
             reason = "broad keyword match"
     elif match == "hybrid":
-        if match_quality >= 1.0 and vector_score >= VECTOR_MEDIUM_CONFIDENCE:
+        if match_quality >= 1.0 and vector_score >= vector_medium:
             level = "high"
             reason = "keyword and vector agree"
-        elif match_quality >= 0.7 or vector_score >= VECTOR_MEDIUM_CONFIDENCE:
+        elif match_quality >= 0.7 or vector_score >= vector_medium:
             level = "medium"
             reason = "partial keyword/vector agreement"
     elif match == "vector":
-        if vector_score >= VECTOR_HIGH_CONFIDENCE:
+        if vector_score >= vector_high:
             level = "high"
             reason = "strong semantic match"
-        elif vector_score >= VECTOR_MEDIUM_CONFIDENCE:
+        elif vector_score >= vector_medium:
             level = "medium"
             reason = "semantic match"
 
@@ -632,7 +646,8 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False, json_o
     if (force_vector or _needs_vector(results, limit)) and os.path.exists(vector_db):
         vec_results = _vector_search(
             vector_db, conn, query, limit, type_filter, drift_data,
-            warn=not (output_json or json_object)
+            warn=not (output_json or json_object),
+            relaxed=force_vector,
         )
         if vec_results:
             results = _rrf_merge(results, vec_results, limit, has_phrase=has_phrase)
@@ -661,7 +676,7 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False, json_o
     conn.close()
 
 
-def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=None, warn=False):
+def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=None, warn=False, relaxed=False):
     try:
         embed_path = os.path.join(os.path.dirname(__file__), "embed.py")
         spec = importlib.util.spec_from_file_location("eidetic_embed", embed_path)
@@ -679,9 +694,11 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=
             print(f"WARNING: vector search failed: {e}", file=sys.stderr)
         return []
 
+    min_sim = MULTILINGUAL_VECTOR_MIN_SIM if relaxed else VECTOR_MIN_SIM
+    vector_profile = "multilingual" if relaxed else "strict"
     best_per_path = {}
     for sim, chunk_id, path, name, vector_heading, vector_hash in vec_results:
-        if sim < VECTOR_MIN_SIM:
+        if sim < min_sim:
             continue
         row = index_conn.execute("""
             SELECT path, type, evidence, source, last_verified, content, section_heading,
@@ -740,6 +757,7 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=
             "retrieval_score": round(compound, 4),
             "fts_rank": 0,
             "vector_score": round(sim, 4),
+            "vector_profile": vector_profile,
             "match": "vector",
             "match_quality": round(sim, 3),
         })
@@ -771,6 +789,7 @@ def _rrf_merge(fts_results, vec_results, limit, k=60, has_phrase=False):
         else:
             entry = data[key]
             entry["vector_score"] = max(entry.get("vector_score", 0), r.get("vector_score", 0))
+            entry["vector_profile"] = r.get("vector_profile", entry.get("vector_profile", "strict"))
             entry["match"] = "hybrid"
             entry["match_quality"] = round(
                 max(entry.get("match_quality", 0), r.get("match_quality", 0)),
