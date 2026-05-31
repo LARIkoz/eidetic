@@ -71,9 +71,9 @@ One command. Zero external dependencies for core. Works immediately.
                         |
                 /memory-recall "query"  or  MCP memory_search
                         |
-                FTS5 -> vector fallback -> RRF merge
+                FTS5 + e5 vector (forced for non-English) -> RRF merge
                         |
-                Results with confidence scores + drift warnings
+                Calibrated confidence (two-signal gate) + drift warnings
 
 
                      SESSION END (~5s, async)
@@ -90,14 +90,15 @@ One command. Zero external dependencies for core. Works immediately.
 Every result is ranked by:
 
 ```
-score = relevance x evidence x source x freshness
+score = relevance x evidence x source x freshness x status
 
 evidence:   validated = 1.0    observed = 0.7    hypothesis = 0.4
 source:     user-created = 1.0  agent-extracted = 0.5  system = 0.3
-freshness:  < 30 days = 1.0    > 30 days = 0.5
+freshness:  < 30 days = 1.0    > 30 days = 0.5    (a drift finding overrides: stale 0.5x, broken link 0.8x)
+status:     current = 1.0      resolved/fixed = 0.75   superseded/deprecated = 0.35   archived = 0.25
 ```
 
-A validated, recent, human-created memory always outranks an old, unverified, agent-extracted guess.
+Keyword hits also carry a match-quality factor. A validated, recent, current, human-created memory always outranks an old, unverified, agent-extracted, or superseded guess.
 
 ---
 
