@@ -50,6 +50,15 @@ MULTILINGUAL_VECTOR_HIGH_CONFIDENCE = 0.86
 # vector-only result needs at least this many query content-tokens present in
 # its text before it is allowed to reach "medium" confidence.
 VECTOR_CORROBORATION_MIN = 2
+# Third signal for the ambiguous band when lexical corroboration is impossible
+# (a RU->EN paraphrase shares zero anchor tokens with its EN target). A
+# multilingual cross-encoder joint-encodes (query, doc) and separates a true
+# cross-lingual match from topical garbage where cosine + lexical cannot.
+# Calibrated 2026-05-31 on the live corpus: 10 true queries scored >= -0.89,
+# 8 plausible-but-absent garbage probes scored <= -1.66 (gap +0.775). tau -1.2
+# keeps a 0.46 margin over garbage and 0.31 under the weakest true match.
+CROSS_ENCODER_CONFIRM_MIN = -1.2
+CROSS_ENCODER_MAX_CANDIDATES = 5
 CONFIDENCE_ORDER = {"low": 0, "medium": 1, "high": 2}
 DETAIL_ID_PREFIX = "mem_"
 STOPWORDS = {
@@ -331,22 +340,47 @@ def _cap_confidence(level, max_level):
     return max_level
 
 
+def _result_text(result):
+    """Highest-signal text already carried on a result (no DB call): the doc
+    side for both lexical corroboration and cross-encoder rerank."""
+    return " ".join((
+        result.get("name") or "",
+        result.get("section") or "",
+        result.get("snippet") or "",
+    )).strip()
+
+
 def _lexical_corroboration(result, query_tokens):
     """Count distinct query content-tokens present in the candidate's text.
 
     The second signal for the ambiguous e5 vector-only band: a true match shares
     anchor tokens (proper nouns, identifiers, numbers) with the query, while
-    topical garbage shares <=1 generic token. Uses the highest-signal text
-    already carried on the result (name + section + snippet); no DB call.
+    topical garbage shares <=1 generic token.
     """
     if not query_tokens:
         return 0
-    text = " ".join((
-        result.get("name") or "",
-        result.get("section") or "",
-        result.get("snippet") or "",
-    )).lower()
+    text = _result_text(result).lower()
     return sum(1 for token in query_tokens if token in text)
+
+
+def _ambiguous_vector(result):
+    """True when a vector-only hit sits in the [medium, high) band — the zone
+    where cosine alone cannot tell a true cross-lingual match from garbage."""
+    if (result.get("match") or "") != "vector":
+        return False
+    vector_score = float(result.get("vector_score") or 0)
+    profile = result.get("vector_profile") or "strict"
+    medium = (
+        MULTILINGUAL_VECTOR_MEDIUM_CONFIDENCE
+        if profile == "multilingual"
+        else VECTOR_MEDIUM_CONFIDENCE
+    )
+    high = (
+        MULTILINGUAL_VECTOR_HIGH_CONFIDENCE
+        if profile == "multilingual"
+        else VECTOR_HIGH_CONFIDENCE
+    )
+    return medium <= vector_score < high
 
 
 def _classify_confidence(result, query_tokens=None):
@@ -404,12 +438,18 @@ def _classify_confidence(result, query_tokens=None):
             level = "high"
             reason = "strong semantic match"
         elif vector_score >= vector_medium:
-            # Ambiguous e5 band: require a second signal (lexical corroboration)
-            # before trusting a vector-only hit as actionable. Without it the
-            # result is still returned, but flagged low so garbage is suppressed.
+            # Ambiguous e5 band: require a second signal before trusting a
+            # vector-only hit as actionable. Lexical corroboration is the cheap
+            # signal; cross-lingual paraphrases share no tokens, so a
+            # cross-encoder logit (attached by the salvage pass) is the
+            # fallback. Without either, flagged low so garbage stays suppressed.
+            ce_score = result.get("ce_score")
             if _lexical_corroboration(result, query_tokens) >= VECTOR_CORROBORATION_MIN:
                 level = "medium"
                 reason = "semantic match + lexical corroboration"
+            elif ce_score is not None and ce_score >= CROSS_ENCODER_CONFIRM_MIN:
+                level = "medium"
+                reason = "semantic match + cross-encoder confirmation"
             else:
                 level = "low"
                 reason = "semantic-only in ambiguous band; no lexical corroboration"
@@ -427,6 +467,42 @@ def _classify_confidence(result, query_tokens=None):
     return level, reason
 
 
+def _cross_encoder_salvage(results, query, query_tokens):
+    """Rescue true cross-lingual hits the bi-encoder + lexical gate suppressed.
+
+    Runs only when the whole result set is about to be reported as "no confident
+    results" yet a vector candidate sits in the ambiguous band. Loads the
+    multilingual cross-encoder lazily (1GB ONNX) and only for those candidates,
+    so confident queries never pay for it. A logit >= CROSS_ENCODER_CONFIRM_MIN
+    promotes the hit to "medium"; everything else is left untouched.
+    """
+    eligible = [
+        r for r in results
+        if r.get("confidence") == "low" and _ambiguous_vector(r)
+    ][:CROSS_ENCODER_MAX_CANDIDATES]
+    if not eligible:
+        return
+
+    try:
+        rerank_path = os.path.join(os.path.dirname(__file__), "rerank.py")
+        spec = importlib.util.spec_from_file_location("eidetic_rerank", rerank_path)
+        if spec is None or spec.loader is None:
+            return
+        rerank = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rerank)
+        ce_scores = rerank.scores(query, [_result_text(r) for r in eligible])
+    except Exception:
+        return  # degrade to pre-rerank behaviour, never crash search
+
+    if len(ce_scores) != len(eligible):
+        return
+    for result, ce_score in zip(eligible, ce_scores):
+        result["ce_score"] = round(ce_score, 4)
+        level, reason = _classify_confidence(result, query_tokens)
+        result["confidence"] = level
+        result["confidence_reason"] = reason
+
+
 def _annotate_confidence(results, query=None):
     query_tokens = _tokenize_query(query) if query else None
     for result in results:
@@ -434,6 +510,10 @@ def _annotate_confidence(results, query=None):
         result["confidence"] = level
         result["confidence_reason"] = reason
         result.setdefault("retrieval_score", result.get("score", 0))
+    # Cross-lingual salvage: only when nothing reached "medium" by the cheap
+    # signals — the 1GB cross-encoder must not load on confident queries.
+    if query and _best_confidence(results) == "low":
+        _cross_encoder_salvage(results, query, query_tokens)
     return results
 
 

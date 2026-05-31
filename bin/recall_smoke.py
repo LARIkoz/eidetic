@@ -165,6 +165,17 @@ CASES = [
         "expect_any": ["feedback-claude-voice-after-june15", "claude-voice"],
         "min_confidence": "medium",
     },
+    {
+        # Zero-anchor cross-lingual guard: this RU query shares NO token with the
+        # English target ("атака/цепочку/поставок" vs "LiteLLM supply chain
+        # attack"), so lexical corroboration is 0 — it can only surface via the
+        # multilingual cross-encoder salvage. Locks that 3rd signal in: if the
+        # rerank path is removed, this case regresses to "no confident results".
+        "name": "ru_zero_anchor_supply_chain",
+        "query": "что за атака через цепочку поставок в марте",
+        "expect_any": ["litellm supply chain", "security-supply-chain-litellm"],
+        "min_confidence": "medium",
+    },
 ]
 
 
