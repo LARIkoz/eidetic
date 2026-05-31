@@ -58,6 +58,43 @@ def init_vector_db(db_path):
     return conn
 
 
+def _vector_meta_ok(vec_conn):
+    """Guard against silent model/dim drift.
+
+    Vectors built by a different model or dimension produce meaningless cosines,
+    and a dimension mismatch is skipped row-by-row in search() (shape guard) so
+    the whole result set silently collapses to empty with no signal. Compare the
+    vectors.db stamp (written by run_full) against this module's MODEL_NAME /
+    VECTOR_DIM and warn loudly on mismatch instead of failing silently.
+
+    Returns True when the stamp matches OR is absent (pre-stamp db — cannot
+    verify, stay backward-compatible); False on a real mismatch.
+    """
+    try:
+        meta = dict(vec_conn.execute("SELECT key, value FROM meta").fetchall())
+    except sqlite3.Error:
+        return True  # no meta table (old db) → cannot verify, do not block
+    stored_model = meta.get("model")
+    stored_dim = meta.get("dim")
+    if not stored_model and not stored_dim:
+        return True  # unstamped db → cannot verify
+    mismatch = []
+    if stored_model and stored_model != MODEL_NAME:
+        mismatch.append(f"model {stored_model!r} != expected {MODEL_NAME!r}")
+    if stored_dim and str(stored_dim) != str(VECTOR_DIM):
+        mismatch.append(f"dim {stored_dim} != expected {VECTOR_DIM}")
+    if mismatch:
+        print(
+            "WARNING: vectors.db built by a different embedder ("
+            + "; ".join(mismatch)
+            + "); vector search suppressed (degrading to FTS). Reindex: "
+            "~/.claude/memory-system/bin/index.sh --full",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def embedding_text(name, desc, content, heading):
     parts = [name or "", desc or "", heading or ""]
     body = (content or "")[:500]
@@ -233,6 +270,8 @@ def search(vector_db_path, query, limit=5):
 
     vec_conn = init_vector_db(vector_db_path)
     try:
+        if not _vector_meta_ok(vec_conn):
+            return []  # drift detected + warned; fail safe to FTS-only
         model = get_model()
         # e5 REQUIRES the "query: " prefix on search queries (fastembed does not add it).
         q_vec = np.array(list(model.embed(["query: " + query]))[0], dtype=np.float32)
