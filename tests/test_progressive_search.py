@@ -225,11 +225,14 @@ class VectorConfidenceTests(unittest.TestCase):
         self.assertEqual(level, "low")
         self.assertIn("weak", reason)
 
-    def test_multilingual_vector_only_result_uses_relaxed_similarity(self):
+    def test_vector_only_high_cosine_is_high(self):
+        # e5 calibration: a strong vector-only cosine (>= HIGH) is high regardless
+        # of lexical overlap. (Old test asserted 0.56 == high under the retired
+        # MiniLM relaxed threshold of 0.55; e5 real matches live at 0.80+.)
         level, reason = self.module._classify_confidence({
             "match": "vector",
-            "match_quality": 0.56,
-            "vector_score": 0.56,
+            "match_quality": 0.87,
+            "vector_score": 0.87,
             "vector_profile": "multilingual",
             "source": "user-explicit",
             "freshness": 1.0,
@@ -238,6 +241,33 @@ class VectorConfidenceTests(unittest.TestCase):
 
         self.assertEqual(level, "high")
         self.assertIn("semantic", reason)
+
+    def test_vector_medium_band_requires_lexical_corroboration(self):
+        # Two-signal gate: a cosine in [MEDIUM, HIGH) is ambiguous on e5 (a true
+        # cross-lingual match and topical garbage both score ~0.82), so it reaches
+        # "medium" only with >= VECTOR_CORROBORATION_MIN query tokens in the text;
+        # otherwise it stays "low" (returned, but flagged for inspection).
+        candidate = {
+            "match": "vector",
+            "match_quality": 0.82,
+            "vector_score": 0.82,
+            "vector_profile": "multilingual",
+            "source": "user-explicit",
+            "freshness": 1.0,
+            "status": "current",
+            "name": "claude batch billing",
+            "section": "",
+            "snippet": "what replaces claude batch after june 15",
+        }
+
+        corroborated, reason = self.module._classify_confidence(
+            candidate, ["claude", "batch", "june"]
+        )
+        self.assertEqual(corroborated, "medium")
+        self.assertIn("corroboration", reason)
+
+        bare, _ = self.module._classify_confidence(candidate, None)
+        self.assertEqual(bare, "low")
 
     def test_or_match_requires_substantial_term_coverage(self):
         medium, _ = self.module._classify_confidence({
