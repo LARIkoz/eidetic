@@ -134,6 +134,10 @@ CASES = [
         "expect_any": ["ensure_agent_columns", "card_kind"],
         "min_confidence": "high",
     },
+    # NB: every `expect_no_confident` query must be absent from the indexed corpus.
+    # If a memory/finding quotes the query verbatim, FTS phrase-matches it and the
+    # negative test self-defeats. Keep these probes nonsense/unique, and never write
+    # them literally into an indexed .md (learned the hard way 2026-05-31).
     {
         "name": "code_no_confident_result",
         "query": "nonexistent_function_zzzz",
