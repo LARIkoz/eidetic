@@ -351,16 +351,19 @@ def _result_text(result):
 
 
 def _lexical_corroboration(result, query_tokens):
-    """Count distinct query content-tokens present in the candidate's text.
+    """Count distinct query content-tokens present as WHOLE WORDS in the
+    candidate's text.
 
     The second signal for the ambiguous e5 vector-only band: a true match shares
     anchor tokens (proper nouns, identifiers, numbers) with the query, while
-    topical garbage shares <=1 generic token.
+    topical garbage shares <=1 generic token. Word-level (same \\w+ tokenizer as
+    the query), NOT substring — so a query token like "flow" does not falsely
+    corroborate inside "workflow" (which leaked garbage past the gate).
     """
     if not query_tokens:
         return 0
-    text = _result_text(result).lower()
-    return sum(1 for token in query_tokens if token in text)
+    text_tokens = set(re.findall(r"\w+", _result_text(result).lower(), flags=re.UNICODE))
+    return sum(1 for token in query_tokens if token in text_tokens)
 
 
 def _ambiguous_vector(result):
