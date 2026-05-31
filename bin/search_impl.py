@@ -34,12 +34,22 @@ STATUS_WEIGHTS = {
 FRESHNESS_CUTOFF_DAYS = 30
 MAX_LIMIT = 50
 MAX_QUERY_TERMS = 8
-VECTOR_MIN_SIM = 0.55
-VECTOR_MEDIUM_CONFIDENCE = 0.78
-VECTOR_HIGH_CONFIDENCE = 0.88
-MULTILINGUAL_VECTOR_MIN_SIM = 0.30
-MULTILINGUAL_VECTOR_MEDIUM_CONFIDENCE = 0.35
-MULTILINGUAL_VECTOR_HIGH_CONFIDENCE = 0.55
+# e5-large (v6) score calibration, measured 2026-05-31 over the live corpus:
+#   true matches 0.80-0.85 | hard-negatives 0.81-0.84 (overlap => RANK decides, not
+#   abs score) | off-topic garbage <=0.79. Floor 0.795 rejects garbage; 0.80 = confident;
+#   high (0.86 > true max) is unreachable by vector alone => "high" requires FTS+vector
+#   agreement (hybrid path). Both profiles share e5's range (cross-lingual is symmetric).
+VECTOR_MIN_SIM = 0.795
+VECTOR_MEDIUM_CONFIDENCE = 0.80
+VECTOR_HIGH_CONFIDENCE = 0.86
+MULTILINGUAL_VECTOR_MIN_SIM = 0.795
+MULTILINGUAL_VECTOR_MEDIUM_CONFIDENCE = 0.80
+MULTILINGUAL_VECTOR_HIGH_CONFIDENCE = 0.86
+# Two-signal gate: e5 cosine in the [medium, high) band cannot separate a true
+# cross-lingual match (~0.83) from topical garbage (~0.83) — measured. A
+# vector-only result needs at least this many query content-tokens present in
+# its text before it is allowed to reach "medium" confidence.
+VECTOR_CORROBORATION_MIN = 2
 CONFIDENCE_ORDER = {"low": 0, "medium": 1, "high": 2}
 DETAIL_ID_PREFIX = "mem_"
 STOPWORDS = {
@@ -321,7 +331,25 @@ def _cap_confidence(level, max_level):
     return max_level
 
 
-def _classify_confidence(result):
+def _lexical_corroboration(result, query_tokens):
+    """Count distinct query content-tokens present in the candidate's text.
+
+    The second signal for the ambiguous e5 vector-only band: a true match shares
+    anchor tokens (proper nouns, identifiers, numbers) with the query, while
+    topical garbage shares <=1 generic token. Uses the highest-signal text
+    already carried on the result (name + section + snippet); no DB call.
+    """
+    if not query_tokens:
+        return 0
+    text = " ".join((
+        result.get("name") or "",
+        result.get("section") or "",
+        result.get("snippet") or "",
+    )).lower()
+    return sum(1 for token in query_tokens if token in text)
+
+
+def _classify_confidence(result, query_tokens=None):
     """Classify retrieval confidence separately from ranking score.
 
     RRF and compound scores are ranking mechanics, not user-facing certainty.
@@ -376,8 +404,15 @@ def _classify_confidence(result):
             level = "high"
             reason = "strong semantic match"
         elif vector_score >= vector_medium:
-            level = "medium"
-            reason = "semantic match"
+            # Ambiguous e5 band: require a second signal (lexical corroboration)
+            # before trusting a vector-only hit as actionable. Without it the
+            # result is still returned, but flagged low so garbage is suppressed.
+            if _lexical_corroboration(result, query_tokens) >= VECTOR_CORROBORATION_MIN:
+                level = "medium"
+                reason = "semantic match + lexical corroboration"
+            else:
+                level = "low"
+                reason = "semantic-only in ambiguous band; no lexical corroboration"
 
     if source == "agent-extracted":
         level = _cap_confidence(level, "medium")
@@ -392,9 +427,10 @@ def _classify_confidence(result):
     return level, reason
 
 
-def _annotate_confidence(results):
+def _annotate_confidence(results, query=None):
+    query_tokens = _tokenize_query(query) if query else None
     for result in results:
-        level, reason = _classify_confidence(result)
+        level, reason = _classify_confidence(result, query_tokens)
         result["confidence"] = level
         result["confidence_reason"] = reason
         result.setdefault("retrieval_score", result.get("score", 0))
@@ -653,7 +689,7 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False, json_o
         if vec_results:
             results = _rrf_merge(results, vec_results, limit, has_phrase=has_phrase)
 
-    results = _annotate_confidence(results)
+    results = _annotate_confidence(results, query)
 
     if output_json or json_object:
         payload = _search_response(query, limit, type_filter, results) if json_object else results

@@ -5,6 +5,8 @@ Generates embeddings for all memory chunks using fastembed (ONNX).
 Stores in vectors.db alongside index.db. Used as fallback when FTS5 returns < 3 results.
 
 v5.2: switched to multilingual model for cross-language search (RU queries → EN memories).
+v6:   multilingual-e5-large (1024d). RU/fuzzy recall@3 25%->67% vs MiniLM-384 (measured).
+      e5 REQUIRES "query: "/"passage: " prefixes — added in search() and embed_texts().
 """
 
 import json
@@ -14,8 +16,8 @@ import sqlite3
 import sys
 import time
 
-MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-VECTOR_DIM = 384
+MODEL_NAME = "intfloat/multilingual-e5-large"
+VECTOR_DIM = 1024
 
 _model = None
 
@@ -51,6 +53,7 @@ def init_vector_db(db_path):
         if column not in existing:
             conn.execute(statement)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vectors_path ON vectors(path)")
+    conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
     conn.commit()
     return conn
 
@@ -70,7 +73,8 @@ def embed_texts(texts):
     import numpy as np
 
     model = get_model()
-    embeddings = list(model.embed(texts))
+    # e5 REQUIRES the "passage: " prefix on indexed documents (fastembed does not add it).
+    embeddings = list(model.embed(["passage: " + t for t in texts]))
     return [np.array(e, dtype=np.float32).tobytes() for e in embeddings]
 
 
@@ -120,6 +124,10 @@ def run_full(index_db_path, vector_db_path):
                 )
             vec_conn.commit()
             total += len(batch)
+        # Stamp which model/dim built this db -> detect silent model drift on next run.
+        vec_conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('model',?)", (MODEL_NAME,))
+        vec_conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('dim',?)", (str(VECTOR_DIM),))
+        vec_conn.commit()
         success = True
     except Exception as e:
         print(f"ERROR: vector reindex failed, restoring backup: {e}", file=sys.stderr)
@@ -226,7 +234,8 @@ def search(vector_db_path, query, limit=5):
     vec_conn = init_vector_db(vector_db_path)
     try:
         model = get_model()
-        q_vec = np.array(list(model.embed([query]))[0], dtype=np.float32)
+        # e5 REQUIRES the "query: " prefix on search queries (fastembed does not add it).
+        q_vec = np.array(list(model.embed(["query: " + query]))[0], dtype=np.float32)
 
         rows = vec_conn.execute(
             "SELECT chunk_id, path, name, section_heading, content_hash, embedding FROM vectors"

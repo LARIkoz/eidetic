@@ -151,6 +151,16 @@ CASES = [
         "query": "do not mock database tests",
         "expect_no_confident": True,
     },
+    {
+        # Cross-lingual recall guard: a Russian paraphrase with no shared verb
+        # ("what replaces claude batch after June 15") must still surface the
+        # English memory via vector + lexical corroboration (anchors: claude,
+        # batch, 15). Locks in the e5 win against the two-signal precision gate.
+        "name": "ru_paraphrase_claude_voice",
+        "query": "то что заменяет claude batch после 15 июня",
+        "expect_any": ["feedback-claude-voice-after-june15", "claude-voice"],
+        "min_confidence": "medium",
+    },
 ]
 
 
