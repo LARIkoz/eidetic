@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.0.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-5.1.0-blue.svg)](CHANGELOG.md)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -42,8 +42,8 @@ One command. Zero external dependencies for core. Works immediately.
 
 | Problem                                               | How Eidetic solves it                                                              |
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| MEMORY.md caps at 200 lines (57 of 124 rules visible) | Smart compression: **all 124 rules** in same token budget                          |
-| Keyword search only                                   | **Hybrid FTS5 + vector** search, 50+ languages                                     |
+| MEMORY.md caps at 200 lines (only a fraction visible) | Smart compression: **all 160 rules** in same token budget                          |
+| Keyword search only                                   | **Hybrid FTS5 + vector** search (e5-large, ~100 languages)                         |
 | Forgets between sessions                              | **Auto-extracts** decisions, failures, patterns at session end                     |
 | Knowledge piles up as duplicate files                 | **Compounds** — updates existing memories instead of creating new ones             |
 | Stale memories poison the agent                       | **Drift detection** — flags broken wikilinks, age staleness, confidence escalation |
@@ -60,7 +60,7 @@ One command. Zero external dependencies for core. Works immediately.
                         |
                 Reindex (FTS5) + Code Index (tree-sitter) + Vector Embed
                         |
-                Assemble Context (124 rules + project + recent)
+                Assemble Context (160 rules + project + recent)
                         |
                 Write to ~/.claude/rules/ (auto-loaded, no size cap)
                         |
@@ -114,7 +114,7 @@ bash install.sh
 **Optional upgrades:**
 
 ```bash
-pip install fastembed                    # semantic search (+33MB model)
+pip install fastembed                    # semantic search (e5-large ONNX, ~2.2GB model)
 pip install tree-sitter tree-sitter-python tree-sitter-javascript tree-sitter-bash  # code search
 ```
 
@@ -165,11 +165,13 @@ Drift findings penalize ranking: broken wikilink = 0.8x, stale = 0.5x, confidenc
 
 ### Smart Token Compression (v1.3)
 
-124 feedback rules in 5,927 tokens. Previously only 57 fit in MEMORY.md. Keyword clustering groups related rules; tiered display shows important rules in full, low-priority as name only.
+160 feedback rules in ~6,800 tokens. Previously only ~57 fit in MEMORY.md. Keyword clustering groups related rules; tiered display shows important rules in full, low-priority as name only.
 
-### Hybrid Search (v2.0)
+### Hybrid Search (v2.0, v5.1)
 
-FTS5 for keywords (50ms). Vector search as fallback for semantic queries. Multilingual — Russian queries find English rules via cross-language embeddings. Results merged via Reciprocal Rank Fusion. If every candidate is weak, reports `No confident results` instead of surfacing noise.
+FTS5 for keywords (~50ms). Vector search (multilingual-e5-large, 1024-dim) as fallback for semantic queries. Cross-language by design — Russian queries find English rules. v5.1 replaced the old MiniLM-384 embedder with e5-large: RU-paraphrase recall@3 went **25% → 67%** (measured). Results merged via Reciprocal Rank Fusion. If every candidate is weak, reports `No confident results` instead of surfacing noise.
+
+**Two-signal confidence gate (v5.1).** e5 compresses scores, so a true cross-lingual match (~0.83 cosine) is indistinguishable from topical noise (~0.83) by cosine alone. A vector-only hit reaches actionable confidence only with lexical corroboration (shared query anchors) — high recall, no false confidence. A model/dim stamp on the vector store also guards against silent embedder drift.
 
 Progressive search keeps broad queries compact. Use `--detail <id>` to fetch full content when a candidate looks relevant.
 
@@ -187,22 +189,23 @@ Before creating a new memory, searches for existing ones on the same topic. Foun
 eidetic export-vault ~/my-vault/
 ```
 
-Quality gate filters 500+ files to ~120 validated notes. Template formatting, verified wikilinks, auto-MOC, graph colors. Optional `--polish` for LLM-rewritten human-readable cards.
+Quality gate filters 640+ memory files down to a validated subset. Template formatting, verified wikilinks, auto-MOC, graph colors. Optional `--polish` for LLM-rewritten human-readable cards.
 
 ---
 
 ## Performance
 
-| Metric                   | Value                          |
-| ------------------------ | ------------------------------ |
-| Session start (warm)     | **~350ms**                     |
-| Session start (cold)     | ~11s (ONNX model load)         |
-| Full reindex (522 files) | 0.6s                           |
-| FTS5 search              | ~50ms                          |
-| Hybrid search            | ~200ms                         |
-| Signal extraction        | ~$0.002/session (Haiku)        |
-| Index size               | 9.5MB (FTS5) + 5.9MB (vectors) |
-| External dependencies    | **zero for core**              |
+| Metric                   | Value                                        |
+| ------------------------ | -------------------------------------------- |
+| Session start (warm)     | **~350ms**                                   |
+| Session start (cold)     | ~15s (e5-large ONNX load)                    |
+| FTS reindex (1083 files) | ~0.3s                                        |
+| Full vector embed (7.8K) | ~1h one-time (e5 CPU); incremental = seconds |
+| FTS5 search              | ~50ms                                        |
+| Vector query (e5)        | ~32ms                                        |
+| Signal extraction        | ~$0.002/session (Haiku)                      |
+| Index size               | 31MB (FTS5) + 35MB (vectors, 1024-dim)       |
+| External dependencies    | **zero for core** (e5 model optional)        |
 
 ---
 
@@ -226,7 +229,7 @@ Based on [40-repo competitive analysis](https://github.com/LARIkoz/eidetic/relea
 | Your situation                                          | Best choice                                                                    |
 | ------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | Want Claude Code to remember AND detect stale knowledge | **Eidetic**                                                                    |
-| Want largest community, web UI, multi-agent             | [claude-mem](https://github.com/anthropics/claude-mem) (78K stars)             |
+| Want largest community, web UI, multi-agent             | claude-mem (large community project)                                           |
 | Need shared memory across Cursor + Claude + Copilot     | [engram](https://github.com/Gentleman-Programming/engram)                      |
 | Already using Obsidian, want simple integration         | [lucasrosati's setup](https://github.com/lucasrosati/claude-code-memory-setup) |
 | Need heavy multilingual semantic search                 | [memsearch](https://github.com/zilliztech/memsearch)                           |
@@ -259,11 +262,11 @@ Core principles:
 
 ## Roadmap
 
-**Shipped:** v1.0 FTS5 + signals + compounding, v1.3 token compression (2.17x), v2.0 hybrid search (30% -> 100% recall), v2.2 code search (tree-sitter), v2.5 drift detection, v4.0-4.2 Obsidian vault export + LLM polish, v4.3 lifecycle signals, v5.0 progressive search, v5.0.1 lifecycle Phase B.
+**Shipped:** v1.0 FTS5 + signals + compounding, v1.3 token compression (2.17x), v2.0 hybrid search, v2.2 code search (tree-sitter), v2.5 drift detection, v4.0-4.2 Obsidian vault export + LLM polish, v4.3 lifecycle signals, v5.0 progressive search, v5.0.1 lifecycle Phase B, **v5.1 e5-large embedder + two-signal precision gate + model-drift guard** (RU recall@3 25% → 67%).
 
-**Next:** v5.1 Distribution (pip package, docs polish).
+**Next:** distribution (pip package, docs polish).
 
-**Planned:** v3.0 Task Planner Bridge (sync to YouGile/Linear/GitHub Issues). v6+ Soul layer, HTML dashboard, bi-directional vault sync.
+**Planned:** **v6 — truth-maintenance**: supersession + contradiction detection as a typed-edge graph — memory that resolves its own contradictions and doesn't rot. Plus session-transcript search and a cross-encoder reranker.
 
 Full version history: [CHANGELOG.md](CHANGELOG.md)
 
