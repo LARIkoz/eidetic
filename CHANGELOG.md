@@ -2,6 +2,14 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.1.0 (2026-05-31)
+
+- Replaced the `paraphrase-multilingual-MiniLM-L12-v2` (384-dim) embedder with `intfloat/multilingual-e5-large` (1024-dim) via fastembed ONNX — RU-paraphrase recall@3 25% → 67%, recall@10 42% → 92% (measured on a fixed pool). Still zero-torch.
+- Added the e5 `query:`/`passage:` prefixes (fastembed does not add them) and recalibrated vector confidence thresholds for the e5 score distribution.
+- Added a two-signal confidence gate: a vector-only hit in the ambiguous mid-cosine band reaches `medium` only with lexical corroboration (≥2 query content-tokens in the candidate), so true cross-lingual matches stay confident while topical noise is suppressed — even at ~0.83 cosine.
+- Added a `vectors.db` model/dim meta-stamp plus a search-time guard that warns and degrades to FTS on embedder drift instead of silently returning empty results.
+- Aligned the vector-confidence unit tests with the new calibration and added a cross-lingual recall regression guard to the smoke suite.
+
 ## v5.0.1 (2026-05-26)
 
 - Added metadata-only `PostToolUse` Bash lifecycle events with `command_class`, `background`, and bucketed timeout fields only
