@@ -2,18 +2,6 @@
 
 You are working with Eidetic, a long-term memory system for Claude Code.
 
-## Project Map First
-
-Before changing product direction, roadmap, docs, or runtime behavior, read
-`PROJECT_MAP.md`. It links the repo to the canonical Kurdyuk-run brief and
-charter:
-
-- `~/Documents/cursore/claude-native-kurdyuk-lite/.kurdyuk-lite/runs/ai-memory-system/brief.md`
-- `~/Documents/cursore/claude-native-kurdyuk-lite/.kurdyuk-lite/runs/ai-memory-system/charter.md`
-
-Do not treat this repo's README/TODO as a replacement for those governance
-files. The repo may summarize them, but must not contradict them.
-
 ## Quick Setup (run this)
 
 ```bash
@@ -55,7 +43,7 @@ The system runs in parallel with MEMORY.md auto-load (Phase A). Nothing breaks. 
 3. **Compound before create.** Before writing a new memory, search FTS5 for existing memory on same topic. Update existing → don't duplicate.
 4. **Agent-extracted = 0.5x weight.** Memories you create are discounted vs. user-created ones. This prevents hallucination reinforcement loops.
 5. **Atomic writes.** Always use tempfile + os.replace(). Never write directly to a file that other hooks might read.
-6. **Lock before write.** Hooks must use the current runtime lock protocol before file/DB writes. SessionStart and Stop currently share the `fcntl` lock file `~/.claude/memory-system/.memory.lockfile` via `bin/lock_runner.py`. The approved v5.0.1 lifecycle JSONL stream is the narrow exception: it uses one bounded `O_APPEND` write per metadata-only file/Bash/failure event line to avoid shared-lock event loss, with the fallback documented in the canonical plan. Update `PROJECT_MAP.md` and hook docs if this changes.
+6. **Lock before write.** Hooks must use the current runtime lock protocol before file/DB writes. SessionStart and Stop currently share the `fcntl` lock file `~/.claude/memory-system/.memory.lockfile` via `bin/lock_runner.py`. The approved v5.0.1 lifecycle JSONL stream is the narrow exception: it uses one bounded `O_APPEND` write per metadata-only file/Bash/failure event line to avoid shared-lock event loss, with the fallback documented in the canonical plan. Update the hook docs if this changes.
 7. **Weak recall is not memory.** Programmatic consumers must use `--json-object` or MCP `memory_search` and honor `no_confident_results=true`.
 8. **Lifecycle matters.** `card_kind`, `status`, `supersedes`, and `superseded_by` affect recall. Current cards should outrank resolved/superseded/archived cards.
 
