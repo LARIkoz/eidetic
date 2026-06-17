@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.1.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-5.2.0-blue.svg)](CHANGELOG.md)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -34,7 +34,7 @@ Eidetic solves both.
 git clone https://github.com/LARIkoz/eidetic.git && cd eidetic && bash install.sh
 ```
 
-One command. Zero external dependencies for core. Works immediately.
+One command. The **core** (FTS search, injection, drift, vault export) needs **zero pip installs** and works immediately; semantic / cross-lingual search adds one optional dependency — see [Dependencies](#dependencies).
 
 ---
 
@@ -110,16 +110,30 @@ cd eidetic
 bash install.sh
 ```
 
-**Requirements:** `bash`, `python3`, `sqlite3` (pre-installed on macOS/Linux).
+See [Dependencies](#dependencies) for what each search tier needs. Rollback: `bash ~/.claude/memory-system/bin/rollback.sh`
 
-**Optional upgrades:**
+## Dependencies
+
+Eidetic is **tiered** — the core needs nothing extra; the headline semantic search needs one pip install.
+
+| Tier                                                                              | Requires                                                                                                      | Without it                                         |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| **Core** — FTS5 search, auto-injection, drift, compounding, Obsidian vault export | `bash` + `python3` + `sqlite3` (preinstalled on macOS/Linux)                                                  | — works fully                                      |
+| **Semantic / cross-lingual search** (the e5 hybrid layer)                         | `pip install fastembed` + ~2.2 GB e5-large ONNX model (auto-downloads to `~/.cache/fastembed` on first index) | falls back to FTS keyword-only                     |
+| **Cross-encoder rerank salvage**                                                  | `fastembed` (pulls a small reranker, lazily)                                                                  | RU→EN matches with no shared words stay suppressed |
+| **Code search**                                                                   | `pip install tree-sitter tree-sitter-python tree-sitter-javascript tree-sitter-bash`                          | code functions/classes not indexed                 |
+
+> ⚠️ `install.sh` installs the **core only** — it does **not** pip-install fastembed / tree-sitter. A fresh install is FTS-only until you `pip install fastembed`. The e5 model cache must be **persistent** (`~/.cache/fastembed`); a temp-dir cache gets purged by the OS and silently disables vector search.
+
+**Run the doctor any time** to see which tiers are active and what's missing — including _why_ the wiki/vault isn't being created:
 
 ```bash
-pip install fastembed                    # semantic search (e5-large ONNX, ~2.2GB model)
-pip install tree-sitter tree-sitter-python tree-sitter-javascript tree-sitter-bash  # code search
+bash ~/.claude/memory-system/bin/doctor.sh
 ```
 
-Core works without pip installs — degrades to FTS5-only search and skips code indexing. Rollback: `bash ~/.claude/memory-system/bin/rollback.sh`
+It checks deps, index, memory files on disk, vectors + lag, model-cache location, hooks, and the wiki/vault — with a fix hint for every ⚠️/❌.
+
+Platform: macOS / Linux (uses `fcntl` file locks).
 
 ### Updates
 
@@ -263,11 +277,11 @@ Core principles:
 
 ## Roadmap
 
-**Shipped:** v1.0 FTS5 + signals + compounding, v1.3 token compression (2.17x), v2.0 hybrid search, v2.2 code search (tree-sitter), v2.5 drift detection, v4.0-4.2 Obsidian vault export + LLM polish, v4.3 lifecycle signals, v5.0 progressive search, v5.0.1 lifecycle Phase B, **v5.1 e5-large embedder + two-signal precision gate + model-drift guard** (RU recall@3 25% → 67%).
+**Shipped:** v1.0 FTS5 + signals + compounding, v1.3 token compression (2.17x), v2.0 hybrid search, v2.2 code search (tree-sitter), v2.5 drift detection, v4.0-4.2 Obsidian vault export + LLM polish, v4.3 lifecycle signals, v5.0 progressive search, v5.0.1 lifecycle Phase B, **v5.1 e5-large embedder + two-signal precision gate + model-drift guard** (RU recall@3 25% → 67%), **v5.2 cross-encoder rerank salvage + persistent model cache + embed/export concurrency locks + fenced-code-safe vault export + `doctor` self-check**.
 
 **Next:** distribution (pip package, docs polish).
 
-**Planned:** **v6 — truth-maintenance**: supersession + contradiction detection as a typed-edge graph — memory that resolves its own contradictions and doesn't rot. Plus session-transcript search and a cross-encoder reranker.
+**Planned:** **v6 — truth-maintenance**: supersession + contradiction detection as a typed-edge graph — memory that resolves its own contradictions and doesn't rot. Plus session-transcript search.
 
 Full version history: [CHANGELOG.md](CHANGELOG.md)
 

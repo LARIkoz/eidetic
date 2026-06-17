@@ -2,6 +2,15 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.2.0 (2026-06-17)
+
+- Pinned the fastembed model cache to a persistent dir (`FASTEMBED_CACHE_PATH`, default `~/.cache/fastembed`) instead of TMPDIR, which the OS purges — silently evicting the ~2 GB e5 weights and degrading all vector search to FTS until a manual reindex.
+- Added a non-blocking file lock to both `embed.py` and `export_vault.py` so the session-start hook and a manual/cron reindex (or two concurrent vault exports) no longer race into `database is locked` / interleaved writes.
+- Made the deterministic vault-export markdown passes fenced-code aware — `[[links]]` and `Field:` lines inside ` ``` ` code examples are no longer rewritten or stripped.
+- Hardened vault export: a `.eidetic` ownership sentinel is written first so an interrupted run no longer bricks the next export, `.DS_Store`/`.obsidian` are ignored in the ownership guard, and notes dropped as too-large are listed instead of silently counted.
+- Added `bin/doctor.sh` — an end-to-end self-check (deps, index, memory files, vectors + lag, model-cache location, hooks, wiki/vault) that reports which tiers are active and _why_ the wiki isn't being created.
+- Pinned ranking weights with a golden-oracle test guarding the constants/search/inject tables and the distinct `export_vault` curation scale.
+
 ## v5.1.0 (2026-05-31)
 
 - Replaced the `paraphrase-multilingual-MiniLM-L12-v2` (384-dim) embedder with `intfloat/multilingual-e5-large` (1024-dim) via fastembed ONNX — RU-paraphrase recall@3 25% → 67%, recall@10 42% → 92% (measured on a fixed pool). Still zero-torch.
