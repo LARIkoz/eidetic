@@ -200,11 +200,18 @@ Before creating a new memory, searches for existing ones on the same topic. Foun
 
 ### Obsidian Vault Export (v4.0)
 
+Eidetic turns your memory into a browsable **Obsidian wiki** — a `HOME.md` hub, folders by type (rules / projects / references), resolved `[[wikilinks]]`, and an auto-generated map of content. It's a _view_ over the same memory store (your `.md` files stay the source of truth).
+
+**Where it lives:** `~/Documents/eidetic-vault/` by default (pass a path to override). The installer wires a Stop hook + nightly refresh, so the vault stays current automatically — or rebuild it any time:
+
 ```bash
-eidetic export-vault ~/my-vault/
+eidetic export-vault                 # → ~/Documents/eidetic-vault/  (default)
+eidetic export-vault ~/my-vault/     # custom location
 ```
 
-Quality gate filters 640+ memory files down to a validated subset. Template formatting, verified wikilinks, auto-MOC, graph colors. Optional `--polish` for LLM-rewritten human-readable cards.
+**Open it in Obsidian:** _Open folder as vault_ and point at that directory (it also auto-registers on first export). `eidetic doctor` prints the vault's location and page count.
+
+A quality gate filters your memory files down to a validated subset; optional `--polish` rewrites cards into human-readable prose via an LLM.
 
 ---
 

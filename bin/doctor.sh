@@ -27,6 +27,20 @@ DB="$MEMORY_SYSTEM/db/index.db"
 VDB="$MEMORY_SYSTEM/db/vectors.db"
 SETTINGS="$HOME/.claude/settings.json"
 
+# --brief: one-line health snapshot for handoffs / status lines (no full report).
+if [ "${1:-}" = "--brief" ]; then
+    DDB="$MEMORY_SYSTEM/db/drift_state.db"
+    fc=$(sqlite3 "$DB" "SELECT COUNT(DISTINCT path) FROM memory_chunks" 2>/dev/null)
+    cc=$(sqlite3 "$DB" "SELECT COUNT(*) FROM memory_chunks" 2>/dev/null)
+    vc=$(sqlite3 "$VDB" "SELECT COUNT(*) FROM vectors" 2>/dev/null)
+    md=$(sqlite3 "$VDB" "SELECT value FROM meta WHERE key='model'" 2>/dev/null)
+    dr=$(sqlite3 "$DDB" "SELECT COUNT(*) FROM drift_findings WHERE resolved_at IS NULL" 2>/dev/null)
+    mem=$(find "$HOME/.claude/projects" -path "*/memory/*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
+    lag=0; [ "${cc:-0}" -gt 0 ] 2>/dev/null && [ -n "${vc:-}" ] && lag=$(( (cc - vc) * 100 / cc ))
+    echo "Eidetic memory: ${fc:-?} files / ${cc:-?} chunks / ${vc:-?} vectors (${md##*/}, lag ${lag}%) · ${mem} memory .md on disk · ${dr:-0} open drift findings"
+    exit 0
+fi
+
 PASS=0; WARN=0; FAIL=0
 declare -a FIXES=()
 ok()   { echo "  ✅ $1"; PASS=$((PASS+1)); }
@@ -129,9 +143,9 @@ if [ -d "$VAULT" ]; then
     PAGES=$(find "$VAULT" -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
     NEWEST=$(find "$VAULT" -name "*.md" -type f -exec stat -f '%m' {} \; 2>/dev/null | sort -rn | head -1)
     if [ "${PAGES:-0}" -gt 0 ]; then
-        AGE_NOTE=""
-        ok "vault exists: $VAULT ($PAGES pages)"
-        [ -f "$VAULT/HOME.md" ] && ok "vault HOME.md hub present" || warn "vault has no HOME.md hub" "re-run export-vault"
+        ok "wiki/cards live: $VAULT ($PAGES pages)"
+        [ -f "$VAULT/HOME.md" ] && ok "HOME.md hub present" || warn "vault has no HOME.md hub" "re-run export-vault"
+        echo "     → view in Obsidian: 'Open folder as vault' → $VAULT  (start at HOME.md)"
     else
         bad "vault dir exists but is EMPTY ($VAULT)" "bash $EXPORT_SH"
     fi
