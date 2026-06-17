@@ -17,9 +17,14 @@ result. Lazy + bounded: the model loads only when a query is about to return
 (fastembed/model missing) degrades silently to the prior behaviour.
 """
 
+import os
 import sys
 
 MODEL_NAME = "jinaai/jina-reranker-v2-base-multilingual"
+# Pin fastembed's model cache to a persistent dir (env-overridable). Its default
+# TMPDIR cache gets purged by macOS, silently evicting the model — the same
+# failure mode that froze the e5 embeddings. Keep in sync with embed.py.
+FASTEMBED_CACHE = os.environ.get("FASTEMBED_CACHE_PATH") or os.path.expanduser("~/.cache/fastembed")
 
 _model = None
 _unavailable = False
@@ -29,7 +34,7 @@ def get_model():
     global _model
     if _model is None:
         from fastembed.rerank.cross_encoder import TextCrossEncoder
-        _model = TextCrossEncoder(model_name=MODEL_NAME)
+        _model = TextCrossEncoder(model_name=MODEL_NAME, cache_dir=FASTEMBED_CACHE)
     return _model
 
 

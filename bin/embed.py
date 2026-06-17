@@ -19,6 +19,11 @@ import time
 MODEL_NAME = "intfloat/multilingual-e5-large"
 VECTOR_DIM = 1024
 
+# fastembed defaults its model cache to TMPDIR (/var/folders/.../T), which macOS
+# periodically purges — silently evicting the ~2GB e5 weights and breaking all
+# vector search until a manual reindex. Pin to a persistent, env-overridable cache.
+FASTEMBED_CACHE = os.environ.get("FASTEMBED_CACHE_PATH") or os.path.expanduser("~/.cache/fastembed")
+
 _model = None
 
 
@@ -26,7 +31,7 @@ def get_model():
     global _model
     if _model is None:
         from fastembed import TextEmbedding
-        _model = TextEmbedding(MODEL_NAME)
+        _model = TextEmbedding(MODEL_NAME, cache_dir=FASTEMBED_CACHE)
     return _model
 
 
@@ -294,6 +299,30 @@ def search(vector_db_path, query, limit=5):
         vec_conn.close()
 
 
+def _acquire_embed_lock(vector_db):
+    """Serialize concurrent embed writers (run_full / run_incremental).
+
+    The session-start hook (smart-memory-inject.sh) and a manual/cron reindex can
+    both invoke embed.py against the same vectors.db; with no lock they race and
+    SQLite raises 'database is locked', leaving a half-written index. Take a
+    non-blocking exclusive lock so a second writer cleanly no-ops instead of
+    corrupting the run. The returned fd must stay open for the writer's lifetime
+    (flock auto-releases on process exit — no stale-lock cleanup needed).
+    """
+    import fcntl
+
+    lock_path = os.path.join(
+        os.path.dirname(os.path.abspath(vector_db)) or ".", ".eidetic-embed.lock"
+    )
+    fd = open(lock_path, "w")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fd.close()
+        return None
+    return fd
+
+
 def main(argv=None):
     argv = argv or sys.argv
     if len(argv) < 3:
@@ -303,12 +332,23 @@ def main(argv=None):
     index_db = argv[1]
     vector_db = argv[2]
 
-    if len(argv) > 3 and argv[3] == "--full":
-        run_full(index_db, vector_db)
-    elif len(argv) > 4 and argv[3] == "--search":
+    # --search is a read-only path; never block it behind a running reindex.
+    if len(argv) > 4 and argv[3] == "--search":
         results = search(vector_db, argv[4])
         for sim, cid, path, name, *_ in results:
             print(f"  {sim:.3f}  {name or path}")
+        return 0
+
+    lock_fd = _acquire_embed_lock(vector_db)
+    if lock_fd is None:
+        print(
+            "embed.py: another embed run holds the lock; skipping (no-op).",
+            file=sys.stderr,
+        )
+        return 0
+
+    if len(argv) > 3 and argv[3] == "--full":
+        run_full(index_db, vector_db)
     else:
         run_incremental(index_db, vector_db)
     return 0
