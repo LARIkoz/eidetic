@@ -1169,6 +1169,22 @@ def resolve_project_filter(raw, available):
     sys.exit(1)
 
 
+def _acquire_export_lock(target):
+    """Non-blocking exclusive lock so concurrent exports (the Stop hook + the 3am
+    cron) don't interleave writes into shared .tmp targets. Returns the held fd
+    (keep it alive for the run; flock auto-releases on close/exit) or None if held.
+    """
+    import fcntl
+
+    fd = open(os.path.join(target, ".export.lock"), "w")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fd.close()
+        return None
+    return fd
+
+
 def export(target, project_filter=None, delta=False,
            skip_gate=False, allow_existing=False,
            polish=True, polish_count=0, polish_model="auto",
@@ -1176,18 +1192,36 @@ def export(target, project_filter=None, delta=False,
     target = os.path.abspath(os.path.expanduser(target))
     os.makedirs(target, exist_ok=True)
 
+    # Serialize concurrent exports (Stop hook + 3am cron can both fire). A second
+    # writer cleanly no-ops instead of interleaving into shared .tmp targets.
+    export_lock = _acquire_export_lock(target)
+    if export_lock is None:
+        print("export-vault: another export holds the lock; skipping.",
+              file=sys.stderr)
+        return
+
+    sentinel = os.path.join(target, ".eidetic")
     existing_manifest = load_manifest(target)
-    dir_listing = [
-        x for x in os.listdir(target)
-        if x not in (".manifest.json", ".manifest.json.tmp")
-    ]
-    if dir_listing and existing_manifest is None and not allow_existing:
+    # Editor/OS noise and our own control files are not "foreign" content.
+    ignore = {".manifest.json", ".manifest.json.tmp", ".eidetic",
+              ".export.lock", ".DS_Store", ".obsidian"}
+    dir_listing = [x for x in os.listdir(target) if x not in ignore]
+    # Ownership = a manifest OR the sentinel. The sentinel is written FIRST (below)
+    # so an interrupted run -- notes written but manifest not -- stays Eidetic-owned
+    # next time instead of tripping this guard and bricking all future exports.
+    owned = existing_manifest is not None or os.path.exists(sentinel)
+    if dir_listing and not owned and not allow_existing:
         print(
             "ERROR: Target directory exists but was not created by Eidetic. "
             "Use a new directory or add --force.",
             file=sys.stderr,
         )
         sys.exit(1)
+    try:
+        with open(sentinel, "w", encoding="utf-8") as _s:
+            _s.write("eidetic-vault\n")
+    except OSError:
+        pass
 
     print("Scanning...", flush=True)
     all_projects = sorted({
@@ -1202,6 +1236,7 @@ def export(target, project_filter=None, delta=False,
 
     parsed = []
     skip_reasons = {}
+    skip_paths = {}
     for filepath, slug in candidates:
         try:
             with open(filepath, "r", encoding="utf-8", errors="replace") as f:
@@ -1218,6 +1253,7 @@ def export(target, project_filter=None, delta=False,
         ok, reason = passes_gate(filepath, meta, force=skip_gate)
         if not ok:
             skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+            skip_paths.setdefault(reason, []).append(filepath)
             continue
         parsed.append((filepath, slug, meta, body, text))
 
@@ -1227,6 +1263,9 @@ def export(target, project_filter=None, delta=False,
             "{}={}".format(r, n) for r, n in sorted(skip_reasons.items())
         )
         print("  Skipped: {}".format(breakdown), flush=True)
+    for p in skip_paths.get("too-large", []):
+        print("  too-large (dropped -- consider splitting): {}".format(p),
+              flush=True)
 
     if len(parsed) < MIN_NOTES_WARNING:
         print(
