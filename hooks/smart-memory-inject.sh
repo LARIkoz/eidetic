@@ -105,17 +105,53 @@ except subprocess.TimeoutExpired:
 PY
 fi
 
-# Incremental vector embeddings (if fastembed available)
+# Incremental vector embeddings (if fastembed available).
+# LOUD self-heal (W5): the 2026-06 vector outage stayed invisible for 16 days
+# because this step's error went to /dev/null. Now an embed crash lands in
+# embed-last.log AND surfaces a one-line warning to the session; a high vector
+# lag is also flagged. A healthy, low-lag run stays silent. Still crash-guarded
+# (|| true) so injection never dies, and the wrapper's own stderr is logged, not
+# discarded.
 VECTORS_DB="$MEMORY_SYSTEM/db/vectors.db"
+EMBED_LOG="$MEMORY_SYSTEM/embed-last.log"
 if [ -f "$VECTORS_DB" ]; then
-    python3 - "$MEMORY_SYSTEM/bin/embed.py" "$DB" "$VECTORS_DB" <<'PY' 2>/dev/null || true
-import subprocess, sys
-script, db_path, vectors_db = sys.argv[1:4]
+    python3 - "$MEMORY_SYSTEM/bin/embed.py" "$DB" "$VECTORS_DB" "$EMBED_LOG" <<'PY' 2>>"$EMBED_LOG" || true
+import os, sqlite3, subprocess, sys
+script, db_path, vectors_db, log_path = sys.argv[1:5]
+failed, reason = False, ""
 try:
-    subprocess.run([sys.executable, script, db_path, vectors_db],
-                   timeout=30, capture_output=True)
+    r = subprocess.run([sys.executable, script, db_path, vectors_db],
+                       timeout=30, capture_output=True, text=True)
+    if r.returncode != 0:
+        failed = True
+        tail = (r.stderr or r.stdout or "nonzero exit").strip().splitlines()
+        reason = (tail[-1] if tail else "nonzero exit")[:160]
+        with open(log_path, "w") as f:
+            f.write(r.stderr or r.stdout or "")
 except subprocess.TimeoutExpired:
+    pass  # a long reindex keeps embedding; next session resumes — not a failure
+except Exception as e:
+    failed = True
+    reason = f"{type(e).__name__}: {e}"[:160]
+
+# Vector lag = unembedded share of indexed chunks (same formula as doctor.sh).
+lag, missing = 0, 0
+try:
+    cc = sqlite3.connect(db_path).execute("SELECT COUNT(*) FROM memory_chunks").fetchone()[0]
+    vc = sqlite3.connect(vectors_db).execute("SELECT COUNT(*) FROM vectors").fetchone()[0]
+    if cc:
+        missing = max(cc - vc, 0)
+        lag = missing * 100 // cc
+except Exception:
     pass
+
+bindir = os.path.dirname(script)
+if failed:
+    print(f"⚠️  Eidetic vectors STALE — session embed failed ({reason}). "
+          f"{missing} chunks unembedded. Log: {log_path} · check: bash {bindir}/doctor.sh")
+elif lag >= 10:
+    print(f"⚠️  Eidetic vectors {lag}% behind ({missing} unembedded) — self-healing. "
+          f"If it persists across sessions: bash {bindir}/index.sh --full")
 PY
 fi
 

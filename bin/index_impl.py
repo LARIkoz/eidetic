@@ -283,6 +283,8 @@ def infer_card_kind(meta, filepath):
         return "bug"
     if _has_term(text, "decision", "decided"):
         return "decision"
+    if _has_term(text, "synthesis", "synthesized"):
+        return "synthesis"
     if _has_term(text, "research", "study"):
         return "research"
     if typ == "reference" or _has_term(text, "reference", "skill"):

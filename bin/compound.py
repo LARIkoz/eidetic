@@ -162,8 +162,12 @@ def update_existing(filepath, signal_text):
         return False
 
 
-def create_signal_file(cwd, signals):
-    """Create new signal file for signals without existing matches."""
+def resolve_memory_dir(cwd):
+    """Resolve the project memory dir for a cwd, else the global store.
+
+    Shared by the Stop-hook signal path (create_signal_file) and the manual
+    promotion path (remember.py) so both write to the same project memory dir.
+    """
     sanitized = cwd.rstrip("/").replace("/", "-").lstrip("-")
 
     memory_dir = None
@@ -186,7 +190,12 @@ def create_signal_file(cwd, signals):
     if not memory_dir:
         memory_dir = MEMORY_SYSTEM
         os.makedirs(memory_dir, exist_ok=True)
+    return memory_dir
 
+
+def create_signal_file(cwd, signals):
+    """Create new signal file for signals without existing matches."""
+    memory_dir = resolve_memory_dir(cwd)
     signals_dir = os.path.join(memory_dir, "signals")
     os.makedirs(signals_dir, exist_ok=True)
 
@@ -277,6 +286,18 @@ def main():
     total = compounded + len(new_signals)
     if total > 0:
         print(f"Signals: {compounded} compounded, {len(new_signals)} new", file=sys.stderr)
+        # Mirror onto the greppable op-log. Best-effort: never break the live
+        # Stop-hook if oplog is missing or the log dir is unwritable.
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import oplog
+            oplog.append_op(
+                "compound",
+                f"{compounded} compounded, {len(new_signals)} new",
+                project=cwd, count=total,
+            )
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

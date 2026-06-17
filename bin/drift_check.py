@@ -29,9 +29,14 @@ AGE_THRESHOLDS = {
 CARD_KIND_AGE_THRESHOLDS = {
     "finding": 90,
     "research": 90,
+    "synthesis": 120,
     "reference": 90,
     "handoff": 90,
     "decision": 90,
+    # Knowledge-type pages (Karpathy): methodologies/entities are near-timeless,
+    # so they decay slowly. Set explicitly via frontmatter card_kind:.
+    "concept": 365,
+    "entity": 365,
     "status": 60,
     "todo": 60,
     "bug": 60,
@@ -287,6 +292,11 @@ def extract_wikilinks_from_content(content):
         if re.search(r'(^|\s)(==|!=|-eq|-ne|-gt|-lt|-ge|-le)(\s|$)', target):
             continue
         if target in {"...", "filename", "folder/filename"} or len(target) < 2:
+            continue
+        # Memory names are whitespace-free kebab slugs (the `name:` frontmatter).
+        # A spaced target is prose accidentally bracketed or an Obsidian display
+        # title — never a memory link, so it is not a broken-link drift signal.
+        if re.search(r"\s", target):
             continue
         seen.add(target)
         links.append(target)

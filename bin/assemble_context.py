@@ -23,8 +23,6 @@ FEEDBACK_BUDGET_RATIO = 0.5
 PROJECT_BUDGET_RATIO = 0.3
 RECENT_BUDGET_RATIO = 0.2
 
-EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
-SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
 STATUS_WEIGHTS = {
     "current": 1.0,
     "active": 1.0,
@@ -64,9 +62,13 @@ RULE_CLUSTERS = [
 ]
 
 
+# Single source of truth: bin/constants.py. Literal fallback only for when the
+# module is run somewhere constants.py is not importable (W3 dedup).
 try:
-    from constants import DRIFT_PENALTIES
+    from constants import EVIDENCE_WEIGHTS, SOURCE_WEIGHTS, DRIFT_PENALTIES
 except ImportError:
+    EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
+    SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
     DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3}
 
 
