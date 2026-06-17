@@ -391,6 +391,10 @@ def extract_field(body, label):
         + r"[ \t]*(?:\*\*|__)?[ \t]*:[ \t]*(?:\*\*)?[ \t]*(.+?)[ \t]*(?:\*\*)?[ \t]*$",
         re.MULTILINE | re.IGNORECASE,
     )
+    # A "Field:" line inside a fenced code example is content, not a real field —
+    # blank fenced spans (preserving line positions) before matching, same as the
+    # other deterministic passes.
+    body = _FENCE_RE.sub(lambda mt: "\n" * mt.group(0).count("\n"), body)
     m = pattern.search(body)
     if not m:
         return None

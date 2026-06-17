@@ -15,5 +15,14 @@ else
     MEMORY_SYSTEM="$HOME/.claude/memory-system"
 fi
 DB_PATH="$MEMORY_SYSTEM/db/index.db"
+VEC_PATH="$MEMORY_SYSTEM/db/vectors.db"
 
-exec python3 "${SCRIPT_DIR}/index_impl.py" "$MODE" "$DB_PATH"
+python3 "${SCRIPT_DIR}/index_impl.py" "$MODE" "$DB_PATH"
+
+# A FULL reindex rebuilds vectors too. FTS-only would leave embeddings and the
+# content-hash scheme stale, and the search-time guard would then (correctly)
+# degrade vector search to FTS until a real vector rebuild. Needs fastembed; the
+# embed lock makes this safe against the session-start incremental embed.
+if [ "$MODE" = "--full" ] && python3 -c "import fastembed" >/dev/null 2>&1; then
+    python3 "${SCRIPT_DIR}/embed.py" "$DB_PATH" "$VEC_PATH" --full
+fi

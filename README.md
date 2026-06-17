@@ -200,7 +200,9 @@ Before creating a new memory, searches for existing ones on the same topic. Foun
 
 ### Obsidian Vault Export (v4.0)
 
-Eidetic turns your memory into a browsable **Obsidian wiki** — a `HOME.md` hub, folders by type (rules / projects / references), resolved `[[wikilinks]]`, and an auto-generated map of content. It's a _view_ over the same memory store (your `.md` files stay the source of truth).
+Eidetic turns your memory into a browsable **Obsidian wiki** — a `HOME.md` hub, folders by type (rules / projects / references), resolved `[[wikilinks]]`, and an auto-generated map of content.
+
+> **The vault is a read-only window, not the engine.** Search, injection, compounding, and drift detection run on your `.md` files + the FTS5 / vector indexes — _nothing ever reads the vault back_. Delete it and Eidetic works identically; it regenerates on the next export. The vault is for **you** to browse what the agent knows; the agent never runs on it.
 
 **Where it lives:** `~/Documents/eidetic-vault/` by default (pass a path to override). The installer wires a Stop hook + nightly refresh, so the vault stays current automatically — or rebuild it any time:
 
