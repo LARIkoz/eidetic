@@ -277,11 +277,18 @@ Core principles:
 
 ## Roadmap
 
-**Shipped:** v1.0 FTS5 + signals + compounding, v1.3 token compression (2.17x), v2.0 hybrid search, v2.2 code search (tree-sitter), v2.5 drift detection, v4.0-4.2 Obsidian vault export + LLM polish, v4.3 lifecycle signals, v5.0 progressive search, v5.0.1 lifecycle Phase B, **v5.1 e5-large embedder + two-signal precision gate + model-drift guard** (RU recall@3 25% → 67%), **v5.2 cross-encoder rerank salvage + persistent model cache + embed/export concurrency locks + fenced-code-safe vault export + `doctor` self-check**.
+**Shipped**
 
-**Next:** distribution (pip package, docs polish).
+- **v5.2** — cross-encoder rerank salvage · persistent model cache · embed/export concurrency locks · fenced-code-safe vault export · `doctor` self-check
+- **v5.1** — e5-large embedder + two-signal precision gate + model-drift guard (RU recall@3 25% → 67%)
+- **v5.0** — progressive search (+ v5.0.1 lifecycle Phase B)
+- **v4.0–4.3** — Obsidian vault export + LLM polish · lifecycle signals
+- **v2.x** — hybrid search (v2.0) · code search via tree-sitter (v2.2) · drift detection (v2.5)
+- **v1.x** — FTS5 + signals + compounding (v1.0) · token compression 2.17× (v1.3)
 
-**Planned:** **v6 — truth-maintenance**: supersession + contradiction detection as a typed-edge graph — memory that resolves its own contradictions and doesn't rot. Plus session-transcript search.
+**Next** — distribution: pip package, docs polish.
+
+**Planned — v6 (truth-maintenance)** — supersession + contradiction detection as a typed-edge graph: memory that resolves its own contradictions and doesn't rot. Plus session-transcript search.
 
 Full version history: [CHANGELOG.md](CHANGELOG.md)
 
