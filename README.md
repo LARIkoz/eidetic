@@ -147,7 +147,7 @@ Updates preserve databases, rules, and hooks — only code files are replaced.
 
 ### MCP Server
 
-Works with Cursor, Windsurf, Cline, and any MCP-compatible agent:
+**Secondary / optional.** Claude Code itself doesn't need MCP — it uses the hooks + rules + recall-skill path above. The MCP server is for _other_ editors that lack Claude Code's hook system (Cursor, Windsurf, Cline, any MCP-compatible agent), exposing the same memory store as on-demand tools:
 
 ```json
 {
