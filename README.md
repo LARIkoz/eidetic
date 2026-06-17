@@ -116,12 +116,12 @@ See [Dependencies](#dependencies) for what each search tier needs. Rollback: `ba
 
 Eidetic is **tiered** — the core needs nothing extra; the headline semantic search needs one pip install.
 
-| Tier                                                                              | Requires                                                                                                      | Without it                                         |
-| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| **Core** — FTS5 search, auto-injection, drift, compounding, Obsidian vault export | `bash` + `python3` + `sqlite3` (preinstalled on macOS/Linux)                                                  | — works fully                                      |
-| **Semantic / cross-lingual search** (the e5 hybrid layer)                         | `pip install fastembed` + ~2.2 GB e5-large ONNX model (auto-downloads to `~/.cache/fastembed` on first index) | falls back to FTS keyword-only                     |
-| **Cross-encoder rerank salvage**                                                  | `fastembed` (pulls a small reranker, lazily)                                                                  | RU→EN matches with no shared words stay suppressed |
-| **Code search**                                                                   | `pip install tree-sitter tree-sitter-python tree-sitter-javascript tree-sitter-bash`                          | code functions/classes not indexed                 |
+| Tier                                                                              | Requires                                                                                                      | Without it                                                |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| **Core** — FTS5 search, auto-injection, drift, compounding, Obsidian vault export | `bash` + `python3` + `sqlite3` (preinstalled on macOS/Linux)                                                  | — works fully                                             |
+| **Semantic / cross-lingual search** (the e5 hybrid layer)                         | `pip install fastembed` + ~2.2 GB e5-large ONNX model (auto-downloads to `~/.cache/fastembed` on first index) | falls back to FTS keyword-only                            |
+| **Cross-encoder rerank salvage**                                                  | `fastembed` (pulls a small reranker, lazily)                                                                  | cross-lingual matches that share no words stay suppressed |
+| **Code search**                                                                   | `pip install tree-sitter tree-sitter-python tree-sitter-javascript tree-sitter-bash`                          | code functions/classes not indexed                        |
 
 > ⚠️ `install.sh` installs the **core only** — it does **not** pip-install fastembed / tree-sitter. A fresh install is FTS-only until you `pip install fastembed`. The e5 model cache must be **persistent** (`~/.cache/fastembed`); a temp-dir cache gets purged by the OS and silently disables vector search.
 
@@ -184,7 +184,7 @@ Drift findings penalize ranking: broken wikilink = 0.8x, stale = 0.5x, confidenc
 
 ### Hybrid Search (v2.0, v5.1)
 
-FTS5 for keywords (~50ms). Vector search (multilingual-e5-large, 1024-dim) as fallback for semantic queries. Cross-language by design — Russian queries find English rules. v5.1 replaced the old MiniLM-384 embedder with e5-large: RU-paraphrase recall@3 went **25% → 67%** (measured). Results merged via Reciprocal Rank Fusion. If every candidate is weak, reports `No confident results` instead of surfacing noise.
+FTS5 for keywords (~50ms). Vector search (multilingual-e5-large, 1024-dim) as fallback for semantic queries. Cross-language by design — a query in one language finds notes written in another (e5 covers ~100 languages). v5.1 replaced the old MiniLM-384 embedder with e5-large: cross-lingual paraphrase recall@3 went **25% → 67%** (measured on RU→EN). Results merged via Reciprocal Rank Fusion. If every candidate is weak, reports `No confident results` instead of surfacing noise.
 
 **Two-signal confidence gate (v5.1).** e5 compresses scores, so a true cross-lingual match (~0.83 cosine) is indistinguishable from topical noise (~0.83) by cosine alone. A vector-only hit reaches actionable confidence only with lexical corroboration (shared query anchors) — high recall, no false confidence. A model/dim stamp on the vector store also guards against silent embedder drift.
 
@@ -280,7 +280,7 @@ Core principles:
 **Shipped**
 
 - **v5.2** — cross-encoder rerank salvage · persistent model cache · embed/export concurrency locks · fenced-code-safe vault export · `doctor` self-check
-- **v5.1** — e5-large embedder + two-signal precision gate + model-drift guard (RU recall@3 25% → 67%)
+- **v5.1** — e5-large embedder + two-signal precision gate + model-drift guard (cross-lingual recall@3 25% → 67%)
 - **v5.0** — progressive search (+ v5.0.1 lifecycle Phase B)
 - **v4.0–4.3** — Obsidian vault export + LLM polish · lifecycle signals
 - **v2.x** — hybrid search (v2.0) · code search via tree-sitter (v2.2) · drift detection (v2.5)
