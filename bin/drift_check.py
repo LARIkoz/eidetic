@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Eidetic v2.5 — Drift Detection
 
-Detects stale memories via wikilink validation and age checks.
-Reads from index.db, writes to drift_state.db (separate from derived index — P1).
-Runs at SessionStart (24h throttle). No file mutations.
+Detects stale/decaying memories via three checks: wikilink validation, age
+thresholds, and confidence escalation. Reads from index.db, writes to
+drift_state.db (separate from the derived index — P1). Runs at SessionStart
+(24h throttle). No file mutations.
 
-Charter: P1 (derived separate), P5 (quality tracked), P6 (improves), P11 (contradictions).
+Charter: P1 (derived separate), P5 (quality tracked), P6 (improves). NOTE: this
+module does NOT auto-detect contradictions (P11) — contradiction surfacing is
+manual, via `contradicts:`/`contradicted_by:` frontmatter read by the linter.
+An automated P11 contradiction detector is v6 territory.
 """
 
 import os
