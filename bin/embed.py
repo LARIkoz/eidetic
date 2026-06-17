@@ -24,6 +24,12 @@ VECTOR_DIM = 1024
 # vector search until a manual reindex. Pin to a persistent, env-overridable cache.
 FASTEMBED_CACHE = os.environ.get("FASTEMBED_CACHE_PATH") or os.path.expanduser("~/.cache/fastembed")
 
+# Bumped whenever content_hash()'s formula changes. Stamped into vectors.db meta
+# by run_full; the search-time guard treats a model-stamped db whose hash_scheme
+# is missing or different as "stale hashes" and degrades LOUDLY to FTS (suggest
+# reindex) instead of silently dropping every vector on a hash mismatch.
+HASH_SCHEME = "trunc500-v2"
+
 _model = None
 
 
@@ -88,6 +94,16 @@ def _vector_meta_ok(vec_conn):
         mismatch.append(f"model {stored_model!r} != expected {MODEL_NAME!r}")
     if stored_dim and str(stored_dim) != str(VECTOR_DIM):
         mismatch.append(f"dim {stored_dim} != expected {VECTOR_DIM}")
+    stored_scheme = meta.get("hash_scheme")
+    # A model-stamped db with no/old hash_scheme carries content hashes from the
+    # previous content_hash() formula; after the formula change they won't match
+    # the query-time recompute and every vector would be silently dropped. Treat
+    # it as a real mismatch so we degrade loudly and prompt a reindex.
+    if stored_model and (not stored_scheme or stored_scheme != HASH_SCHEME):
+        mismatch.append(
+            f"hash_scheme {stored_scheme or 'none'} != expected {HASH_SCHEME} "
+            "(content_hash formula changed — run index.sh --full)"
+        )
     if mismatch:
         print(
             "WARNING: vectors.db built by a different embedder ("
@@ -107,7 +123,13 @@ def embedding_text(name, desc, content, heading):
 
 
 def content_hash(name, desc, content, heading):
-    payload = "\0".join([name or "", desc or "", heading or "", content or ""])
+    # Hash exactly what embedding_text() feeds the model (content truncated to
+    # 500) — NOT the full content. Otherwise an edit BEYOND char 500, which does
+    # not change the embedding, changes the hash and the query-time guard
+    # (search_impl) silently drops an otherwise-valid vector. Keep [:500] in sync
+    # with embedding_text(). Formula version is tracked by HASH_SCHEME.
+    body = (content or "")[:500]
+    payload = "\0".join([name or "", desc or "", heading or "", body])
     return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()
 
 
@@ -169,6 +191,7 @@ def run_full(index_db_path, vector_db_path):
         # Stamp which model/dim built this db -> detect silent model drift on next run.
         vec_conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('model',?)", (MODEL_NAME,))
         vec_conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('dim',?)", (str(VECTOR_DIM),))
+        vec_conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('hash_scheme',?)", (HASH_SCHEME,))
         vec_conn.commit()
         success = True
     except Exception as e:
