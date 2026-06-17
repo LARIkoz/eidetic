@@ -339,6 +339,21 @@ WIKILINK_RE = re.compile(r"\[\[([^\[\]\n|#]+)(#[^\[\]\n|]+)?(\|[^\[\]\n]+)?\]\]"
 FOOTER_RE = re.compile(r'^_Confidence:.*·.*Source:.*_$')
 
 
+_FENCE_RE = re.compile(r"(```.*?```|~~~.*?~~~|`[^`\n]+`)", re.DOTALL)
+
+
+def _apply_outside_fences(body, transform):
+    """Run transform on prose spans only; leave fenced/inline code verbatim.
+
+    The deterministic markdown passes (wikilink rewrite, field strip) must not
+    touch [[links]] or "Field:" lines that appear INSIDE a code example — that is
+    content, not structure. re.split with a capturing group yields the fenced /
+    inline-code spans at odd indices; transform only the even (prose) spans.
+    """
+    parts = _FENCE_RE.split(body)
+    return "".join(p if i % 2 else transform(p) for i, p in enumerate(parts))
+
+
 def rewrite_wikilinks(body, link_map):
     """Rewrite [[target]] → vault filename, or strip if unresolved."""
     def repl(m):
@@ -354,7 +369,7 @@ def rewrite_wikilinks(body, link_map):
             return "[[{}{}]]".format(stem, section)
         # Strip — plain text fallback (display preferred)
         return display or target
-    return WIKILINK_RE.sub(repl, body)
+    return _apply_outside_fences(body, lambda seg: WIKILINK_RE.sub(repl, seg))
 
 
 def extract_blockquote_intro(body):
@@ -402,7 +417,7 @@ def strip_field(body, label):
         + r"[ \t]*(?:\*\*|__)?[ \t]*:[ \t]*(?:\*\*)?[ \t]*.+?[ \t]*(?:\*\*)?[ \t]*$",
         re.MULTILINE | re.IGNORECASE,
     )
-    cleaned = pattern.sub("", body)
+    cleaned = _apply_outside_fences(body, lambda seg: pattern.sub("", seg))
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned
 
