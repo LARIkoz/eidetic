@@ -120,6 +120,15 @@ else
         note "embedding model not downloaded yet (downloads on first vector index)"
     fi
 fi
+# W5 loud self-heal: a session-start embed crash is now recorded here instead of
+# vanishing into /dev/null (that swallow hid the 16-day outage). A non-empty log
+# means the LAST incremental embed failed — surface it loudly.
+EMBED_LOG="$MEMORY_SYSTEM/embed-last.log"
+if [ -s "$EMBED_LOG" ]; then
+    warn "last session embed FAILED: $(tail -n1 "$EMBED_LOG" 2>/dev/null | cut -c1-120)" "see $EMBED_LOG, then: bash $MEMORY_SYSTEM/bin/index.sh --full"
+else
+    ok "no embed errors logged (W5 self-heal clean)"
+fi
 
 # --------------------------------------------------------------------- HOOKS
 hdr "Hooks & automation (settings.json)"
@@ -167,6 +176,28 @@ hdr "Search"
 SEARCH_BIN="$MEMORY_SYSTEM/bin/search.sh"
 [ -x "$SEARCH_BIN" ] || SEARCH_BIN="$SCRIPT_DIR/search.sh"
 if "$SEARCH_BIN" "test" --limit 1 >/dev/null 2>&1; then ok "search runs"; else bad "search broken" "check index.db + bin/search_impl.py"; fi
+
+# -------------------------------------------- COMPOUNDING & OP-LOG (Wave 2)
+hdr "Compounding & op-log"
+# Write-side primitives: compounding (Stop-hook signals), promote (a synthesized
+# answer -> one typed page), and the op-log. Missing here = not deployed.
+for tool in compound.py remember.py oplog.py; do
+    if [ -f "$MEMORY_SYSTEM/bin/$tool" ]; then ok "$tool present"; else warn "$tool NOT deployed — promote/op-log unavailable" "sync source bin/ to $MEMORY_SYSTEM/bin/ (re-run install.sh)"; fi
+done
+# card_kind distribution — confirms typed pages (synthesis/concept/entity) flow.
+if [ -f "$DB" ]; then
+    KINDS=$(sqlite3 "$DB" "SELECT group_concat(card_kind || '=' || n, ' ') FROM (SELECT card_kind, COUNT(*) n FROM memory_chunks WHERE card_kind IS NOT NULL AND card_kind != '' GROUP BY card_kind ORDER BY n DESC LIMIT 6)" 2>/dev/null)
+    [ -n "$KINDS" ] && ok "card_kind in index: $KINDS" || note "no card_kind values yet (reindex to populate)"
+fi
+# the greppable op-log timeline (grep '^## \[' log.md).
+OPLOG="$MEMORY_SYSTEM/log.md"
+if [ -f "$OPLOG" ]; then
+    OPS=$(grep -c '^## \[' "$OPLOG" 2>/dev/null || echo 0)
+    LAST=$(grep '^## \[' "$OPLOG" 2>/dev/null | tail -n1 | cut -c1-66)
+    ok "op-log: $OPS ops · last: ${LAST:-none}"
+else
+    note "op-log not started yet ($OPLOG) — first promote/compound creates it"
+fi
 
 # ------------------------------------------------------------------ SUMMARY
 hdr "Summary"
