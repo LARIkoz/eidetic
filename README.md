@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.2.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-5.3.0-blue.svg)](CHANGELOG.md)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -50,6 +50,8 @@ One command. The **core** (FTS search, injection, drift, vault export) needs **z
 | Agent-created memories reinforce hallucinations       | **Self-referential discount** — agent-extracted = 0.5x weight                      |
 | All memories treated equally                          | **Evidence tiers** — validated > observed > hypothesis                             |
 | Can't search code                                     | **Tree-sitter** parses functions/classes into searchable chunks                    |
+| Good answers die in the chat log                      | **Promote** — file a synthesized answer back as one typed page (Karpathy's wiki)   |
+| Vector search fails silently (the 16-day outage)      | **Loud self-heal** — a failed embed surfaces a warning + logs, never goes dark     |
 
 ---
 
@@ -131,7 +133,7 @@ Eidetic is **tiered** — the core needs nothing extra; the headline semantic se
 bash ~/.claude/memory-system/bin/doctor.sh
 ```
 
-It checks deps, index, memory files on disk, vectors + lag, model-cache location, hooks, and the wiki/vault — with a fix hint for every ⚠️/❌.
+It checks deps, index, memory files on disk, vectors + lag, model-cache location, hooks, the wiki/vault, **the op-log + promote/compound deployment state, card-kind distribution, and a failed-embed log (W5)** — with a fix hint for every ⚠️/❌.
 
 Platform: macOS / Linux (uses `fcntl` file locks).
 
@@ -198,6 +200,12 @@ Tree-sitter parses `.py`, `.js`, `.ts`, `.tsx`, `.sh` — every function and cla
 
 Before creating a new memory, searches for existing ones on the same topic. Found? Updates it, adds history. Not found? Creates new file. 50 sessions = 50 refined rules, not 500 duplicate files.
 
+### File Answers Back — Promote (v5.3)
+
+A good synthesized answer shouldn't die in the chat log. **Promote** files it back as one **typed page** — `echo "<answer>" | python3 ~/.claude/memory-system/bin/remember.py "<title>"`. Search-before-write means a re-promote on the same topic appends a dated `## Update` section instead of duplicating, and a new page gets `## Related` wikilinks to its neighbours. It's the deliberate, mid-session companion to the end-of-session signal capture, and it's the same write-path a future importer reuses. Every write also lands on a greppable **op-log** — `grep '^## \[' log.md` is the whole timeline.
+
+This is Eidetic implementing [Karpathy's **LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) end-to-end: compounding pages, an explicit **maintenance contract** ([docs/MEMORY-SCHEMA.md](docs/MEMORY-SCHEMA.md)), typed pages (`synthesis` / `concept` / `entity`), and an op-log — with auto-extraction and drift detection layered on top, so the wiki maintains itself instead of rotting.
+
 ### Obsidian Vault Export (v4.0)
 
 Eidetic turns your memory into a browsable **Obsidian wiki** — a `HOME.md` hub, folders by type (rules / projects / references), resolved `[[wikilinks]]`, and an auto-generated map of content.
@@ -262,7 +270,7 @@ Based on [40-repo competitive analysis](https://github.com/LARIkoz/eidetic/relea
 
 ## Design Philosophy
 
-Inspired by [Luhmann's Zettelkasten](https://en.wikipedia.org/wiki/Zettelkasten), [Tiago Forte's Second Brain](https://www.buildingasecondbrain.com/), and [Karpathy's AI wiki concept](https://gist.github.com/karpathy/1dd0294ef9567971c1e4348a90d69285).
+Inspired by [Luhmann's Zettelkasten](https://en.wikipedia.org/wiki/Zettelkasten), [Tiago Forte's Second Brain](https://www.buildingasecondbrain.com/), and Karpathy's wiki-for-LLMs idea — both his [AI wiki concept](https://gist.github.com/karpathy/1dd0294ef9567971c1e4348a90d69285) and the [**LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) pattern Eidetic now implements end-to-end (compounding pages, an explicit schema, an op-log, typed pages). Per Karpathy, _"humans abandon wikis because maintenance grows faster than value; LLMs don't get bored"_ — so Eidetic's value curve climbs with use instead of decaying.
 
 Core principles:
 
@@ -279,6 +287,8 @@ Core principles:
 - **Backup/restore** — auto-backup before reindex, auto-restore on failure
 - **Lock serialization** — `fcntl` lock file via `bin/lock_runner.py`
 - **Anti-injection** — prefix-validated signal extraction blocks transcript noise from becoming memory
+- **Protected-type guard** — a promotion never appends agent-authored content into a user-validated feedback/profile card, and never clobbers it
+- **Loud self-heal (W5)** — a failed session-start embed lands in `embed-last.log` + surfaces a one-line warning (no more silent vector outages); high vector lag is flagged too
 - **Graceful degradation** — missing index falls back to `head -200 MEMORY.md`
 - **Rollback** — one command, <5 seconds
 
@@ -288,6 +298,7 @@ Core principles:
 
 **Shipped**
 
+- **v5.3** — **promote** (file answers back as typed pages — Karpathy's LLM Wiki) · greppable **op-log** · typed `card_kind` (synthesis/concept/entity) · **loud embed self-heal** (no silent outages) · explicit [memory schema](docs/MEMORY-SCHEMA.md) · `doctor` covers it all
 - **v5.2** — cross-encoder rerank salvage · persistent model cache · embed/export concurrency locks · fenced-code-safe vault export · `doctor` self-check
 - **v5.1** — e5-large embedder + two-signal precision gate + model-drift guard (cross-lingual recall@3 25% → 67%)
 - **v5.0** — progressive search (+ v5.0.1 lifecycle Phase B)

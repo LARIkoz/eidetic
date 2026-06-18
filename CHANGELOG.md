@@ -2,6 +2,19 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.3.0 (2026-06-18)
+
+Karpathy [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) completion — answers compound back into the wiki, and the system became loud instead of silently rotting.
+
+- Added `bin/remember.py` — **promote** a synthesized answer into one typed page, with project-scoped search-before-write dedup (a re-promote appends a dated `## Update` instead of duplicating; new pages get `## Related` links). The same write-path a future importer reuses. Never appends/clobbers a protected feedback/user card.
+- Added `bin/oplog.py` — a greppable append-only op-log (`log.md`); `compound.py` (the Stop-hook capture) and `remember.py` both record onto it. Unbuffered `os.write` + fsync under flock so the lock actually covers the append.
+- Extended `card_kind` with `synthesis` (inferred) + `concept`/`entity` (explicit-only knowledge pages), each with its own age-drift threshold.
+- Added `docs/MEMORY-SCHEMA.md` — the explicit maintenance contract (frontmatter, kinds, weights, lifecycle, the four write paths).
+- **Loud self-heal (W5):** the session-start embed no longer swallows errors to `/dev/null` (the cause of a 16-day silent vector outage) — a crash lands in `embed-last.log` and surfaces a one-line warning; high vector lag is flagged.
+- Deduplicated the `EVIDENCE_WEIGHTS`/`SOURCE_WEIGHTS` tables onto `constants.py` (search + inject now import, not copy); broken-wikilink drift ignores prose-in-brackets (whitespace is never a memory slug).
+- `doctor.sh` now covers the op-log, promote/compound deployment state, card-kind distribution, and the W5 failed-embed log.
+- Pre-publish review (consilium) verified against live code; fixes: non-ASCII (e.g. Cyrillic) titles get a hash-slug instead of all collapsing to one page; `_atomic_write` preserves an existing card's permissions; `--update` validates its target is a memory card.
+
 ## v5.2.0 (2026-06-17)
 
 - Pinned the fastembed model cache to a persistent dir (`FASTEMBED_CACHE_PATH`, default `~/.cache/fastembed`) instead of TMPDIR, which the OS purges — silently evicting the ~2 GB e5 weights and degrading all vector search to FTS until a manual reindex.
