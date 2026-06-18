@@ -14,7 +14,7 @@ How it works:
 
 This surfaces connections like:
 "You're working on key rotation → btw, there's a rate-limit finding
- in gap-pipeline that connects."
+ in another project that connects."
 """
 
 import os

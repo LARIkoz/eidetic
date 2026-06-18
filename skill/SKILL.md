@@ -32,7 +32,7 @@ Run the search command with a natural language query:
 ~/.claude/memory-system/bin/search.sh "deployment strategy decision"
 
 # Find project context
-~/.claude/memory-system/bin/search.sh "gap pipeline phase" --type project
+~/.claude/memory-system/bin/search.sh "project architecture" --type project
 ```
 
 ## What to search for

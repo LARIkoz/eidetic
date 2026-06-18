@@ -276,10 +276,12 @@ def short_project(project_slug):
     """Compress project slug for filename prefix."""
     if not project_slug:
         return "_global"
-    # Project slugs look like "-Users-mikhailkozlov-Documents-cursore-foo".
-    # Drop boilerplate path segments and take the last 2 meaningful ones to
-    # avoid collisions like gap-pipeline/data-pipeline → 'pipeline'.
-    boilerplate = {"users", "mikhailkozlov", "documents", "cursore"}
+    # Project slugs look like "-Users-<you>-Documents-code-foo". Drop boilerplate
+    # path segments (the home-dir components, derived at runtime so no username is
+    # baked in) and take the last 2 meaningful ones to avoid collisions like
+    # data-pipeline/build-pipeline → 'pipeline'.
+    boilerplate = {p.lower() for p in os.path.expanduser("~").split(os.sep) if p}
+    boilerplate |= {"users", "home", "documents", "code", "projects", "src", "repos", "dev"}
     parts = [p for p in project_slug.split("-") if p and p.lower() not in boilerplate]
     if not parts:
         return "_global"
@@ -760,7 +762,7 @@ Group them into 15-25 coherent topics. Rules:
 1. Each topic = ONE specific thing (not broad like "Database" or "Tools")
 2. DO NOT mix unrelated projects unless they share a concrete technique
 3. Minimum 3 notes per topic. Notes not fitting any topic = skip
-4. Topic names should be specific (e.g. "Gap Pipeline Niche Discovery" not "Pipeline")
+4. Topic names should be specific (e.g. "User Onboarding Funnel" not "Funnel")
 5. Output ONLY a JSON array: [{{"topic": "Name", "notes": ["note name 1", ...]}}]
 6. No commentary, just JSON.
 

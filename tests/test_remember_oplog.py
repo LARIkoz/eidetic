@@ -62,7 +62,7 @@ class RememberOplogTest(unittest.TestCase):
         self.assertTrue(os.path.basename(path).startswith("synthesis-"))
 
     def test_concept_kind_maps_to_reference_type(self):
-        path, _ = remember.promote("AJTBD job graph", "Methodology.", kind="concept", cwd=NOMATCH_CWD)
+        path, _ = remember.promote("Event sourcing pattern", "Methodology.", kind="concept", cwd=NOMATCH_CWD)
         body = _read(path)
         self.assertIn("card_kind: concept", body)
         self.assertIn("type: reference", body)  # KIND_TO_TYPE override

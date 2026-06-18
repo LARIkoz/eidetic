@@ -17,102 +17,10 @@ from pathlib import Path
 CONFIDENCE_ORDER = {"low": 0, "medium": 1, "high": 2}
 
 CASES = [
-    {
-        "name": "large_prompt_bug",
-        "query": "claude batch large prompts",
-        "expect_any": ["bug_claude_batch_large_prompt", "large prompts"],
-        "min_confidence": "high",
-    },
-    {
-        "name": "gap_pipeline_niche_definition",
-        "query": "gap pipeline niche definition",
-        "expect_any": ["gap_pipeline_principles", "niche-definition"],
-        "min_confidence": "high",
-    },
-    {
-        "name": "obsidian_best_practices",
-        "query": "obsidian vault structure best practices",
-        "expect_any": ["obsidian_vault_structure_best_practices"],
-        "min_confidence": "high",
-    },
-    {
-        "name": "gemini_acc2_home_override",
-        "query": "gemini cli account 2 HOME override",
-        "expect_any": ["bug_gemini_cli_acc2_switch", "home override"],
-        "min_confidence": "high",
-    },
-    {
-        "name": "gemini_batch_double_cap",
-        "query": "gemini batch two env overrides parallel Pro",
-        "expect_any": ["bug_gemini_batch_double_cap", "two env overrides"],
-        "min_confidence": "high",
-    },
-    {
-        "name": "key_penalty_store",
-        "query": "key penalty store shared key_penalty.db route-scoped failures",
-        "expect_any": ["key-penalty-store", "key_penalty.db"],
-        "min_confidence": "high",
-    },
-    {
-        "name": "model_split_opus46_47",
-        "query": "Model split Opus 4.6 4.7 sub-agent",
-        "expect_any": ["feedback-model-split", "opus 4.6"],
-        "min_confidence": "high",
-    },
-    {
-        "name": "consilium_partial_failure",
-        "query": "bug consilium voices partial failure 2026-04-28",
-        "expect_any": ["bug_consilium_voices_fail", "partial failure"],
-        "min_confidence": "high",
-    },
-    {
-        "name": "sync_skills_private_bug",
-        "query": "sync skills PRIVATE_SKILLS bug",
-        "expect_any": ["private_skills", "sync-skills-private"],
-        "min_confidence": "medium",
-    },
-    {
-        "name": "dashscope_400_all_keys",
-        "query": "DashScope 400 all 110 keys",
-        "expect_any": ["bug_dashscope_400_all_keys", "dashscope 400"],
-        "min_confidence": "high",
-    },
-    {
-        "name": "deepseek_json_truncation",
-        "query": "DeepSeek R1 truncates JSON taxonomy prompts",
-        "expect_any": ["bug_deepseek_r1_truncation", "truncates json"],
-        "min_confidence": "high",
-    },
-    {
-        "name": "llm_consilium_parse_failure",
-        "query": "LLMConsiliumClient classify parse failure Cohere MiniMax Reka",
-        "expect_any": ["bug_llm_consilium_classify_parse", "parse failure"],
-        "min_confidence": "high",
-    },
-    {
-        "name": "gap_malformed_platform_predicate",
-        "query": "gap pipeline live DB malformed platform predicate",
-        "expect_any": ["bug_gap_pipeline_live_db_malformed", "malformed platform"],
-        "min_confidence": "high",
-    },
-    {
-        "name": "zamesin_methodology_skill",
-        "query": "Zamesin AJTBD methodology router",
-        "expect_any": ["zamesin-methodology", "ajtbd"],
-        "min_confidence": "high",
-    },
-    {
-        "name": "provider_admission_contract",
-        "query": "provider route admission exact model degraded blocked",
-        "expect_any": ["provider-admission", "route admission"],
-        "min_confidence": "high",
-    },
-    {
-        "name": "memory_recall_skill",
-        "query": "Memory Recall Search the FTS5 memory index",
-        "expect_any": ["memory-recall", "fts5 memory index"],
-        "min_confidence": "high",
-    },
+    # Minimal GENERIC skeleton — probes Eidetic's OWN indexed code (present in any
+    # install) plus a negative control. Operators SHOULD extend this with cases that
+    # assert their own important memories, kept OUT of this public repo (never commit
+    # private project / infra / provider names or key counts here).
     {
         "name": "drift_check_code",
         "query": "drift_check auto_resolve",
@@ -134,48 +42,13 @@ CASES = [
         "expect_any": ["ensure_agent_columns", "card_kind"],
         "min_confidence": "high",
     },
-    # NB: every `expect_no_confident` query must be absent from the indexed corpus.
-    # If a memory/finding quotes the query verbatim, FTS phrase-matches it and the
-    # negative test self-defeats. Keep these probes nonsense/unique, and never write
-    # them literally into an indexed .md (learned the hard way 2026-05-31).
+    # NB: an expect_no_confident probe must stay ABSENT from the indexed corpus, else
+    # FTS phrase-matches it and the negative self-defeats. Keep it nonsense/unique.
     {
         "name": "code_no_confident_result",
         "query": "nonexistent_function_zzzz",
         "type": "code",
         "expect_no_confident": True,
-    },
-    {
-        "name": "x_web_public_indexed_research",
-        "query": "x-web KeyPenaltyStore x_web_murphy_check public indexed X",
-        "expect_any": ["x-web", "keypenaltystore"],
-        "min_confidence": "medium",
-    },
-    {
-        "name": "suppress_missing_database_mock_rule",
-        "query": "do not mock database tests",
-        "expect_no_confident": True,
-    },
-    {
-        # Cross-lingual recall guard: a Russian paraphrase about claude-batch
-        # billing after June 15 must still surface the English memory via vector +
-        # lexical corroboration (anchors: claude, batch, 15). Locks in the e5 win
-        # against the two-signal precision gate. Query refreshed 2026-06-18 after
-        # the card was corrected — the predicted metering change did not happen.
-        "name": "ru_paraphrase_claude_voice",
-        "query": "что с биллингом claude batch после 15 июня 2026",
-        "expect_any": ["feedback-claude-voice-after-june15", "claude-voice"],
-        "min_confidence": "medium",
-    },
-    {
-        # Zero-anchor cross-lingual guard: this RU query shares NO token with the
-        # English target ("атака/цепочку/поставок" vs "LiteLLM supply chain
-        # attack"), so lexical corroboration is 0 — it can only surface via the
-        # multilingual cross-encoder salvage. Locks that 3rd signal in: if the
-        # rerank path is removed, this case regresses to "no confident results".
-        "name": "ru_zero_anchor_supply_chain",
-        "query": "что за атака через цепочку поставок в марте",
-        "expect_any": ["litellm supply chain", "security-supply-chain-litellm"],
-        "min_confidence": "medium",
     },
 ]
 
