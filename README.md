@@ -90,9 +90,9 @@ One command. The **core** (FTS search, injection, drift, vault export) needs **z
                 Tag: agent-extracted = 0.5x   ·   record the op on log.md (greppable timeline)
 ```
 
-### Compound Ranking
-
 <img width="1074" height="1082" alt="image" src="https://github.com/user-attachments/assets/24e70c71-55a8-4d64-a819-050e9107120e" />
+
+### Compound Ranking
 
 
 Every result is ranked by:
