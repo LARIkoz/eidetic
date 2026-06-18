@@ -61,8 +61,9 @@ One command. The **core** (FTS search, injection, drift, vault export) needs **z
                 SESSION START (~350ms warm)
                         |
                 Reindex (FTS5) + Code Index (tree-sitter) + Vector Embed
-                        |
-                Assemble Context (160 rules + project + recent)
+                        |   └─ W5 loud self-heal: a failed embed warns + logs (embed-last.log),
+                        |      never silently goes dark; high vector lag is flagged
+                Assemble Context (~200 rules + project + recent + drift diagnostics)
                         |
                 Write to ~/.claude/rules/ (auto-loaded, no size cap)
                         |
@@ -71,11 +72,12 @@ One command. The **core** (FTS search, injection, drift, vault export) needs **z
 
                      MID-SESSION
                         |
-                /memory-recall "query"  or  MCP memory_search
+                READ   /memory-recall "query"  or  MCP memory_search
+                        |    FTS5 + e5 vector (forced for non-English) + cross-encoder -> RRF merge
+                        |    Calibrated confidence (two-signal gate) + drift warnings
                         |
-                FTS5 + e5 vector (forced for non-English) -> RRF merge
-                        |
-                Calibrated confidence (two-signal gate) + drift warnings
+                WRITE  remember.py promote "<title>"   (file an answer back as a typed page)
+                             └─ search-before-write: a re-promote appends ## Update, never duplicates
 
 
                      SESSION END (~5s, async)
@@ -84,7 +86,7 @@ One command. The **core** (FTS search, injection, drift, vault export) needs **z
                         |
                 Compound: update existing memory OR create new
                         |
-                Tag: agent-extracted = 0.5x weight
+                Tag: agent-extracted = 0.5x   ·   record the op on log.md (greppable timeline)
 ```
 
 ### Compound Ranking
@@ -95,7 +97,7 @@ Every result is ranked by:
 score = relevance x evidence x source x freshness x status
 
 evidence:   validated = 1.0    observed = 0.7    hypothesis = 0.4
-source:     user-created = 1.0  agent-extracted = 0.5  system = 0.3
+source:     user-explicit = 1.0  agent-extracted = 0.5  system = 0.3
 freshness:  < 30 days = 1.0    > 30 days = 0.5    (a drift finding overrides: stale 0.5x, broken link 0.8x)
 status:     current = 1.0      resolved/fixed = 0.75   superseded/deprecated = 0.35   archived = 0.25
 ```
