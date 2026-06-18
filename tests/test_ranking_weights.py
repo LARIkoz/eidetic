@@ -18,7 +18,7 @@ import search_impl as si  # noqa: E402
 import export_vault as ev  # noqa: E402
 
 GOLDEN_EVIDENCE = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
-GOLDEN_SOURCE = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
+GOLDEN_SOURCE = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3, "imported": 0.3}
 
 
 class RankingWeightsTest(unittest.TestCase):
@@ -49,6 +49,14 @@ class RankingWeightsTest(unittest.TestCase):
         w_agent = ac.compound_weight("validated", "agent-extracted", None, drift_penalty=1.0, status="current")
         self.assertGreater(w_user, 0)
         self.assertAlmostEqual(w_agent, 0.5 * w_user)
+
+    def test_imported_source_is_low_trust(self):
+        # imported (Wave 1 importer, third-party) must rank below agent-extracted,
+        # so an imported page never outranks our own session-validated knowledge.
+        w_agent = ac.compound_weight("observed", "agent-extracted", None, drift_penalty=1.0, status="current")
+        w_imported = ac.compound_weight("observed", "imported", None, drift_penalty=1.0, status="current")
+        self.assertLess(w_imported, w_agent)
+        self.assertAlmostEqual(w_imported, (0.3 / 0.5) * w_agent)
 
     def test_export_vault_default_weight_is_observed_times_user_explicit(self):
         # Empty meta + unknown path → get_meta_field supplies observed/user-explicit
