@@ -1,7 +1,7 @@
 # Eidetic
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.3.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-5.3.1-blue.svg)](CHANGELOG.md)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
 [![MCP](https://img.shields.io/badge/MCP-Cursor%20%7C%20Windsurf%20%7C%20Cline-orange.svg)](#mcp-server)
 
@@ -97,7 +97,7 @@ Every result is ranked by:
 score = relevance x evidence x source x freshness x status
 
 evidence:   validated = 1.0    observed = 0.7    hypothesis = 0.4
-source:     user-explicit = 1.0  agent-extracted = 0.5  system = 0.3
+source:     user-explicit = 1.0  agent-extracted = 0.5  system = 0.3  imported = 0.3
 freshness:  < 30 days = 1.0    > 30 days = 0.5    (a drift finding overrides: stale 0.5x, broken link 0.8x)
 status:     current = 1.0      resolved/fixed = 0.75   superseded/deprecated = 0.35   archived = 0.25
 ```
@@ -306,6 +306,7 @@ Core principles:
 
 **Shipped**
 
+- **v5.3.1** — `imported` low-trust source tier (`0.3`, readies the Wave-1 importer) · `EIDETIC_SIGNAL_SKIP_CLAUDE` kickout-safe extraction route
 - **v5.3** — **promote** (file answers back as typed pages — Karpathy's LLM Wiki) · greppable **op-log** · typed `card_kind` (synthesis/concept/entity) · **loud embed self-heal** (no silent outages) · explicit [memory schema](docs/MEMORY-SCHEMA.md) · `doctor` covers it all
 - **v5.2** — cross-encoder rerank salvage · persistent model cache · embed/export concurrency locks · fenced-code-safe vault export · `doctor` self-check
 - **v5.1** — e5-large embedder + two-signal precision gate + model-drift guard (cross-lingual recall@3 25% → 67%)

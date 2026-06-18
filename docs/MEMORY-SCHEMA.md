@@ -73,7 +73,7 @@ Compound weight = `evidence_weight × source_weight × drift_penalty`
 
 ```
 EVIDENCE_WEIGHTS = { validated: 1.0, observed: 0.7, hypothesis: 0.4 }
-SOURCE_WEIGHTS   = { user-explicit: 1.0, agent-extracted: 0.5, system-generated: 0.3 }
+SOURCE_WEIGHTS   = { user-explicit: 1.0, agent-extracted: 0.5, system-generated: 0.3, imported: 0.3 }
 DRIFT_PENALTIES  = { broken_wikilink: 0.8, age_stale: 0.5, confidence_escalation: 0.3 }
 ```
 
@@ -110,10 +110,10 @@ Four ways a card is created or updated. All converge on this schema.
    as one typed page (default `card_kind: synthesis`), with dedup: a re-promote
    appends a `## Update <date>` section instead of duplicating, and new pages get
    `## Related` wikilinks to neighbours.
-4. **Importer** _(Wave 1, planned)_ — an external source (file/url/pdf/video) →
-   extraction cards → this schema, with `source: imported` (a low-trust tier; its
-   ranking weight is added to `SOURCE_WEIGHTS` when the importer lands) and a
-   provenance span.
+4. **Importer** _(Wave 1)_ — an external source (file/url/pdf/video) → extraction
+   cards → this schema, with `source: imported` (the low-trust tier — `0.3` in
+   `SOURCE_WEIGHTS`, below `agent-extracted`, so imported third-party content never
+   outranks our own knowledge) and a provenance span.
 
 Every non-author write also appends a line to the greppable op-log
 (`<memory-system>/log.md`) via `bin/oplog.py`:

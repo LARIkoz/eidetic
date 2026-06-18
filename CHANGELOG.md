@@ -2,6 +2,12 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.3.1 (2026-06-18)
+
+- Added the `imported` source-weight tier (`0.3`, below `agent-extracted`) to `SOURCE_WEIGHTS` + the golden ranking test — third-party content filed by the importer (Karpathy's "Ingest") is low-trust by construction and never outranks session-validated knowledge or user feedback.
+- Added `EIDETIC_SIGNAL_SKIP_CLAUDE=1` to the session-signals hook — forces the codex-only extraction route so a session-end trigger fired while an interactive Claude session is live cannot share the Anthropic quota pool and kick the extension.
+- Portability: `recall_smoke.py` ships generic, install-agnostic recall fixtures (keep your own corpus cases locally), and `export_vault.py` derives its slug path-boilerplate from the runtime home dir instead of a hard-coded value. Trimmed the bundled example vault (a curated synthetic showcase will return).
+
 ## v5.3.0 (2026-06-18)
 
 Karpathy [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) completion — answers compound back into the wiki, and the system became loud instead of silently rotting.
