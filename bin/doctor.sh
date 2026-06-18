@@ -120,6 +120,19 @@ else
         note "embedding model not downloaded yet (downloads on first vector index)"
     fi
 fi
+# Cross-encoder reranker (jina) — the salvage signal for ambiguous cross-lingual
+# matches. It can go missing independently of e5 (an emptied onnx/ dir → fastembed
+# believes it is cached but the file is gone), silently disabling rerank salvage and
+# degrading cross-lingual recall while everything else looks healthy.
+if python3 -c "import fastembed" 2>/dev/null; then
+    JINA_ONNX=$(find "$PERSIST_CACHE" -path "*jina-reranker*" -name "model.onnx" 2>/dev/null | head -1)
+    if [ -n "$JINA_ONNX" ]; then
+        ok "cross-encoder reranker present (jina) — cross-lingual salvage active"
+    else
+        warn "cross-encoder reranker model MISSING — rerank salvage off, cross-lingual recall degraded" "it re-downloads on the next vector query; if it persists, remove the jina-reranker dir under ~/.cache/fastembed and run a search"
+    fi
+fi
+
 # W5 loud self-heal: a session-start embed crash is now recorded here instead of
 # vanishing into /dev/null (that swallow hid the 16-day outage). A non-empty log
 # means the LAST incremental embed failed — surface it loudly.

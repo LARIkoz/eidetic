@@ -156,12 +156,13 @@ CASES = [
         "expect_no_confident": True,
     },
     {
-        # Cross-lingual recall guard: a Russian paraphrase with no shared verb
-        # ("what replaces claude batch after June 15") must still surface the
-        # English memory via vector + lexical corroboration (anchors: claude,
-        # batch, 15). Locks in the e5 win against the two-signal precision gate.
+        # Cross-lingual recall guard: a Russian paraphrase about claude-batch
+        # billing after June 15 must still surface the English memory via vector +
+        # lexical corroboration (anchors: claude, batch, 15). Locks in the e5 win
+        # against the two-signal precision gate. Query refreshed 2026-06-18 after
+        # the card was corrected — the predicted metering change did not happen.
         "name": "ru_paraphrase_claude_voice",
-        "query": "то что заменяет claude batch после 15 июня",
+        "query": "что с биллингом claude batch после 15 июня 2026",
         "expect_any": ["feedback-claude-voice-after-june15", "claude-voice"],
         "min_confidence": "medium",
     },

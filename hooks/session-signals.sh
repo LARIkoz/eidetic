@@ -1,7 +1,9 @@
 #!/bin/bash
 # AI Memory System v1 — Session Signal Extraction (Stop hook, async)
 # Extracts decisions/rules/failures from the session transcript via Claude (Sonnet
-# default) — claude-batch where available, else a plain `claude --print` — with a Codex fallback.
+# default) — claude-batch where available, else a plain `claude --print` — then a
+# Codex fallback (codex-batch where available, else a plain `codex exec`).
+# So any install with the claude OR codex CLI captures signals, not just ours.
 # Runs async — does not delay session end.
 # Source: agent-extracted (0.5x self-referential discount)
 set -euo pipefail
@@ -104,11 +106,40 @@ run_claude_extraction() {
     fi
 }
 
+run_codex_cli_extraction() {
+    # Public fallback: the plain `codex` CLI (codex exec) for anyone with Codex but
+    # without the private codex-batch wrapper. Read-only sandbox, prompt on stdin,
+    # last message to a file. Uses Codex's own configured model unless
+    # EIDETIC_SIGNAL_CODEX_CLI_MODEL pins one (avoids forcing a model a public
+    # install may not have).
+    local prompt_file="$1" codex_bin out_dir status
+    codex_bin=$(command -v codex 2>/dev/null || true)
+    [ -n "$codex_bin" ] || return 1
+    out_dir=$(mktemp -d "${TMPDIR:-/tmp}/eidetic-codexcli-signals.XXXXXX")
+    chmod 700 "$out_dir" 2>/dev/null || true
+    status=0
+    if [ -n "${EIDETIC_SIGNAL_CODEX_CLI_MODEL:-}" ]; then
+        "$codex_bin" exec --model "$EIDETIC_SIGNAL_CODEX_CLI_MODEL" -s read-only --color never \
+            -o "$out_dir/out.md" - < "$prompt_file" >/dev/null 2>&1 || status=$?
+    else
+        "$codex_bin" exec -s read-only --color never \
+            -o "$out_dir/out.md" - < "$prompt_file" >/dev/null 2>&1 || status=$?
+    fi
+    if [ "$status" -eq 0 ] && [ -s "$out_dir/out.md" ]; then
+        cat "$out_dir/out.md"
+        rm -rf "$out_dir"
+        return 0
+    fi
+    rm -rf "$out_dir"
+    return 1
+}
+
 run_codex_extraction() {
     local prompt_file="$1"
     local codex_batch_bin out_dir status
     codex_batch_bin=$(find_codex_batch || true)
-    [ -n "$codex_batch_bin" ] || return 1
+    # No private codex-batch wrapper? Fall back to the plain `codex` CLI (public).
+    [ -n "$codex_batch_bin" ] || { run_codex_cli_extraction "$prompt_file"; return $?; }
 
     out_dir=$(mktemp -d "${TMPDIR:-/tmp}/eidetic-codex-signals.XXXXXX")
     chmod 700 "$out_dir" 2>/dev/null || true

@@ -208,6 +208,12 @@ A good synthesized answer shouldn't die in the chat log. **Promote** files it ba
 
 This is Eidetic implementing [Karpathy's **LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) end-to-end: compounding pages, an explicit **maintenance contract** ([docs/MEMORY-SCHEMA.md](docs/MEMORY-SCHEMA.md)), typed pages (`synthesis` / `concept` / `entity`), and an op-log — with auto-extraction and drift detection layered on top, so the wiki maintains itself instead of rotting.
 
+### Session-End Auto-Capture (configurable)
+
+At session end a small LLM pulls `Decision:/Rule:/Worked:/Failed:/Knowledge:` signals from the transcript and compounds them (`source: agent-extracted`, 0.5× weight). The model defaults to **Sonnet** for quality, and the runner degrades across whatever CLI is installed — `claude-batch → claude --print → codex-batch → codex exec` — so **any install with the `claude` _or_ `codex` CLI captures signals**, not just one setup.
+
+Tune via env: `EIDETIC_SIGNAL_CLAUDE_MODEL` (default `sonnet`; set `=haiku` to economize) and `EIDETIC_SIGNAL_CODEX_CLI_MODEL` (otherwise Codex's own default model). For deliberate, full-quality capture, use **Promote** (above).
+
 ### Obsidian Vault Export (v4.0)
 
 Eidetic turns your memory into a browsable **Obsidian wiki** — a `HOME.md` hub, folders by type (rules / projects / references), resolved `[[wikilinks]]`, and an auto-generated map of content.
