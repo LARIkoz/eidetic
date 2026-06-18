@@ -1,6 +1,7 @@
 #!/bin/bash
 # AI Memory System v1 — Session Signal Extraction (Stop hook, async)
-# Extracts decisions/rules/failures from session transcript via Haiku with Codex fallback.
+# Extracts decisions/rules/failures from the session transcript via Claude (Sonnet
+# default) — claude-batch where available, else a plain `claude --print` — with a Codex fallback.
 # Runs async — does not delay session end.
 # Source: agent-extracted (0.5x self-referential discount)
 set -euo pipefail
@@ -8,7 +9,7 @@ set -euo pipefail
 MEMORY_SYSTEM="${EIDETIC_MEMORY_SYSTEM:-$HOME/.claude/memory-system}"
 COMPOUND="$MEMORY_SYSTEM/bin/compound.py"
 INDEX="$MEMORY_SYSTEM/bin/index.sh"
-SIGNAL_CLAUDE_MODEL="${EIDETIC_SIGNAL_CLAUDE_MODEL:-haiku}"
+SIGNAL_CLAUDE_MODEL="${EIDETIC_SIGNAL_CLAUDE_MODEL:-sonnet}"
 SIGNAL_CLAUDE_TIMEOUT="${EIDETIC_SIGNAL_CLAUDE_TIMEOUT:-30}"
 SIGNAL_CODEX_MODEL="${EIDETIC_SIGNAL_CODEX_MODEL:-gpt-5.4-mini}"
 SIGNAL_CODEX_REASONING="${EIDETIC_SIGNAL_CODEX_REASONING:-low}"
@@ -83,10 +84,24 @@ filter_signal_lines() {
 
 run_claude_extraction() {
     local prompt_file="$1"
-    local claude_batch_bin
+    local claude_batch_bin claude_bin
+    # Preferred: claude-batch — the kickout-safe wrapper. It is required on installs
+    # whose CLI guard blocks a direct `claude --print` (interactive_session_auth_conflict).
     claude_batch_bin=$(find_claude_batch || true)
-    [ -n "$claude_batch_bin" ] || return 1
-    CLAUDE_BATCH_JOB_TIMEOUT="$SIGNAL_CLAUDE_TIMEOUT" "$claude_batch_bin" --prompt-file "$prompt_file" --model "$SIGNAL_CLAUDE_MODEL"
+    if [ -n "$claude_batch_bin" ]; then
+        CLAUDE_BATCH_JOB_TIMEOUT="$SIGNAL_CLAUDE_TIMEOUT" "$claude_batch_bin" --prompt-file "$prompt_file" --model "$SIGNAL_CLAUDE_MODEL"
+        return $?
+    fi
+    # Public fallback: a plain `claude --print` one-shot for anyone without claude-batch.
+    # stdin transport (never `claude --print "$(cat ...)"` — that can truncate/quote-break
+    # the prompt). It runs at session end, so the interactive session is already closing.
+    claude_bin=$(command -v claude 2>/dev/null || true)
+    [ -n "$claude_bin" ] || return 1
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$SIGNAL_CLAUDE_TIMEOUT" "$claude_bin" --print --model "$SIGNAL_CLAUDE_MODEL" < "$prompt_file"
+    else
+        "$claude_bin" --print --model "$SIGNAL_CLAUDE_MODEL" < "$prompt_file"
+    fi
 }
 
 run_codex_extraction() {
@@ -223,7 +238,7 @@ Extract useful signals from this session transcript. For each signal, write ONE 
 Transcript:
 $EXCERPT"
 
-# Run via claude-batch first (Haiku for cost), then codex-batch if the Claude route is unavailable,
+# Run via Claude first (Sonnet — claude-batch, else `claude --print`), then codex-batch if the Claude route is unavailable,
 # empty, or does not produce contract-shaped signal lines.
 PROMPT_FILE=$(mktemp "${TMPDIR:-/tmp}/eidetic-signals.XXXXXX")
 printf '%s\n' "$PROMPT" > "$PROMPT_FILE"

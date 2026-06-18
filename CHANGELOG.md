@@ -14,6 +14,7 @@ Karpathy [LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519
 - Deduplicated the `EVIDENCE_WEIGHTS`/`SOURCE_WEIGHTS` tables onto `constants.py` (search + inject now import, not copy); broken-wikilink drift ignores prose-in-brackets (whitespace is never a memory slug).
 - `doctor.sh` now covers the op-log, promote/compound deployment state, card-kind distribution, and the W5 failed-embed log.
 - Pre-publish review (consilium) verified against live code; fixes: non-ASCII (e.g. Cyrillic) titles get a hash-slug instead of all collapsing to one page; `_atomic_write` preserves an existing card's permissions; `--update` validates its target is a memory card.
+- Session-end signal extraction now defaults to **Sonnet** (was Haiku) for higher auto-capture quality, and gained a public `claude --print` fallback so any install with the `claude` CLI extracts even without `claude-batch` (the kickout-safe wrapper is still preferred where present). Override with `EIDETIC_SIGNAL_CLAUDE_MODEL` (e.g. `=haiku` to economize). Signals remain `source: agent-extracted` (0.5× weight), so the model upgrade lifts capture quality without changing the low-trust ranking.
 
 ## v5.2.0 (2026-06-17)
 

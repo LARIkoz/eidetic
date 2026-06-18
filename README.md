@@ -82,7 +82,7 @@ One command. The **core** (FTS search, injection, drift, vault export) needs **z
 
                      SESSION END (~5s, async)
                         |
-                Extract signals (Haiku primary, Codex fallback)
+                Extract signals (Sonnet via claude-batch or `claude --print`; Codex fallback)
                         |
                 Compound: update existing memory OR create new
                         |
@@ -229,17 +229,17 @@ A quality gate filters your memory files down to a validated subset; optional `-
 
 ## Performance
 
-| Metric                   | Value                                        |
-| ------------------------ | -------------------------------------------- |
-| Session start (warm)     | **~350ms**                                   |
-| Session start (cold)     | ~15s (e5-large ONNX load)                    |
-| FTS reindex (1083 files) | ~0.3s                                        |
-| Full vector embed (7.8K) | ~1h one-time (e5 CPU); incremental = seconds |
-| FTS5 search              | ~50ms                                        |
-| Vector query (e5)        | ~32ms                                        |
-| Signal extraction        | ~$0.002/session (Haiku)                      |
-| Index size               | 31MB (FTS5) + 35MB (vectors, 1024-dim)       |
-| External dependencies    | **zero for core** (e5 model optional)        |
+| Metric                   | Value                                                                                         |
+| ------------------------ | --------------------------------------------------------------------------------------------- |
+| Session start (warm)     | **~350ms**                                                                                    |
+| Session start (cold)     | ~15s (e5-large ONNX load)                                                                     |
+| FTS reindex (1083 files) | ~0.3s                                                                                         |
+| Full vector embed (7.8K) | ~1h one-time (e5 CPU); incremental = seconds                                                  |
+| FTS5 search              | ~50ms                                                                                         |
+| Vector query (e5)        | ~32ms                                                                                         |
+| Signal extraction        | 1 Sonnet call/session (Claude subscription; `EIDETIC_SIGNAL_CLAUDE_MODEL=haiku` to economize) |
+| Index size               | 31MB (FTS5) + 35MB (vectors, 1024-dim)                                                        |
+| External dependencies    | **zero for core** (e5 model optional)                                                         |
 
 ---
 
