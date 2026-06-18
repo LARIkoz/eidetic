@@ -11,7 +11,10 @@ set -euo pipefail
 MEMORY_SYSTEM="${EIDETIC_MEMORY_SYSTEM:-$HOME/.claude/memory-system}"
 COMPOUND="$MEMORY_SYSTEM/bin/compound.py"
 INDEX="$MEMORY_SYSTEM/bin/index.sh"
-SIGNAL_CLAUDE_MODEL="${EIDETIC_SIGNAL_CLAUDE_MODEL:-sonnet}"
+# Pin an EXACT model id (not the 'sonnet' alias): a user's ANTHROPIC_DEFAULT_SONNET_MODEL
+# remap (e.g. sonnet -> Opus) would otherwise silently run this background extraction on a
+# flagship model and drain the shared quota pool. Override via EIDETIC_SIGNAL_CLAUDE_MODEL.
+SIGNAL_CLAUDE_MODEL="${EIDETIC_SIGNAL_CLAUDE_MODEL:-claude-sonnet-4-6}"
 SIGNAL_CLAUDE_TIMEOUT="${EIDETIC_SIGNAL_CLAUDE_TIMEOUT:-30}"
 SIGNAL_CODEX_MODEL="${EIDETIC_SIGNAL_CODEX_MODEL:-gpt-5.4-mini}"
 SIGNAL_CODEX_REASONING="${EIDETIC_SIGNAL_CODEX_REASONING:-low}"
