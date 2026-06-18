@@ -274,7 +274,12 @@ $EXCERPT"
 PROMPT_FILE=$(mktemp "${TMPDIR:-/tmp}/eidetic-signals.XXXXXX")
 printf '%s\n' "$PROMPT" > "$PROMPT_FILE"
 RESULT="EMPTY"
-if CLAUDE_RESULT=$(run_claude_extraction "$PROMPT_FILE" 2>/dev/null); then
+# EIDETIC_SIGNAL_SKIP_CLAUDE=1 forces the codex route only. The handoff skill
+# sets it when triggering this mid-session: a claude-batch/`claude --print` call
+# while an interactive Opus session is live shares the Anthropic quota pool and
+# can kick the extension. At true session end (Stop hook) the var is unset, so
+# the normal Claude-first → codex-fallback order applies.
+if [ -z "${EIDETIC_SIGNAL_SKIP_CLAUDE:-}" ] && CLAUDE_RESULT=$(run_claude_extraction "$PROMPT_FILE" 2>/dev/null); then
     RESULT=$(filter_signal_lines "$CLAUDE_RESULT")
 fi
 if is_empty_result "$RESULT"; then
