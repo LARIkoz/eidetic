@@ -90,6 +90,11 @@ filter_signal_lines() {
 run_claude_extraction() {
     local prompt_file="$1"
     local claude_batch_bin claude_bin
+    # Force the model via ANTHROPIC_MODEL — the env var the CLI actually honors — NOT just --model.
+    # claude-batch rewrites an exact --model id into the legacy CLAUDE_MODEL env, which current
+    # Claude Code IGNORES, silently falling back to the session default (often Opus). ANTHROPIC_MODEL
+    # also beats any ANTHROPIC_DEFAULT_SONNET_MODEL alias remap. Verified: yields claude-sonnet-4-6.
+    export ANTHROPIC_MODEL="$SIGNAL_CLAUDE_MODEL"
     # Preferred: claude-batch — the kickout-safe wrapper. It is required on installs
     # whose CLI guard blocks a direct `claude --print` (interactive_session_auth_conflict).
     claude_batch_bin=$(find_claude_batch || true)
