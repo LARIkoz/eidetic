@@ -13,8 +13,12 @@ COMPOUND="$MEMORY_SYSTEM/bin/compound.py"
 INDEX="$MEMORY_SYSTEM/bin/index.sh"
 # Pin an EXACT model id (not the 'sonnet' alias): a user's ANTHROPIC_DEFAULT_SONNET_MODEL
 # remap (e.g. sonnet -> Opus) would otherwise silently run this background extraction on a
-# flagship model and drain the shared quota pool. Override via EIDETIC_SIGNAL_CLAUDE_MODEL.
-SIGNAL_CLAUDE_MODEL="${EIDETIC_SIGNAL_CLAUDE_MODEL:-claude-sonnet-4-6}"
+# flagship model and drain the shared quota pool. Resolution (signal_model.py, one source
+# of truth shared with the doctor): EIDETIC_SIGNAL_CLAUDE_MODEL (explicit id) > the
+# install-time .signal_model choice (sonnet|haiku) > the sonnet default. Fail-safe to
+# the pinned sonnet id if the resolver is unavailable.
+SIGNAL_CLAUDE_MODEL="$(python3 "$MEMORY_SYSTEM/bin/signal_model.py" 2>/dev/null || true)"
+[ -z "$SIGNAL_CLAUDE_MODEL" ] && SIGNAL_CLAUDE_MODEL="claude-sonnet-4-6"
 SIGNAL_CLAUDE_TIMEOUT="${EIDETIC_SIGNAL_CLAUDE_TIMEOUT:-30}"
 SIGNAL_CODEX_MODEL="${EIDETIC_SIGNAL_CODEX_MODEL:-gpt-5.4-mini}"
 SIGNAL_CODEX_REASONING="${EIDETIC_SIGNAL_CODEX_REASONING:-low}"

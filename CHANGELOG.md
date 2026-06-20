@@ -2,6 +2,15 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.8.0 (2026-06-21)
+
+- **Install UX — choose the three models that define the system, one command or an agent.** Install was already one command but applied silent env-only defaults; the embedder and translation were invisible, and the card-extraction model was not an install choice at all.
+  - **Interactive choose-at-install** — on a TTY, `install.sh` now prompts (enter = default) for the **embedder** (`multilingual` / `english`), **cross-lingual translation** (`off` / `auto` / `apple` / `opusmt` / `cli`), and the **card-extraction model** (`sonnet` / `haiku`). Piped, CI, and agent installs stay **non-interactive** — each option falls back to its env var (`EIDETIC_EMBED_PROFILE`, `EIDETIC_QUERY_TRANSLATE`, `EIDETIC_SIGNAL_MODEL`) or the default, and nothing ever blocks (`EIDETIC_NONINTERACTIVE=1` forces this).
+  - **`.signal_model` config (new)** — the card-extraction model is now persisted and resolved by `bin/signal_model.py` (one source of truth for the Stop hook **and** the doctor): `EIDETIC_SIGNAL_CLAUDE_MODEL` (explicit id) > `.signal_model` (`sonnet` | `haiku`) > the pinned sonnet default. An exact id is always pinned, never the bare alias.
+  - **Apple `ru→en` pack guidance** — when `apple`/`auto` is chosen on macOS and the pack is absent, install prints the one GUI-only step (System Settings → Translation Languages) and continues (apple fails open).
+  - **`AGENTS.md`** — hand a coding agent the repo link: it asks the three choices, runs the install non-interactively, guides the GUI pack step, and verifies with `doctor.sh` (whose functional canary proves the chosen embedder actually embeds).
+- +8 tests (127 total).
+
 ## v5.7.0 (2026-06-21)
 
 - **Doctor FUNCTIONAL self-checks — catch a silently-broken embedder, not just a missing file.** The doctor's checks were structural (counts, file-existence, vector ALIGNMENT) — all of which pass even when the embedder produces meaningless vectors (wrong model, a fastembed pooling change between index-time and now, an evicted weight cache). New `bin/canary.py` EXERCISES the chain:

@@ -1,6 +1,6 @@
 🇬🇧 **English** · [🇷🇺 Русский](README.ru.md)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.7.0-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.8.0-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
 
 **Long-term memory for AI coding agents that knows when memories go bad.** Claude Code-native (zero-config hooks); works with Codex, Gemini, Cursor, Cline, and any MCP agent.
 
@@ -123,6 +123,10 @@ git clone https://github.com/LARIkoz/eidetic.git
 cd eidetic
 bash install.sh
 ```
+
+On a terminal, `install.sh` prompts (enter = default) for the **three models that define the system**: the **embedder** (`multilingual` / `english`), **cross-lingual translation** (`off` / `auto` / `apple` / `opusmt`), and the **card-extraction model** (`sonnet` / `haiku`). Piped, CI, and agent installs stay non-interactive — pass them via env (`EIDETIC_EMBED_PROFILE`, `EIDETIC_QUERY_TRANSLATE`, `EIDETIC_SIGNAL_MODEL`) or accept the defaults. Each choice persists to a config file and is shown in `doctor.sh`.
+
+**Installing with an agent?** Hand it the repo link and **[AGENTS.md](AGENTS.md)** — it asks the three choices, runs the install, guides the one GUI-only step (the Apple language pack), and verifies with the doctor.
 
 See [Dependencies](#dependencies) for what each search tier needs. Rollback: `bash ~/.claude/memory-system/bin/rollback.sh`
 

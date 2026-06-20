@@ -225,8 +225,9 @@ else
 fi
 # Card extraction: the LLM that reads the transcript tail at session end and writes
 # agent-extracted memories. Defaults to Sonnet for quality (Haiku to economize).
-SIGNAL_MODEL="${EIDETIC_SIGNAL_CLAUDE_MODEL:-sonnet}"
-note "Card extraction (session-end signals): $SIGNAL_MODEL  (env EIDETIC_SIGNAL_CLAUDE_MODEL; codex fallback EIDETIC_SIGNAL_CODEX_CLI_MODEL)"
+SIGNAL_DESC=$(EIDETIC_MEMORY_SYSTEM="$MEMORY_SYSTEM" python3 "$SCRIPT_DIR/signal_model.py" --describe 2>/dev/null)
+[ -z "$SIGNAL_DESC" ] && SIGNAL_DESC="${EIDETIC_SIGNAL_CLAUDE_MODEL:-sonnet (default)}"
+note "Card extraction (session-end signals): $SIGNAL_DESC  (install choice .signal_model; runtime override EIDETIC_SIGNAL_CLAUDE_MODEL; codex fallback EIDETIC_SIGNAL_CODEX_MODEL)"
 # Cross-lingual query translation: WIRED (opt-in, OFF by default). Show the
 # configured backend, which concrete backend resolves, and per-backend availability.
 # A non-English query is translated to English and dual-queried (native + translated,

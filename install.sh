@@ -31,6 +31,24 @@ atomic_install() {
     fi
 }
 
+# Interactive choose-at-install. Prompts ONLY on a TTY when the env var is unset, so
+# piped installs (curl|bash), CI, and agent-driven installs stay non-interactive —
+# they take the env value or the default and never block (5b.2). Echoes the choice.
+# Force non-interactive with EIDETIC_NONINTERACTIVE=1.
+_prompt_choice() {
+    local prompt="$1" def="$2"; shift 2
+    local ans="" o ok=0
+    if [ -t 0 ] && [ "${EIDETIC_NONINTERACTIVE:-0}" != "1" ]; then
+        printf '   %s\n     options: %s   [default: %s]: ' "$prompt" "$*" "$def" >&2
+        IFS= read -r ans 2>/dev/null || ans=""
+    fi
+    ans="$(printf '%s' "$ans" | tr -d '[:space:]')"
+    [ -z "$ans" ] && ans="$def"
+    for o in "$@"; do [ "$ans" = "$o" ] && ok=1; done
+    [ "$ok" = "1" ] || ans="$def"
+    printf '%s' "$ans"
+}
+
 echo "=== Eidetic Memory System — Install ==="
 echo ""
 
@@ -63,29 +81,53 @@ for src in bin/*.py; do
 done
 atomic_install mcp_server.py "$MEMORY_SYSTEM/mcp_server.py" 644
 
-# Embedding profile (model-by-language): multilingual (default) or english.
-#   multilingual = multilingual-e5-large (1024d, ~100 langs, ~2.2GB cache)
-#   english      = bge-small-en-v1.5 (384d, ~130MB cache, ~5x faster embed) —
-#                  equal English recall@3 in A/B, for English-only corpora.
-# Opt in:  EIDETIC_EMBED_PROFILE=english bash install.sh
-# Switch later: write the name to "$MEMORY_SYSTEM/.embed_profile", then
-# `bash bin/index.sh --full` (the model/dim stamp guard forces a clean rebuild).
-EMBED_PROFILE="${EIDETIC_EMBED_PROFILE:-multilingual}"
+# --- The three models that define the system (5b.1) ------------------------------
+# Each: env var (if set, wins — the CI/agent path) > interactive prompt on a TTY
+# (enter = default) > the default. Persisted to a config file the runtime reads, so
+# the choice survives restarts and is visible in `doctor.sh` (Models — who does what).
+echo "   Models (enter = default; pre-set via env or EIDETIC_NONINTERACTIVE=1 for non-interactive):"
+
+# 1) Embedder — multilingual = multilingual-e5-large (1024d, ~100 langs, ~2.2GB);
+#    english = bge-small-en-v1.5 (384d, ~130MB, ~5x faster, English-only, equal EN recall@3).
+#    Switching later: write the name to .embed_profile, then `bin/index.sh --full`
+#    (the model/dim stamp guard forces a clean rebuild).
+EMBED_PROFILE="${EIDETIC_EMBED_PROFILE:-}"
+[ -z "$EMBED_PROFILE" ] && EMBED_PROFILE="$(_prompt_choice "Embedder — multilingual (RU/EN/~100 langs) | english (smaller+faster, English-only)" multilingual multilingual english)"
 case "$EMBED_PROFILE" in multilingual|english) ;; *) EMBED_PROFILE=multilingual ;; esac
 printf '%s\n' "$EMBED_PROFILE" > "$MEMORY_SYSTEM/.embed_profile"
-echo "   Embedding profile: $EMBED_PROFILE"
+echo "   • Embedder: $EMBED_PROFILE"
 
-# Query translation (cross-lingual, opt-in): off (default) | auto | apple | opusmt | cli.
-#   A non-English query is translated to English and dual-queried (native + translated,
-#   min-rank fused) — adds recall, never regresses (5/8 -> 7/8 @3). All backends fail-open.
-#   apple  = Apple Translation NMT (macOS 26+, on-device; install the pair once via
-#            System Settings -> Translation Languages).
-#   opusmt = Opus-MT / CTranslate2 (portable; pip ctranslate2 sentencepiece huggingface_hub + ~75MB model).
-# Opt in:  EIDETIC_QUERY_TRANSLATE=auto bash install.sh   (or write the name to .translate_backend later)
-TRANSLATE_BACKEND="${EIDETIC_QUERY_TRANSLATE:-off}"
+# 2) Query translation (cross-lingual, opt-in): off | auto | apple | opusmt | cli.
+#    A non-English query is translated to English and dual-queried (min-rank fused) —
+#    adds recall, never regresses (5/8 -> 7/8 @3). All backends fail-open.
+#    apple = Apple Translation NMT (macOS 26+, on-device); opusmt = Opus-MT/CTranslate2 (portable).
+TRANSLATE_BACKEND="${EIDETIC_QUERY_TRANSLATE:-}"
+[ -z "$TRANSLATE_BACKEND" ] && TRANSLATE_BACKEND="$(_prompt_choice "Query translation (cross-lingual recall) — off | auto | apple | opusmt | cli" off off auto apple opusmt cli)"
 case "$TRANSLATE_BACKEND" in off|auto|apple|opusmt|cli) ;; *) TRANSLATE_BACKEND=off ;; esac
 printf '%s\n' "$TRANSLATE_BACKEND" > "$MEMORY_SYSTEM/.translate_backend"
-echo "   Query translation: $TRANSLATE_BACKEND"
+echo "   • Query translation: $TRANSLATE_BACKEND"
+
+# 2b) Apple ru→en pack guidance (5b.1.2 / §3.4) — the macOS language pack is GUI-only,
+#     the one step that cannot be scripted. Guide it; never block (apple fails open).
+if [ "$TRANSLATE_BACKEND" = "apple" ] || { [ "$TRANSLATE_BACKEND" = "auto" ] && [ "$(uname)" = "Darwin" ]; }; then
+    APPLE_OK=$(python3 -c "import sys; sys.path.insert(0,'$MEMORY_SYSTEM/bin'); import translate; print('Y' if translate.backend_status().get('apple') else 'n')" 2>/dev/null || echo "n")
+    if [ "$APPLE_OK" = "Y" ]; then
+        echo "     ✓ Apple ru→en translation pack already installed."
+    else
+        echo "     ⚠ Apple ru→en pack NOT installed (one-time, GUI-only — cannot be scripted):"
+        echo "        System Settings → General → Translation Languages → add Russian (~tens of MB)."
+        echo "        Until then, apple/auto falls back to opusmt/cli/native (fail-open)."
+    fi
+fi
+
+# 3) Card-extraction model (session-end signal LLM): sonnet (quality) | haiku (economy).
+#    Persisted to .signal_model; the Stop hook + doctor resolve it via bin/signal_model.py.
+#    Runtime override (full id): EIDETIC_SIGNAL_CLAUDE_MODEL.
+SIGNAL_MODEL="${EIDETIC_SIGNAL_MODEL:-}"
+[ -z "$SIGNAL_MODEL" ] && SIGNAL_MODEL="$(_prompt_choice "Card-extraction model (writes session-end memories) — sonnet (quality) | haiku (cheaper)" sonnet sonnet haiku)"
+case "$SIGNAL_MODEL" in sonnet|haiku) ;; *) SIGNAL_MODEL=sonnet ;; esac
+printf '%s\n' "$SIGNAL_MODEL" > "$MEMORY_SYSTEM/.signal_model"
+echo "   • Card-extraction model: $SIGNAL_MODEL"
 
 # Install hooks
 echo "3. Installing hooks..."

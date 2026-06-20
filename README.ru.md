@@ -1,6 +1,6 @@
 [🇬🇧 English](README.md) · 🇷🇺 **Русский**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.7.0-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.8.0-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
 
 **Долговременная память для AI-агентов-кодеров, которая отслеживает устаревание знаний.** Нативная интеграция с Claude Code (хуки без настройки); работает с Codex, Gemini, Cursor, Cline и любым MCP-агентом.
 
@@ -123,6 +123,10 @@ git clone https://github.com/LARIkoz/eidetic.git
 cd eidetic
 bash install.sh
 ```
+
+В терминале `install.sh` спросит (Enter = значение по умолчанию) про **три модели, на которых держится система**: **эмбеддер** (`multilingual` / `english`), **кросс-язычный перевод запросов** (`off` / `auto` / `apple` / `opusmt`) и **модель извлечения карточек** (`sonnet` / `haiku`). При установке через пайп, в CI или агентом всё остаётся неинтерактивным — задайте значения через переменные окружения (`EIDETIC_EMBED_PROFILE`, `EIDETIC_QUERY_TRANSLATE`, `EIDETIC_SIGNAL_MODEL`) или примите умолчания. Каждый выбор сохраняется в конфиг-файл и виден в `doctor.sh`.
+
+**Ставите через агента?** Дайте ему ссылку на репозиторий и **[AGENTS.md](AGENTS.md)** — он спросит про три выбора, запустит установку, подскажет единственный ручной шаг (языковой пакет Apple ставится только через Системные настройки) и проверит результат доктором.
 
 См. [Зависимости](#зависимости) — что нужно для каждого уровня поиска. Откат: `bash ~/.claude/memory-system/bin/rollback.sh`
 
