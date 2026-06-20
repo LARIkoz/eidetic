@@ -98,21 +98,24 @@ else
     warn "0 memory files found — nothing to index or turn into a wiki yet" "memories accrue as you work; or check the session-signals Stop hook is capturing"
 fi
 
-# §3.5 (informational) — index freshness: memory .md on disk vs DISTINCT memory
-# paths in the index (both scoped to projects/*/memory so they are comparable). A
-# large disk>index gap can mean the incremental index is behind OR that some files
-# are legitimately unindexable (empty/unparseable) — the two can't be told apart
-# from counts alone, so this is a NOTE (a delta to be aware of) and the guard-
-# accurate vector-alignment check below owns the loud "broken" verdict.
-if [ -f "$DB" ] && [ "${MEM_FILES:-0}" -gt 0 ]; then
+# §3.5 (informational) — index freshness: disk memory files the indexer WOULD index
+# vs DISTINCT memory paths actually in the index. The disk count MUST match the
+# indexer's scope (index_impl SCAN_DIRS = projects/*/memory/*.md + memory/signals/*.md,
+# NON-recursive, excluding MEMORY.md/BACKLOG.md). A naive recursive `find */memory/*.md`
+# over-counts MEMORY.md + handoff-subdir files the indexer never indexes → a permanent
+# false "behind". Scope-matched, a fresh index reads Δ0; a real incremental-hook lag shows.
+if [ -f "$DB" ]; then
     IDX_MEM=$(sqlite3 "$DB" "SELECT COUNT(DISTINCT path) FROM memory_chunks WHERE path LIKE '%/.claude/projects/%/memory/%'" 2>/dev/null || echo "")
-    if [ -n "$IDX_MEM" ] && [ "$IDX_MEM" -ge 0 ] 2>/dev/null; then
-        LAG=$(( MEM_FILES - IDX_MEM ))
-        THRESH=$(( MEM_FILES / 10 )); [ "$THRESH" -lt 20 ] && THRESH=20   # 10% or 20 files, whichever is larger
+    SCOPE_FILES=$( { find "$HOME"/.claude/projects/*/memory -maxdepth 1 -type f -name '*.md' 2>/dev/null;
+                     find "$HOME"/.claude/projects/*/memory/signals -maxdepth 1 -type f -name '*.md' 2>/dev/null; } \
+                   | grep -vE '/(MEMORY|BACKLOG)\.md$' | sort -u | wc -l | tr -d ' ')
+    if [ -n "$IDX_MEM" ] && [ "${SCOPE_FILES:-0}" -gt 0 ] 2>/dev/null; then
+        LAG=$(( SCOPE_FILES - IDX_MEM ))
+        THRESH=$(( SCOPE_FILES / 10 )); [ "$THRESH" -lt 20 ] && THRESH=20   # 10% or 20 files, whichever is larger
         if [ "$LAG" -gt "$THRESH" ]; then
-            note "index vs disk: $IDX_MEM/$MEM_FILES memory paths in FTS (Δ$LAG not indexed — behind, or empty/unparseable). If recall misses recent memories: bash $MEMORY_SYSTEM/bin/index.sh --incremental"
+            note "index vs disk: $IDX_MEM indexed / $SCOPE_FILES in-scope memory .md (Δ$LAG behind — incremental index may be lagging). Catch up: bash $MEMORY_SYSTEM/bin/index.sh --incremental"
         else
-            ok "index fresh vs disk: $IDX_MEM/$MEM_FILES memory paths in FTS (Δ$LAG)"
+            ok "index fresh vs disk: $IDX_MEM / $SCOPE_FILES in-scope memory paths in FTS (Δ$LAG)"
         fi
     fi
 fi

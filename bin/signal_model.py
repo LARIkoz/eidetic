@@ -46,8 +46,8 @@ def resolve(env=None, root=None):
     if explicit:
         return explicit
     choice = _file_choice(env, root)
-    if choice in NAMES:
-        return NAMES[choice]
+    if choice.lower() in NAMES:
+        return NAMES[choice.lower()]
     if choice.startswith("claude-"):
         return choice
     return DEFAULT
@@ -60,8 +60,8 @@ def describe(env=None, root=None):
     if explicit:
         return f"env -> {explicit}"
     choice = _file_choice(env, root)
-    if choice in NAMES:
-        return f"{choice} -> {NAMES[choice]}  (.signal_model)"
+    if choice.lower() in NAMES:
+        return f"{choice.lower()} -> {NAMES[choice.lower()]}  (.signal_model)"
     if choice.startswith("claude-"):
         return f"{choice}  (.signal_model)"
     return f"sonnet -> {DEFAULT}  (default)"

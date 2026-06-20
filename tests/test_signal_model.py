@@ -47,6 +47,10 @@ class SignalModelResolveTest(unittest.TestCase):
         self._write("banana")
         self.assertEqual(signal_model.resolve(env={}, root=self.root), "claude-sonnet-4-6")
 
+    def test_friendly_name_is_case_insensitive(self):
+        self._write("Haiku")  # a hand-edit with different case must still map
+        self.assertEqual(signal_model.resolve(env={}, root=self.root), "claude-haiku-4-5-20251001")
+
     def test_never_returns_bare_alias(self):
         # the whole point of pinning: a friendly name must never resolve to 'sonnet'
         self._write("sonnet")

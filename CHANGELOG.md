@@ -2,6 +2,11 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.8.1 (2026-06-21)
+
+- **Doctor §3.5 index-freshness fix — was a permanent false "behind".** The v5.7.0 freshness NOTE compared a naive recursive `find */memory/*.md` (which counts `MEMORY.md`, `BACKLOG.md`, and `memory/handoff-*/` sub-dir files the indexer NEVER indexes) against the indexed paths — so it always reported a large bogus delta (e.g. "Δ281 behind") even on a perfectly fresh index. Now the disk side matches the indexer's actual scope (`index_impl` SCAN_DIRS: `memory/*.md` + `memory/signals/*.md`, non-recursive, excluding `MEMORY.md`/`BACKLOG.md`), so a fresh index reads Δ0 and only a real incremental-hook lag shows.
+- **`signal_model.py` friendly-name match is now case-insensitive** — a hand-edited `.signal_model` of `Sonnet`/`Haiku` resolves correctly instead of silently falling back to the default.
+
 ## v5.8.0 (2026-06-21)
 
 - **Install UX — choose the three models that define the system, one command or an agent.** Install was already one command but applied silent env-only defaults; the embedder and translation were invisible, and the card-extraction model was not an install choice at all.
