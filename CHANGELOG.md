@@ -2,6 +2,14 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.6.0 (2026-06-21)
+
+- **Usage telemetry — which memory cards actually get surfaced.** Eidetic tracked what it _learns_ (op-log, signals) but not what it _uses_. Now every search that surfaces a card in a medium+ result records one append-only line (`bin/usage.py` → `usage.log`), and `bin/usage_stats.py` aggregates it: **top cards** by surfacings, **dead cards** (indexed but never surfaced → prune candidates), coverage %, and per-card last-seen + best/avg rank.
+  - **Append-only + fail-open + privacy-safe.** Atomic `O_APPEND` lines never corrupt under parallel sessions (no shared-SQLite write contention); any logging error is swallowed so telemetry can never break search; the raw query is **never** written — only a short hash — so the log is safe in a public tool.
+  - **Doctor "Usage" section** — surfacings / distinct / coverage % / dead count at a glance.
+  - `usage_stats.py --rollup` compacts `usage.log` into `usage_rollup.json` (atomic move-aside — no lost appends) so the log never grows unbounded; `--json` for tooling; `--top N` report. Opt out with `EIDETIC_USAGE_LOG=off`.
+- +10 tests (106 total).
+
 ## v5.5.0 (2026-06-20)
 
 - **Cross-lingual query translation (opt-in).** A non-English query is now translated to English and dual-queried — the native and translated searches run in parallel and fuse by best rank, so translation only _adds_ recall and never regresses (measured **5/8 → 7/8 recall@3** on the operator battery; the shipped runtime path carries confidence at 8/8 medium+). Three pluggable backends behind `bin/translate.py`, all **FAIL-OPEN** (any failure ⇒ the native result, never an error):

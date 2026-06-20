@@ -276,6 +276,27 @@ else
     note "op-log not started yet ($OPLOG) — first promote/compound creates it"
 fi
 
+# ----------------------------------------------------------------- USAGE
+# The READ side: which cards searches actually surface (usage.py logs medium+ hits;
+# usage_stats.py aggregates). Answers "is this memory useful" + flags dead cards.
+hdr "Usage (which cards get surfaced)"
+if [ -f "$MEMORY_SYSTEM/bin/usage_stats.py" ]; then
+    USAGE=$(python3 "$MEMORY_SYSTEM/bin/usage_stats.py" --db "$DB" --summary 2>/dev/null)
+    if [ -n "$USAGE" ]; then
+        SURF=$(echo "$USAGE" | sed -nE 's/.*surfacings=([0-9]+).*/\1/p')
+        if [ "${SURF:-0}" -gt 0 ]; then
+            note "$USAGE"
+            note "report: python3 $MEMORY_SYSTEM/bin/usage_stats.py --top 20   ·   compact: --rollup"
+        else
+            note "no usage logged yet — searches will start recording (usage_stats.py --top 20)"
+        fi
+    else
+        note "usage stats unavailable (usage_stats.py error)"
+    fi
+else
+    note "usage telemetry not deployed — sync bin/usage*.py to $MEMORY_SYSTEM/bin/"
+fi
+
 # ------------------------------------------------------------------ SUMMARY
 hdr "Summary"
 echo "  PASS=$PASS  WARN=$WARN  FAIL=$FAIL"

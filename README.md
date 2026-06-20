@@ -1,6 +1,6 @@
 🇬🇧 **English** · [🇷🇺 Русский](README.ru.md)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.5.0-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.6.0-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
 
 **Long-term memory for AI coding agents that knows when memories go bad.** Claude Code-native (zero-config hooks); works with Codex, Gemini, Cursor, Cline, and any MCP agent.
 
@@ -316,6 +316,7 @@ Core principles:
 
 **Shipped**
 
+- **v5.6.0** — usage telemetry: records which cards searches actually surface → `usage_stats.py` shows top-used cards, **dead cards** (never surfaced → prune candidates), and coverage %. Append-only, fail-open, query-hash-only (privacy-safe); doctor "Usage" section. Opt out with `EIDETIC_USAGE_LOG=off`.
 - **v5.5.0** — cross-lingual query translation (opt-in): a non-English query is auto-translated and dual-queried (native + translated, min-rank fused) — **5/8 → 7/8 recall@3**. Pluggable, fail-open backends: Apple Translation NMT (on-device, macOS 26) · Opus-MT / CTranslate2 (portable, offline) · codex CLI. Off by default.
 - **v5.4.0** — doctor's real vector-alignment check (kills the gross-lag lie that hid a 99.94% misalignment outage) · model-by-language profiles (e5-large / bge-small-en) · doctor "who does what" model-routing display · `recall_lab` cross-lingual recall harness · Russian README
 - **v5.3.1** — `imported` low-trust source tier (`0.3`, readies the Wave-1 importer) · `EIDETIC_SIGNAL_SKIP_CLAUDE` kickout-safe extraction route

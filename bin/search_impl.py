@@ -800,6 +800,39 @@ def _load_translate_module():
     return _translate_mod or None
 
 
+_usage_mod = None
+
+
+def _load_usage_module():
+    """Lazily load the sibling usage.py (read-side telemetry)."""
+    global _usage_mod
+    if _usage_mod is not None:
+        return _usage_mod or None
+    try:
+        path = os.path.join(os.path.dirname(__file__), "usage.py")
+        spec = importlib.util.spec_from_file_location("eidetic_usage", path)
+        if spec is None or spec.loader is None:
+            _usage_mod = False
+        else:
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _usage_mod = mod
+    except Exception:
+        _usage_mod = False
+    return _usage_mod or None
+
+
+def _log_usage(results, query, db_path):
+    """Record confidently-surfaced cards (which memories actually get used).
+    Fail-open: telemetry must never break search."""
+    try:
+        mod = _load_usage_module()
+        if mod is not None:
+            mod.log_surfaced(results, query, db_path, _best_confidence(results))
+    except Exception:
+        pass
+
+
 def _resolve_query_translation(query):
     """Resolved backend name iff query-translation is ON, the query is
     cross-lingual, and a backend is available — else None (plain native search).
@@ -896,6 +929,8 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False, json_o
         results = _search_dual(db_path, query, limit, type_filter, backend, warn)
     else:
         results = _run_query(db_path, query, limit, type_filter, warn=warn)
+
+    _log_usage(results, query, db_path)  # read-side telemetry (fail-open, opt-out)
 
     if output_json or json_object:
         payload = _search_response(query, limit, type_filter, results) if json_object else results

@@ -1,6 +1,6 @@
 [🇬🇧 English](README.md) · 🇷🇺 **Русский**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.5.0-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.6.0-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
 
 **Долговременная память для AI-агентов-кодеров, которая отслеживает устаревание знаний.** Нативная интеграция с Claude Code (хуки без настройки); работает с Codex, Gemini, Cursor, Cline и любым MCP-агентом.
 
@@ -316,6 +316,7 @@ eidetic export-vault ~/my-vault/     # произвольное располож
 
 **Выпущено**
 
+- **v5.6.0** — телеметрия использования: пишет, какие карточки поиск реально достаёт → `usage_stats.py` показывает топ востребованных, **мёртвые карточки** (ни разу не показаны → кандидаты на удаление) и охват %. Append-only, fail-open, только хэш запроса (приватно); секция «Usage» в докторе. Выключить — `EIDETIC_USAGE_LOG=off`.
 - **v5.5.0** — кросс-языковой перевод запроса (по желанию): неанглийский запрос автоматически переводится и ищется в двух вариантах (родной + переведённый, объединение по лучшему рангу) — recall@3 растёт с **5/8 до 7/8**. Сменные fail-open бэкенды: Apple Translation NMT (на устройстве, macOS 26) · Opus-MT / CTranslate2 (переносимый, офлайн) · codex CLI. По умолчанию выключено.
 - **v5.4.0** — доктор честно проверяет выравнивание векторов (убирает враньё gross-lag, которое прятало 99.94% рассинхрон) · профили модели по языку (e5-large / bge-small-en) · доктор показывает, какая модель что делает · `recall_lab` — замер кросс-языкового recall · русский README
 - **v5.3.1** — `imported` — уровень доверия low-trust (`0.3`, подготовка к Wave-1 импортёру) · `EIDETIC_SIGNAL_SKIP_CLAUDE` — маршрут извлечения, безопасный при kickout

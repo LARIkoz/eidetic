@@ -8,3 +8,7 @@ __pycache__/
 /TODO.md
 .translate_backend
 .embed_profile
+usage.log
+usage.log.*
+usage_rollup.json
+usage_rollup.json.tmp
