@@ -128,29 +128,47 @@ try:
         reason = (tail[-1] if tail else "nonzero exit")[:160]
         with open(log_path, "w") as f:
             f.write(r.stderr or r.stdout or "")
+    else:
+        # clean embed -> clear any stale failure marker. The W5 log is
+        # failure-only; without this, one transient BrokenPipe keeps the doctor
+        # "degraded" forever (alarm fatigue that erodes trust in the new gate).
+        open(log_path, "w").close()
 except subprocess.TimeoutExpired:
     pass  # a long reindex keeps embedding; next session resumes — not a failure
 except Exception as e:
     failed = True
     reason = f"{type(e).__name__}: {e}"[:160]
 
-# Vector lag = unembedded share of indexed chunks (same formula as doctor.sh).
-lag, missing = 0, 0
+# Vector REAL coverage = ALIGNED chunks (the search guard would accept), via
+# coverage_audit — NOT the gross (chunks-vectors)/chunks lag, which counted dead
+# orphan-vectors as coverage and hid the 99.94% chunk_id-misalignment outage.
+bindir = os.path.dirname(script)
+align_pct, orphan, blind = None, 0, 0
 try:
-    cc = sqlite3.connect(db_path).execute("SELECT COUNT(*) FROM memory_chunks").fetchone()[0]
-    vc = sqlite3.connect(vectors_db).execute("SELECT COUNT(*) FROM vectors").fetchone()[0]
-    if cc:
-        missing = max(cc - vc, 0)
-        lag = missing * 100 // cc
+    caudit = os.path.join(bindir, "coverage_audit.py")
+    if os.path.exists(caudit):
+        out = subprocess.run([sys.executable, caudit, db_path, vectors_db, "--oneline"],
+                             timeout=15, capture_output=True, text=True)
+        if out.returncode == 0:
+            kv = dict(t.split("=", 1) for t in out.stdout.split() if "=" in t)
+            ap = kv.get("align_pct", "")
+            align_pct = int(ap) if ap.lstrip("-").isdigit() else None
+            orphan = int(kv.get("orphan", "0") or "0")
+            blind = int(kv.get("blind_files", "0") or "0")
 except Exception:
     pass
 
-bindir = os.path.dirname(script)
 if failed:
     print(f"⚠️  Eidetic vectors STALE — session embed failed ({reason}). "
-          f"{missing} chunks unembedded. Log: {log_path} · check: bash {bindir}/doctor.sh")
-elif lag >= 10:
-    print(f"⚠️  Eidetic vectors {lag}% behind ({missing} unembedded) — self-healing. "
+          f"Log: {log_path} · check: bash {bindir}/doctor.sh")
+elif align_pct is not None and align_pct < 80:
+    # vectors EXIST but are chunk_id-misaligned -> search is blind. The exact
+    # outage the old lag formula reported as "healthy". Loud.
+    print(f"⚠️  Eidetic vectors {align_pct}% ALIGNED — {orphan} dead orphan-vectors, "
+          f"{blind} blind files: search is BLIND despite vectors existing. "
+          f"Rebuild: bash {bindir}/index.sh --full")
+elif align_pct is not None and align_pct < 90:
+    print(f"⚠️  Eidetic vectors {align_pct}% aligned ({blind} blind files) — self-healing. "
           f"If it persists across sessions: bash {bindir}/index.sh --full")
 PY
 fi

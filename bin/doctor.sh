@@ -25,6 +25,7 @@ else
 fi
 DB="$MEMORY_SYSTEM/db/index.db"
 VDB="$MEMORY_SYSTEM/db/vectors.db"
+CAUDIT="$SCRIPT_DIR/coverage_audit.py"   # guard-accurate vector-alignment truth (replaces gross lag)
 SETTINGS="$HOME/.claude/settings.json"
 
 # --brief: one-line health snapshot for handoffs / status lines (no full report).
@@ -36,8 +37,17 @@ if [ "${1:-}" = "--brief" ]; then
     md=$(sqlite3 "$VDB" "SELECT value FROM meta WHERE key='model'" 2>/dev/null)
     dr=$(sqlite3 "$DDB" "SELECT COUNT(*) FROM drift_findings WHERE resolved_at IS NULL" 2>/dev/null)
     mem=$(find "$HOME/.claude/projects" -path "*/memory/*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
-    lag=0; [ "${cc:-0}" -gt 0 ] 2>/dev/null && [ -n "${vc:-}" ] && lag=$(( (cc - vc) * 100 / cc ))
-    echo "Eidetic memory: ${fc:-?} files / ${cc:-?} chunks / ${vc:-?} vectors (${md##*/}, lag ${lag}%) · ${mem} memory .md on disk · ${dr:-0} open drift findings"
+    # Vector health = ALIGNED coverage (guard-accurate), NOT the gross
+    # (chunks-vectors)/chunks lag — that counted dead orphan-vectors as coverage
+    # and hid the 99.94% chunk_id-misalignment outage as "lag -319% / healthy".
+    # coverage_audit.py is the single truth source; bare count is the fallback.
+    align_pct=""; orphan=""; blind_files=""
+    [ -f "$CAUDIT" ] && { eval "$(python3 "$CAUDIT" "$DB" "$VDB" --oneline 2>/dev/null)" 2>/dev/null || true; }
+    if [ -n "${align_pct:-}" ]; then
+        echo "Eidetic memory: ${fc:-?} files / ${cc:-?} chunks / ${vc:-?} vectors (${md##*/}, ${align_pct}% aligned, ${orphan} orphan, ${blind_files} blind) · ${mem} memory .md on disk · ${dr:-0} open drift findings"
+    else
+        echo "Eidetic memory: ${fc:-?} files / ${cc:-?} chunks / ${vc:-?} vectors (${md##*/}, coverage unknown) · ${mem} memory .md on disk · ${dr:-0} open drift findings"
+    fi
     exit 0
 fi
 
@@ -94,15 +104,27 @@ if [ -f "$VDB" ]; then
     VCOUNT=$(sqlite3 "$VDB" "SELECT COUNT(*) FROM vectors" 2>/dev/null || echo "?")
     VMODEL=$(sqlite3 "$VDB" "SELECT value FROM meta WHERE key='model'" 2>/dev/null || echo "")
     [ -n "$VMODEL" ] && ok "vectors.db: $VCOUNT vectors, model=$VMODEL" || warn "vectors.db: $VCOUNT vectors, NO model stamp" "rebuild: bash $MEMORY_SYSTEM/bin/index.sh --full"
-    # vector lag: vectors should roughly track indexed chunks (code chunks count too)
-    if [ "${CHUNKS:-0}" != "0" ] && [ "${VCOUNT:-?}" != "?" ] && [ "${CHUNKS:-?}" != "?" ]; then
-        LAGPCT=$(( (CHUNKS - VCOUNT) * 100 / CHUNKS ))
-        if [ "$LAGPCT" -gt 20 ]; then
-            EMBED_RUNNING=$(pgrep -f "bin/embed.py" >/dev/null && echo " (embed running now — catching up)" || echo "")
-            warn "vector lag ${LAGPCT}% ($VCOUNT/$CHUNKS) — recent memories not semantically searchable${EMBED_RUNNING}" "bash $MEMORY_SYSTEM/bin/index.sh --incremental  # or embed.py"
+    # Vector REAL coverage = chunks whose vector the search guard would ACCEPT
+    # (join by chunk_id + path/heading/content_hash all match). The old
+    # (CHUNKS-VCOUNT)/CHUNKS lag counted dead orphan-vectors as coverage and
+    # rendered the 99.94% misalignment outage as "healthy, lag -319%". This gate
+    # reads coverage_audit.py (guard-accurate) and FAILS when vectors exist but
+    # are chunk_id-misaligned — the exact silent outage the gross count hid.
+    if [ -f "$CAUDIT" ]; then
+        align_pct=""; aligned=""; total=""; orphan=""; blind_files=""; no_vector=""
+        eval "$(python3 "$CAUDIT" "$DB" "$VDB" --oneline 2>/dev/null)" 2>/dev/null || true
+        EMBED_RUNNING=$(pgrep -f "bin/embed.py" >/dev/null && echo " (embed running now — catching up)" || echo "")
+        if [ -z "${align_pct:-}" ]; then
+            warn "could not compute vector alignment (coverage_audit failed)" "python3 $CAUDIT   # run manually to see the error"
+        elif [ "$align_pct" -lt 80 ]; then
+            bad "vectors ${align_pct}% ALIGNED ($aligned/$total) — ${orphan} dead orphan-vectors, ${blind_files} blind files: vectors EXIST but are chunk_id-misaligned, so semantic search is BLIND (a gross vector count hides this)${EMBED_RUNNING}" "bash $MEMORY_SYSTEM/bin/index.sh --full   # full rebuild realigns chunk_ids"
+        elif [ "$align_pct" -lt 95 ]; then
+            warn "vector alignment ${align_pct}% ($aligned/$total, ${orphan} orphan, ${blind_files} blind, ${no_vector} unembedded) — some memories not semantically searchable${EMBED_RUNNING}" "bash $MEMORY_SYSTEM/bin/index.sh --incremental"
         else
-            ok "vector coverage healthy ($VCOUNT/$CHUNKS, lag ${LAGPCT}%)"
+            ok "vector coverage healthy — ${align_pct}% aligned ($aligned/$total), ${orphan} orphan-vectors (harmless cruft)"
         fi
+    elif [ "${CHUNKS:-0}" != "0" ] && [ "${VCOUNT:-?}" != "?" ] && [ "${CHUNKS:-?}" != "?" ]; then
+        note "coverage_audit.py not present — raw count only ($VCOUNT vectors / $CHUNKS chunks); deploy coverage_audit.py for guard-accurate alignment"
     fi
 else
     note "vectors.db not built yet (vector search inactive; FTS still works)"
