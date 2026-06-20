@@ -98,6 +98,25 @@ else
     warn "0 memory files found — nothing to index or turn into a wiki yet" "memories accrue as you work; or check the session-signals Stop hook is capturing"
 fi
 
+# §3.5 (informational) — index freshness: memory .md on disk vs DISTINCT memory
+# paths in the index (both scoped to projects/*/memory so they are comparable). A
+# large disk>index gap can mean the incremental index is behind OR that some files
+# are legitimately unindexable (empty/unparseable) — the two can't be told apart
+# from counts alone, so this is a NOTE (a delta to be aware of) and the guard-
+# accurate vector-alignment check below owns the loud "broken" verdict.
+if [ -f "$DB" ] && [ "${MEM_FILES:-0}" -gt 0 ]; then
+    IDX_MEM=$(sqlite3 "$DB" "SELECT COUNT(DISTINCT path) FROM memory_chunks WHERE path LIKE '%/.claude/projects/%/memory/%'" 2>/dev/null || echo "")
+    if [ -n "$IDX_MEM" ] && [ "$IDX_MEM" -ge 0 ] 2>/dev/null; then
+        LAG=$(( MEM_FILES - IDX_MEM ))
+        THRESH=$(( MEM_FILES / 10 )); [ "$THRESH" -lt 20 ] && THRESH=20   # 10% or 20 files, whichever is larger
+        if [ "$LAG" -gt "$THRESH" ]; then
+            note "index vs disk: $IDX_MEM/$MEM_FILES memory paths in FTS (Δ$LAG not indexed — behind, or empty/unparseable). If recall misses recent memories: bash $MEMORY_SYSTEM/bin/index.sh --incremental"
+        else
+            ok "index fresh vs disk: $IDX_MEM/$MEM_FILES memory paths in FTS (Δ$LAG)"
+        fi
+    fi
+fi
+
 # ------------------------------------------------------------ VECTORS / MODEL
 hdr "Vectors & embedding model"
 if [ -f "$VDB" ]; then
@@ -165,6 +184,29 @@ else
     ok "no embed errors logged (W5 self-heal clean)"
 fi
 
+# ------------------------------------------------- FUNCTIONAL CANARY (embed→search)
+# Everything above is STRUCTURAL (counts, file-existence, chunk_id alignment) — all
+# of it passes even when the embedder is silently broken (wrong model, pooling drift,
+# evicted cache) or the usage logger never fires. The canary EXERCISES the chain:
+# embed a real card's name → vector search → assert it self-retrieves at rank ≤3, and
+# confirm the usage logger fired (into a TEMP log, never prod). bin/canary.py. The
+# §3.2 usage verdict is rendered later in the Usage section.
+hdr "Functional canary (live embed → vector → search)"
+CANARY_EMBED_STATUS=""; CANARY_EMBED_DETAIL=""; CANARY_USAGE_STATUS=""; CANARY_USAGE_DETAIL=""
+if [ -f "$SCRIPT_DIR/canary.py" ] && [ -f "$DB" ]; then
+    CANARY_OUT=$(python3 "$SCRIPT_DIR/canary.py" --index "$DB" --vectors "$VDB" --db "$DB" 2>/dev/null)
+    eval "$CANARY_OUT" 2>/dev/null || true
+    case "${CANARY_EMBED_STATUS:-}" in
+        ok)   ok "embed→vector→search: $CANARY_EMBED_DETAIL" ;;
+        warn) warn "embed→vector→search degraded: $CANARY_EMBED_DETAIL" "bash $MEMORY_SYSTEM/bin/index.sh --full   # rebuild vectors under the active model" ;;
+        fail) bad "embed→vector→search BROKEN: $CANARY_EMBED_DETAIL" "bash $MEMORY_SYSTEM/bin/index.sh --full   # then check bin/embed.py model + ~/.cache/fastembed" ;;
+        skip) note "embed canary skipped: $CANARY_EMBED_DETAIL" ;;
+        *)    note "embed canary did not run (canary.py error or no output)" ;;
+    esac
+else
+    note "functional canary unavailable (canary.py or index.db missing)"
+fi
+
 # ----------------------------------------------------------- MODELS / ROUTING
 # Which model does which job — so "who embeds / who writes cards / who would
 # translate" is never a mystery. Embedding is the active profile; card extraction
@@ -202,6 +244,16 @@ if [ -n "$TR_INFO" ]; then
         warn "Query translation: '$TR_CFG' set but NO backend available  [available: $AVAIL]" "set EIDETIC_QUERY_TRANSLATE=off, or install/enable a backend"
     else
         note "Query translation (cross-lingual): $TR_CFG -> $TR_RES  [available: $AVAIL]"
+    fi
+    # §3.3 — explicit Apple ru→en pack status (replaces the implicit apple=Y/n) when
+    # apple is actually in play. The pack is a macOS system asset the user downloads
+    # once via System Settings; it cannot be scripted, so the doctor must name it.
+    if [ "$TR_CFG" = "apple" ] || [ "$TR_RES" = "apple" ]; then
+        if [ "$TR_A" = "Y" ]; then
+            ok "Apple translation pack ru→en: installed ✓"
+        else
+            warn "Apple translation pack ru→en: NOT installed — apple backend falls back to opusmt/cli/native" "download Russian: System Settings → General → Translation Languages → add Russian (one-time, ~tens of MB)"
+        fi
     fi
 else
     note "Query translation: could not resolve (translate.py import failed)"
@@ -296,6 +348,16 @@ if [ -f "$MEMORY_SYSTEM/bin/usage_stats.py" ]; then
 else
     note "usage telemetry not deployed — sync bin/usage*.py to $MEMORY_SYSTEM/bin/"
 fi
+# Did the logger actually FIRE? (the canary ran a confident search into a TEMP log —
+# proves the search→usage.log wiring works, not just that the files exist). Live /
+# silent-broken / off / not-deployed. From the §3.1 canary run above.
+case "${CANARY_USAGE_STATUS:-}" in
+    live)        ok "search tracking VERIFIED live — $CANARY_USAGE_DETAIL" ;;
+    silent)      bad "search tracking SILENT — $CANARY_USAGE_DETAIL" "check bin/usage.py + search_impl._log_usage wiring" ;;
+    off)         note "search tracking: $CANARY_USAGE_DETAIL" ;;
+    notdeployed) note "search tracking: $CANARY_USAGE_DETAIL" ;;
+    *)           note "search tracking: not verified (canary skipped — no fastembed/vectors or canary.py absent)" ;;
+esac
 
 # ------------------------------------------------------------------ SUMMARY
 hdr "Summary"

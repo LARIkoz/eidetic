@@ -2,6 +2,16 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.7.0 (2026-06-21)
+
+- **Doctor FUNCTIONAL self-checks — catch a silently-broken embedder, not just a missing file.** The doctor's checks were structural (counts, file-existence, vector ALIGNMENT) — all of which pass even when the embedder produces meaningless vectors (wrong model, a fastembed pooling change between index-time and now, an evicted weight cache). New `bin/canary.py` EXERCISES the chain:
+  - **§3.1 embed→vector→search canary** — embeds a real indexed card's own name through the live model, vector-searches, and asserts that card self-retrieves at **rank ≤3**. A model/pooling drift puts the query vector in a different space than the stored passages, so the card stops self-retrieving → **fails loud** (the exact class the structural alignment check passes). Fail-soft: no fastembed / no vectors → skipped, not failed.
+  - **§3.2 search-tracking verification** — runs a real confident search and confirms the v5.6.0 usage logger actually **fired**, writing to a **temp log (never the real `usage.log`)** so a health check can't poison the dead-card telemetry it verifies. Reports live / silent-broken / off / not-deployed.
+  - **§3.3 explicit Apple `ru→en` pack line** — "installed ✓" / "NOT installed — System Settings → Translation Languages", replacing the implicit `apple=Y/n`.
+  - **§3.5 index-vs-disk freshness note** — surfaces how many memory `.md` on disk are in the FTS index (informational; the guard-accurate vector-alignment check owns the loud verdict).
+  - `EIDETIC_USAGE_LOG_PATH` overrides the usage-log destination (used by the canary + tests).
+- +13 tests (119 total). All checks fail-soft; the doctor never crashes on a missing dependency.
+
 ## v5.6.0 (2026-06-21)
 
 - **Usage telemetry — which memory cards actually get surfaced.** Eidetic tracked what it _learns_ (op-log, signals) but not what it _uses_. Now every search that surfaces a card in a medium+ result records one append-only line (`bin/usage.py` → `usage.log`), and `bin/usage_stats.py` aggregates it: **top cards** by surfacings, **dead cards** (indexed but never surfaced → prune candidates), coverage %, and per-card last-seen + best/avg rank.

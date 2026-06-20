@@ -28,7 +28,15 @@ _CONFIDENT = ("medium", "high")
 
 
 def usage_log_path(db_path):
-    """usage.log next to index.db (alongside vectors.db / drift_state.db)."""
+    """usage.log next to index.db (alongside vectors.db / drift_state.db).
+
+    EIDETIC_USAGE_LOG_PATH overrides the destination — used by the doctor canary
+    to verify the logger FIRES against a TEMP log (so a health check never writes
+    to the real usage.log and poisons the dead-card / top-used telemetry), and by
+    tests for isolation. Empty/unset ⇒ the default next-to-db path (unchanged)."""
+    override = os.environ.get("EIDETIC_USAGE_LOG_PATH", "").strip()
+    if override:
+        return override
     return os.path.join(os.path.dirname(os.path.abspath(db_path)), "usage.log")
 
 
