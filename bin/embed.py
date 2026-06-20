@@ -16,8 +16,50 @@ import sqlite3
 import sys
 import time
 
-MODEL_NAME = "intfloat/multilingual-e5-large"
-VECTOR_DIM = 1024
+# --- Embedding profiles: model + dim + retrieval prefixes ---------------------
+# The embedder is config-driven so an English-only corpus can opt into a smaller,
+# faster model. Selection order: env EIDETIC_EMBED_PROFILE, else the
+# `.embed_profile` file at the memory-system root, else "multilingual" (the
+# default — zero behaviour change vs the hardcoded e5 setup).
+#
+# Switching profiles changes model+dim, so the vectors.db model/dim stamp
+# mismatches on the next run: search degrades LOUDLY to FTS and the guard/doctor
+# prompt `index.sh --full`, which rebuilds + restamps under the new profile.
+#
+# Prefixes are model-specific and getting them wrong quietly halves recall, so
+# each profile carries its own: e5 needs "query: "/"passage: "; bge-en uses an
+# asymmetric query instruction and no passage prefix.
+PROFILES = {
+    "multilingual": {
+        "model": "intfloat/multilingual-e5-large", "dim": 1024,
+        "query_prefix": "query: ", "passage_prefix": "passage: ",
+    },
+    "english": {
+        "model": "BAAI/bge-small-en-v1.5", "dim": 384,
+        "query_prefix": "Represent this sentence for searching relevant passages: ",
+        "passage_prefix": "",
+    },
+}
+
+
+def _active_profile(_config_path=None):
+    name = os.environ.get("EIDETIC_EMBED_PROFILE", "").strip()
+    if not name:
+        cfg = _config_path or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".embed_profile")
+        try:
+            with open(cfg, encoding="utf-8") as f:
+                name = f.read().strip()
+        except OSError:
+            name = ""
+    return name if name in PROFILES else "multilingual"
+
+
+EMBED_PROFILE = _active_profile()
+MODEL_NAME = PROFILES[EMBED_PROFILE]["model"]
+VECTOR_DIM = PROFILES[EMBED_PROFILE]["dim"]
+QUERY_PREFIX = PROFILES[EMBED_PROFILE]["query_prefix"]
+PASSAGE_PREFIX = PROFILES[EMBED_PROFILE]["passage_prefix"]
 
 # fastembed defaults its model cache to TMPDIR (/var/folders/.../T), which macOS
 # periodically purges — silently evicting the ~2GB e5 weights and breaking all
@@ -137,8 +179,9 @@ def embed_texts(texts):
     import numpy as np
 
     model = get_model()
-    # e5 REQUIRES the "passage: " prefix on indexed documents (fastembed does not add it).
-    embeddings = list(model.embed(["passage: " + t for t in texts]))
+    # Indexed documents get the active profile's passage prefix (e5 "passage: ";
+    # bge-en none) — fastembed does not add it.
+    embeddings = list(model.embed([PASSAGE_PREFIX + t for t in texts]))
     return [np.array(e, dtype=np.float32).tobytes() for e in embeddings]
 
 
@@ -301,8 +344,9 @@ def search(vector_db_path, query, limit=5):
         if not _vector_meta_ok(vec_conn):
             return []  # drift detected + warned; fail safe to FTS-only
         model = get_model()
-        # e5 REQUIRES the "query: " prefix on search queries (fastembed does not add it).
-        q_vec = np.array(list(model.embed(["query: " + query]))[0], dtype=np.float32)
+        # Search queries get the active profile's query prefix (e5 "query: "; bge
+        # an asymmetric instruction) — fastembed does not add it.
+        q_vec = np.array(list(model.embed([QUERY_PREFIX + query]))[0], dtype=np.float32)
 
         rows = vec_conn.execute(
             "SELECT chunk_id, path, name, section_heading, content_hash, embedding FROM vectors"

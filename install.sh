@@ -63,6 +63,18 @@ for src in bin/*.py; do
 done
 atomic_install mcp_server.py "$MEMORY_SYSTEM/mcp_server.py" 644
 
+# Embedding profile (model-by-language): multilingual (default) or english.
+#   multilingual = multilingual-e5-large (1024d, ~100 langs, ~2.2GB cache)
+#   english      = bge-small-en-v1.5 (384d, ~130MB cache, ~5x faster embed) —
+#                  equal English recall@3 in A/B, for English-only corpora.
+# Opt in:  EIDETIC_EMBED_PROFILE=english bash install.sh
+# Switch later: write the name to "$MEMORY_SYSTEM/.embed_profile", then
+# `bash bin/index.sh --full` (the model/dim stamp guard forces a clean rebuild).
+EMBED_PROFILE="${EIDETIC_EMBED_PROFILE:-multilingual}"
+case "$EMBED_PROFILE" in multilingual|english) ;; *) EMBED_PROFILE=multilingual ;; esac
+printf '%s\n' "$EMBED_PROFILE" > "$MEMORY_SYSTEM/.embed_profile"
+echo "   Embedding profile: $EMBED_PROFILE"
+
 # Install hooks
 echo "3. Installing hooks..."
 mkdir -p "$HOOKS_DIR"
@@ -248,5 +260,6 @@ echo "  - Delta:  bash $COMMAND_MEMORY_SYSTEM/bin/export-vault.sh ~/my-vault/ --
 echo ""
 echo "Optional v2 features:"
 echo "  - Semantic vector search: python3 -m pip install --user fastembed"
+echo "  - English-only corpus? Smaller/faster embedder: re-run with EIDETIC_EMBED_PROFILE=english, then bin/index.sh --full"
 echo "  - Code-aware indexing: python3 -m pip install --user tree-sitter tree-sitter-python tree-sitter-javascript tree-sitter-bash"
 echo "  - Without these packages, core FTS5 search still works."
