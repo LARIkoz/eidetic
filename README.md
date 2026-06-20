@@ -1,6 +1,6 @@
 🇬🇧 **English** · [🇷🇺 Русский](README.ru.md)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.3.1-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.4.0-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
 
 **Long-term memory for AI coding agents that knows when memories go bad.** Claude Code-native (zero-config hooks); works with Codex, Gemini, Cursor, Cline, and any MCP agent.
 
@@ -316,6 +316,7 @@ Core principles:
 
 **Shipped**
 
+- **v5.4.0** — doctor's real vector-alignment check (kills the gross-lag lie that hid a 99.94% misalignment outage) · model-by-language profiles (e5-large / bge-small-en) · doctor "who does what" model-routing display · `recall_lab` cross-lingual recall harness · Russian README
 - **v5.3.1** — `imported` low-trust source tier (`0.3`, readies the Wave-1 importer) · `EIDETIC_SIGNAL_SKIP_CLAUDE` kickout-safe extraction route
 - **v5.3** — **promote** (file answers back as typed pages — Karpathy's LLM Wiki) · greppable **op-log** · typed `card_kind` (synthesis/concept/entity) · **loud embed self-heal** (no silent outages) · explicit [memory schema](docs/MEMORY-SCHEMA.md) · `doctor` covers it all
 - **v5.2** — cross-encoder rerank salvage · persistent model cache · embed/export concurrency locks · fenced-code-safe vault export · `doctor` self-check

@@ -2,6 +2,15 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.4.0 (2026-06-20)
+
+- **The doctor tells the truth about vectors.** The vector-health check used a gross `(chunks - vectors)/chunks` lag that counted dead orphan-vectors as coverage and could read negative — it reported a 99.94% chunk_id-misalignment outage as "healthy, lag -319%" for weeks. New `bin/coverage_audit.py` classifies every chunk against the real search-time guard (join by chunk_id → path/heading → recomputed content_hash); `doctor.sh` and the session-start hook now read its guard-accurate ALIGNED metric and **fail loudly** when vectors exist but are chunk_id-misaligned. Regression-proven on the pre-rebuild backup (0% aligned → doctor exits 2). +3 fixtures.
+- **Model-by-language.** The embedder is now a config-driven profile (`EIDETIC_EMBED_PROFILE` env / `.embed_profile` file): `multilingual` (multilingual-e5-large, 1024d — the default, unchanged) or `english` (BAAI/bge-small-en-v1.5, 384d, ~130MB cache vs 2.2GB, ~5× faster embed). A/B on the live corpus: bge-small-en matched e5-large at English recall@3 7/8. Switching profiles trips the existing model/dim stamp guard → a clean `index.sh --full` rebuild, no silent corruption. +6 tests.
+- **Doctor shows model routing** — a "Models — who does what" section: which model embeds (the active profile), which writes session-end cards (Sonnet by default), and that cross-lingual query translation is not wired (native-language search; an automatic translate step via a small model is planned).
+- Added `bin/recall_lab.py` — an operator harness measuring cross-lingual recall@k and comparing query strategies (native / translated / dual-query fusion). Finding on the restored index: a translated (English) query recalls 7/8 @3 vs 5/8 for the native query; automatic translation is future work.
+- Russian README (`README.ru.md`) + an EN/RU language switcher (the contributor docs and core remain English).
+- The W5 failed-embed log is now cleared on a clean embed, so one transient error no longer pins the doctor "degraded" until the next manual reindex.
+
 ## v5.3.1 (2026-06-18)
 
 - Added the `imported` source-weight tier (`0.3`, below `agent-extracted`) to `SOURCE_WEIGHTS` + the golden ranking test — third-party content filed by the importer (Karpathy's "Ingest") is low-trust by construction and never outranks session-validated knowledge or user feedback.
