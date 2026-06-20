@@ -53,11 +53,20 @@ DEFAULT_BATTERY = [
 STRATEGIES = ["baseline_RU", "translate_EN", "dualquery_RRF", "dualquery_MINRANK"]
 
 
-def search(db, query, limit):
+def search(db, query, limit, translate_env=None):
+    """Shell search_impl.py. translate_env sets EIDETIC_QUERY_TRANSLATE so the
+    `runtime_<backend>` strategy exercises the SHIPPED async dual-query path
+    (with confidence). For every other strategy the env is unset so the baseline
+    is never silently translated."""
     cmd = [sys.executable, str(BIN / "search_impl.py"), str(db), query,
            "--limit", str(limit), "--json-object"]
+    env = dict(os.environ)
+    if translate_env:
+        env["EIDETIC_QUERY_TRANSLATE"] = translate_env
+    else:
+        env.pop("EIDETIC_QUERY_TRANSLATE", None)
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=90, env=env)
         return json.loads(out.stdout).get("results", [])
     except Exception:
         return []
@@ -97,22 +106,53 @@ def _fused_rank(fused_paths, target):
     return None
 
 
-def run(battery, db, k, limit):
+def _load_translate(backend):
+    """Return a callable q->english using the real runtime translate.py backend."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("eidetic_translate", str(BIN / "translate.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return lambda q: mod.translate(q, "en", backend)
+
+
+def run(battery, db, k, limit, translate_fn=None, backend_name=None):
+    """Compare strategies. With translate_fn, add two REAL-translator strategies:
+    xlate_<backend> (runtime-translated only) and dual_<backend> (native + runtime
+    translation, min-rank fused) — measuring the shipped pipeline vs the hand-written
+    translate_EN ceiling."""
+    strategies = list(STRATEGIES)
+    if translate_fn and backend_name:
+        strategies += [f"xlate_{backend_name}", f"dual_{backend_name}", f"runtime_{backend_name}"]
     rows = []
-    counts = {s: {"recall_at_k": 0, "found": 0, "conf_ok": 0} for s in STRATEGIES}
+    counts = {s: {"recall_at_k": 0, "found": 0, "conf_ok": 0} for s in strategies}
     for probe in battery:
         ru, en, tgt = probe["query_ru"], probe["query_en"], probe["target"]
         res_ru, res_en = search(db, ru, limit), search(db, en, limit)
+        real_q, real_res, res_runtime = None, None, None
+        if translate_fn:
+            real_q = translate_fn(ru)
+            real_res = search(db, real_q, limit) if real_q else []
+            # runtime_<backend>: the actual shipped path (native + translation fused
+            # inside search_impl) — carries confidence, so AC4 is measurable here.
+            res_runtime = search(db, ru, limit, translate_env=backend_name)
         cells = {}
-        for s in STRATEGIES:
+        for s in strategies:
             if s == "baseline_RU":
                 rk, cf = rank_and_conf(res_ru, tgt)
             elif s == "translate_EN":
                 rk, cf = rank_and_conf(res_en, tgt)
             elif s == "dualquery_RRF":
                 rk, cf = _fused_rank(_fuse_rrf(res_ru, res_en), tgt), None
-            else:
+            elif s == "dualquery_MINRANK":
                 rk, cf = _fused_rank(_fuse_minrank(res_ru, res_en), tgt), None
+            elif s.startswith("xlate_"):
+                rk, cf = rank_and_conf(real_res or [], tgt)
+            elif s.startswith("dual_"):
+                rk, cf = _fused_rank(_fuse_minrank(res_ru, real_res or []), tgt), None
+            elif s.startswith("runtime_"):
+                rk, cf = rank_and_conf(res_runtime or [], tgt)
+            else:
+                rk, cf = None, None
             cells[s] = {"rank": rk, "confidence": cf}
             if rk is not None:
                 counts[s]["found"] += 1
@@ -120,24 +160,24 @@ def run(battery, db, k, limit):
                     counts[s]["recall_at_k"] += 1
                 if cf in ("high", "medium"):
                     counts[s]["conf_ok"] += 1
-        rows.append({"name": probe["name"], "cells": cells})
-    return rows, counts
+        rows.append({"name": probe["name"], "cells": cells, "real_q": real_q})
+    return rows, counts, strategies
 
 
-def _print_table(rows, counts, n, k):
-    hdr = f"{'case':24} | " + " | ".join(f"{s:>17}" for s in STRATEGIES)
+def _print_table(rows, counts, n, k, strategies):
+    hdr = f"{'case':24} | " + " | ".join(f"{s:>17}" for s in strategies)
     print(hdr)
     print("-" * len(hdr))
     for row in rows:
         cells = []
-        for s in STRATEGIES:
+        for s in strategies:
             c = row["cells"][s]
             rk, cf = c["rank"], c["confidence"]
             cells.append(f"#{rk}/{cf or '-'}" if rk else "MISS")
         print(f"{row['name']:24} | " + " | ".join(f"{c:>17}" for c in cells))
     print("-" * len(hdr))
     print(f"\nSUMMARY (n={n}):")
-    for s in STRATEGIES:
+    for s in strategies:
         c = counts[s]
         print(f"  {s:18}  recall@{k}={c['recall_at_k']}/{n}   "
               f"found={c['found']}/{n}   medium+_conf={c['conf_ok']}/{n}")
@@ -151,6 +191,9 @@ def main(argv=None):
     ap.add_argument("--db", default=os.path.expanduser("~/.claude/memory-system/db/index.db"))
     ap.add_argument("-k", type=int, default=5, help="recall@k cutoff (default 5)")
     ap.add_argument("--limit", type=int, default=50, help="search depth (default 50)")
+    ap.add_argument("--translate", metavar="BACKEND",
+                    help="measure the REAL runtime translator (apple|opusmt|cli|auto): "
+                         "adds xlate_<backend> + dual_<backend> strategies")
     ap.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     args = ap.parse_args(argv)
 
@@ -164,12 +207,17 @@ def main(argv=None):
     else:
         battery = DEFAULT_BATTERY
 
-    rows, counts = run(battery, db, args.k, args.limit)
+    translate_fn, backend_name = None, None
+    if args.translate:
+        backend_name = args.translate
+        translate_fn = _load_translate(backend_name)
+
+    rows, counts, strategies = run(battery, db, args.k, args.limit, translate_fn, backend_name)
     if args.json:
-        print(json.dumps({"k": args.k, "n": len(battery), "rows": rows,
-                          "summary": counts}, indent=2, ensure_ascii=False))
+        print(json.dumps({"k": args.k, "n": len(battery), "backend": backend_name,
+                          "rows": rows, "summary": counts}, indent=2, ensure_ascii=False))
     else:
-        _print_table(rows, counts, len(battery), args.k)
+        _print_table(rows, counts, len(battery), args.k, strategies)
     return 0
 
 

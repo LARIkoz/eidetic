@@ -704,6 +704,184 @@ def search_detail(db_path, selector, section=None, output_json=False, json_objec
         print(result["content"])
 
 
+def _run_query(db_path, query, limit, type_filter, warn=False):
+    """Full retrieval for one query string → annotated results list (own conn).
+
+    Extracted from search() so the async dual-query can run a native and a
+    translated query through the identical FTS+vector+RRF+confidence pipeline.
+    Opens and closes its own sqlite connection (thread-safe for parallel calls).
+    """
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.row_factory = sqlite3.Row
+    ensure_agent_columns(conn)
+    try:
+        drift_data = _load_drift_data(db_path)
+        rows = _fetch_fts_rows(conn, query, limit, type_filter)
+
+        has_non_ascii = any(ord(c) > 127 for c in query)
+        if not rows and has_non_ascii:
+            ascii_words = [w for w in query.split() if all(ord(c) < 128 for c in w) and len(w) >= 3]
+            if ascii_words:
+                rows = _fetch_fts_rows(conn, " ".join(ascii_words), limit, type_filter)
+            if not rows and ascii_words:
+                for aw in ascii_words:
+                    rows = _fetch_fts_rows(conn, aw, limit, type_filter)
+                    if rows:
+                        break
+
+        results = []
+        for row, strategy, match_quality in rows:
+            ev_w = EVIDENCE_WEIGHTS.get(row["evidence"], 0.7)
+            src_w = SOURCE_WEIGHTS.get(row["source"], 1.0)
+            status_w = compute_status_weight(row["status"], row["superseded_by"])
+            drift_info = drift_data.get(row["path"], {})
+            dp = drift_info.get("penalty")
+            fr_w = dp if dp is not None else compute_freshness(row["last_verified"])
+            raw_rank = abs(row["fts_rank"])
+            compound = raw_rank * ev_w * src_w * fr_w * status_w * max(0.1, match_quality)
+
+            result = _base_result(
+                row,
+                drift_info=drift_info,
+                drift_penalty=dp,
+                freshness=fr_w,
+                status_weight=status_w,
+            )
+            result.update({
+                "score": round(compound, 4),
+                "retrieval_score": round(compound, 4),
+                "fts_rank": round(raw_rank, 4),
+                "match": strategy,
+                "match_quality": round(match_quality, 3),
+            })
+            results.append(result)
+
+        results.sort(key=lambda x: x["score"], reverse=True)
+        results = results[:limit]
+
+        vector_db = db_path.replace("index.db", "vectors.db")
+        has_phrase = any(r.get("match") == "phrase" for r in results[:3])
+        force_vector = has_non_ascii
+        if (force_vector or _needs_vector(results, limit)) and os.path.exists(vector_db):
+            vec_results = _vector_search(
+                vector_db, conn, query, limit, type_filter, drift_data,
+                warn=warn,
+                relaxed=force_vector,
+            )
+            if vec_results:
+                results = _rrf_merge(results, vec_results, limit, has_phrase=has_phrase)
+
+        return _annotate_confidence(results, query)
+    finally:
+        conn.close()
+
+
+_translate_mod = None
+
+
+def _load_translate_module():
+    """Lazily load the sibling translate.py (file-path import, like embed/rerank)."""
+    global _translate_mod
+    if _translate_mod is not None:
+        return _translate_mod or None
+    try:
+        path = os.path.join(os.path.dirname(__file__), "translate.py")
+        spec = importlib.util.spec_from_file_location("eidetic_translate", path)
+        if spec is None or spec.loader is None:
+            _translate_mod = False
+        else:
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _translate_mod = mod
+    except Exception:
+        _translate_mod = False
+    return _translate_mod or None
+
+
+def _resolve_query_translation(query):
+    """Resolved backend name iff query-translation is ON, the query is
+    cross-lingual, and a backend is available — else None (plain native search).
+    Default config is "off", so this returns None and search is unchanged."""
+    try:
+        tr = _load_translate_module()
+        if tr is None:
+            return None
+        configured = tr.active_backend()
+        if configured == "off":
+            return None
+        if not tr.should_translate(query):
+            return None
+        return tr.resolve_backend(configured)
+    except Exception:
+        return None
+
+
+def _fuse_dual(native, translated, limit):
+    """Min-rank fusion of two annotated result lists (same as recall_lab's
+    _fuse_minrank, dict-level): a doc's fused rank = its best rank across the two
+    lists; carry the dict from whichever list ranked it better; native wins ties
+    (it is the user's own-language hit). This keeps the cases native wins AND
+    surfaces what only the translated query finds."""
+    order = {}
+    pick = {}
+    for source in (native, translated):
+        for rank, r in enumerate(source):
+            key = (r.get("path"), r.get("section"))
+            if key not in order or rank < order[key]:
+                order[key] = rank
+                pick[key] = r
+            elif key not in pick:
+                pick[key] = r
+    ranked = sorted(order, key=lambda k: order[k])
+    return [pick[k] for k in ranked][:limit]
+
+
+def _translate_timeout():
+    """Bounded extra wait for the translated query. A bad/zero/negative value
+    falls back to the 8 s default — a config typo must never break native search."""
+    try:
+        t = float(os.environ.get("EIDETIC_TRANSLATE_TIMEOUT") or 8)
+        return t if t > 0 else 8.0
+    except (TypeError, ValueError):
+        return 8.0
+
+
+def _search_dual(db_path, query, limit, type_filter, backend, warn):
+    """Run native and translated searches concurrently, fuse by min-rank.
+
+    FAIL-OPEN by construction: the native search runs in THIS thread and is always
+    returned. The translated query runs in a DAEMON thread, so a slow/wedged
+    translator can neither delay process exit (the daemon dies with the process —
+    no non-daemon join at interpreter shutdown) nor raise into the caller. A
+    timeout, failure, or unavailable translator ⇒ native result only."""
+    import threading
+
+    box = {}
+
+    def translated_job():
+        try:
+            tr = _load_translate_module()
+            if tr is None:
+                return
+            english = tr.translate(query, "en", backend)
+            if not english or english.strip().lower() == query.strip().lower():
+                return
+            box["res"] = _run_query(db_path, english, limit, type_filter, warn=False)
+        except Exception:
+            pass
+
+    worker = threading.Thread(target=translated_job, daemon=True)
+    worker.start()
+    native = _run_query(db_path, query, limit, type_filter, warn=warn)  # anchor (main thread)
+    worker.join(_translate_timeout())
+    translated = box.get("res")
+    if not translated:
+        return native
+    return _fuse_dual(native, translated, limit)
+
+
 def search(db_path, query, limit=10, type_filter=None, output_json=False, json_object=False, output_mode="auto"):
     """Search FTS5 index with compound ranking."""
     if not os.path.exists(db_path):
@@ -711,70 +889,13 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False, json_o
         sys.exit(1)
 
     limit = _normalize_limit(limit)
+    warn = not (output_json or json_object)
 
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.row_factory = sqlite3.Row
-    ensure_agent_columns(conn)
-
-    drift_data = _load_drift_data(db_path)
-    rows = _fetch_fts_rows(conn, query, limit, type_filter)
-
-    has_non_ascii = any(ord(c) > 127 for c in query)
-    if not rows and has_non_ascii:
-        ascii_words = [w for w in query.split() if all(ord(c) < 128 for c in w) and len(w) >= 3]
-        if ascii_words:
-            rows = _fetch_fts_rows(conn, " ".join(ascii_words), limit, type_filter)
-        if not rows and ascii_words:
-            for aw in ascii_words:
-                rows = _fetch_fts_rows(conn, aw, limit, type_filter)
-                if rows:
-                    break
-
-    results = []
-    for row, strategy, match_quality in rows:
-        ev_w = EVIDENCE_WEIGHTS.get(row["evidence"], 0.7)
-        src_w = SOURCE_WEIGHTS.get(row["source"], 1.0)
-        status_w = compute_status_weight(row["status"], row["superseded_by"])
-        drift_info = drift_data.get(row["path"], {})
-        dp = drift_info.get("penalty")
-        fr_w = dp if dp is not None else compute_freshness(row["last_verified"])
-        raw_rank = abs(row["fts_rank"])
-        compound = raw_rank * ev_w * src_w * fr_w * status_w * max(0.1, match_quality)
-
-        result = _base_result(
-            row,
-            drift_info=drift_info,
-            drift_penalty=dp,
-            freshness=fr_w,
-            status_weight=status_w,
-        )
-        result.update({
-            "score": round(compound, 4),
-            "retrieval_score": round(compound, 4),
-            "fts_rank": round(raw_rank, 4),
-            "match": strategy,
-            "match_quality": round(match_quality, 3),
-        })
-        results.append(result)
-
-    results.sort(key=lambda x: x["score"], reverse=True)
-    results = results[:limit]
-
-    vector_db = db_path.replace("index.db", "vectors.db")
-    has_phrase = any(r.get("match") == "phrase" for r in results[:3])
-    force_vector = has_non_ascii
-    if (force_vector or _needs_vector(results, limit)) and os.path.exists(vector_db):
-        vec_results = _vector_search(
-            vector_db, conn, query, limit, type_filter, drift_data,
-            warn=not (output_json or json_object),
-            relaxed=force_vector,
-        )
-        if vec_results:
-            results = _rrf_merge(results, vec_results, limit, has_phrase=has_phrase)
-
-    results = _annotate_confidence(results, query)
+    backend = _resolve_query_translation(query)
+    if backend:
+        results = _search_dual(db_path, query, limit, type_filter, backend, warn)
+    else:
+        results = _run_query(db_path, query, limit, type_filter, warn=warn)
 
     if output_json or json_object:
         payload = _search_response(query, limit, type_filter, results) if json_object else results
@@ -794,8 +915,6 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False, json_o
             _print_brief_results(query, results, auto_broad=auto_broad)
         else:
             _print_full_results(query, results)
-
-    conn.close()
 
 
 def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=None, warn=False, relaxed=False):

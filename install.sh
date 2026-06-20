@@ -75,6 +75,18 @@ case "$EMBED_PROFILE" in multilingual|english) ;; *) EMBED_PROFILE=multilingual 
 printf '%s\n' "$EMBED_PROFILE" > "$MEMORY_SYSTEM/.embed_profile"
 echo "   Embedding profile: $EMBED_PROFILE"
 
+# Query translation (cross-lingual, opt-in): off (default) | auto | apple | opusmt | cli.
+#   A non-English query is translated to English and dual-queried (native + translated,
+#   min-rank fused) — adds recall, never regresses (5/8 -> 7/8 @3). All backends fail-open.
+#   apple  = Apple Translation NMT (macOS 26+, on-device; install the pair once via
+#            System Settings -> Translation Languages).
+#   opusmt = Opus-MT / CTranslate2 (portable; pip ctranslate2 sentencepiece huggingface_hub + ~75MB model).
+# Opt in:  EIDETIC_QUERY_TRANSLATE=auto bash install.sh   (or write the name to .translate_backend later)
+TRANSLATE_BACKEND="${EIDETIC_QUERY_TRANSLATE:-off}"
+case "$TRANSLATE_BACKEND" in off|auto|apple|opusmt|cli) ;; *) TRANSLATE_BACKEND=off ;; esac
+printf '%s\n' "$TRANSLATE_BACKEND" > "$MEMORY_SYSTEM/.translate_backend"
+echo "   Query translation: $TRANSLATE_BACKEND"
+
 # Install hooks
 echo "3. Installing hooks..."
 mkdir -p "$HOOKS_DIR"
@@ -261,5 +273,6 @@ echo ""
 echo "Optional v2 features:"
 echo "  - Semantic vector search: python3 -m pip install --user fastembed"
 echo "  - English-only corpus? Smaller/faster embedder: re-run with EIDETIC_EMBED_PROFILE=english, then bin/index.sh --full"
+echo "  - Cross-lingual search? Translate non-English queries: re-run with EIDETIC_QUERY_TRANSLATE=auto (Apple NMT on macOS 26, else Opus-MT/CTranslate2)"
 echo "  - Code-aware indexing: python3 -m pip install --user tree-sitter tree-sitter-python tree-sitter-javascript tree-sitter-bash"
 echo "  - Without these packages, core FTS5 search still works."

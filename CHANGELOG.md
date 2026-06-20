@@ -2,6 +2,17 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.5.0 (2026-06-20)
+
+- **Cross-lingual query translation (opt-in).** A non-English query is now translated to English and dual-queried — the native and translated searches run in parallel and fuse by best rank, so translation only _adds_ recall and never regresses (measured **5/8 → 7/8 recall@3** on the operator battery; the shipped runtime path carries confidence at 8/8 medium+). Three pluggable backends behind `bin/translate.py`, all **FAIL-OPEN** (any failure ⇒ the native result, never an error):
+  - `apple` — Apple Translation NMT (macOS 26+, on-device, Neural Engine) via a self-contained Swift helper (`bin/apple_translate.swift`) using the headless `TranslationSession(installedSource:target:)` API — no SwiftUI, no app window. Install the language pair once via System Settings → Translation Languages.
+  - `opusmt` — Helsinki Opus-MT via CTranslate2 (portable, offline, Linux + macOS). Lazy `pip: ctranslate2 sentencepiece huggingface_hub` + a ~75 MB INT8 model pinned by revision.
+  - `cli` — codex CLI zero-install fallback.
+  - `auto` prefers apple (macOS + pair installed) → opusmt → cli. **Default `off`** (`EIDETIC_QUERY_TRANSLATE` env / `.translate_backend` file) — with no opt-in, search is byte-identical to v5.4.0.
+- **Async dual-query, fail-open by construction.** The native search is the anchor: a slow / killed / unavailable translator (verified at a 1 ms forced timeout) still returns the native result. `EIDETIC_TRANSLATE_TIMEOUT` bounds the translator (default 8 s).
+- **Doctor shows the active translator** — the "Models — who does what" section reports the configured backend, which concrete backend resolves, and per-backend availability (`apple` / `opusmt` / `cli`).
+- `bin/recall_lab.py --translate <backend>` measures the _real_ runtime translator (adds `xlate_` / `dual_` / `runtime_<backend>` strategies) against the hand-written ceiling — both Apple and Opus-MT hit 7/8. +19 tests (93 total).
+
 ## v5.4.0 (2026-06-20)
 
 - **The doctor tells the truth about vectors.** The vector-health check used a gross `(chunks - vectors)/chunks` lag that counted dead orphan-vectors as coverage and could read negative — it reported a 99.94% chunk_id-misalignment outage as "healthy, lag -319%" for weeks. New `bin/coverage_audit.py` classifies every chunk against the real search-time guard (join by chunk_id → path/heading → recomputed content_hash); `doctor.sh` and the session-start hook now read its guard-accurate ALIGNED metric and **fail loudly** when vectors exist but are chunk_id-misaligned. Regression-proven on the pre-rebuild backup (0% aligned → doctor exits 2). +3 fixtures.

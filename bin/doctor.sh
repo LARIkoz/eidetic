@@ -185,10 +185,27 @@ fi
 # agent-extracted memories. Defaults to Sonnet for quality (Haiku to economize).
 SIGNAL_MODEL="${EIDETIC_SIGNAL_CLAUDE_MODEL:-sonnet}"
 note "Card extraction (session-end signals): $SIGNAL_MODEL  (env EIDETIC_SIGNAL_CLAUDE_MODEL; codex fallback EIDETIC_SIGNAL_CODEX_CLI_MODEL)"
-# Cross-lingual query translation: NOT wired — a non-English query searches as-is.
-# A pre-translated (EN) query recalls better in testing (bin/recall_lab.py); an
-# automatic translate step (a small model, e.g. Haiku) is planned, not active.
-note "Query translation (cross-lingual): not wired — native-language search (planned: small model, e.g. Haiku)"
+# Cross-lingual query translation: WIRED (opt-in, OFF by default). Show the
+# configured backend, which concrete backend resolves, and per-backend availability.
+# A non-English query is translated to English and dual-queried (native + translated,
+# min-rank fused) — measured 5/8 -> 7/8 recall@3 (bin/recall_lab.py --translate).
+TR_INFO=$(python3 -c "import sys; sys.path.insert(0,'$SCRIPT_DIR'); import translate; s=translate.backend_status(); print('|'.join([s['configured'],str(s['resolved']),'Y' if s['apple'] else 'n','Y' if s['opusmt'] else 'n','Y' if s['cli'] else 'n']))" 2>/dev/null)
+if [ -n "$TR_INFO" ]; then
+    TR_CFG="${TR_INFO%%|*}"; _r="${TR_INFO#*|}"
+    TR_RES="${_r%%|*}"; _r="${_r#*|}"
+    TR_A="${_r%%|*}"; _r="${_r#*|}"
+    TR_O="${_r%%|*}"; TR_C="${_r##*|}"
+    AVAIL="apple=$TR_A opusmt=$TR_O cli=$TR_C"
+    if [ "$TR_CFG" = "off" ]; then
+        note "Query translation (cross-lingual): OFF — opt-in via EIDETIC_QUERY_TRANSLATE / .translate_backend  [available: $AVAIL]"
+    elif [ "$TR_RES" = "None" ]; then
+        warn "Query translation: '$TR_CFG' set but NO backend available  [available: $AVAIL]" "set EIDETIC_QUERY_TRANSLATE=off, or install/enable a backend"
+    else
+        note "Query translation (cross-lingual): $TR_CFG -> $TR_RES  [available: $AVAIL]"
+    fi
+else
+    note "Query translation: could not resolve (translate.py import failed)"
+fi
 
 # --------------------------------------------------------------------- HOOKS
 hdr "Hooks & automation (settings.json)"

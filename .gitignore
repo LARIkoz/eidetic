@@ -6,3 +6,5 @@ __pycache__/
 # maintainer-local docs (leak internal workspace paths — keep out of the public repo)
 /PROJECT_MAP.md
 /TODO.md
+.translate_backend
+.embed_profile
