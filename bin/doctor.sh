@@ -165,6 +165,31 @@ else
     ok "no embed errors logged (W5 self-heal clean)"
 fi
 
+# ----------------------------------------------------------- MODELS / ROUTING
+# Which model does which job — so "who embeds / who writes cards / who would
+# translate" is never a mystery. Embedding is the active profile; card extraction
+# is the session-end LLM; cross-lingual query translation is not wired yet.
+hdr "Models — who does what"
+EMBED_INFO=$(python3 -c "import sys; sys.path.insert(0,'$SCRIPT_DIR'); import embed; print(f'{embed.EMBED_PROFILE}|{embed.MODEL_NAME}|{embed.VECTOR_DIM}')" 2>/dev/null)
+if [ -n "$EMBED_INFO" ]; then
+    EP="${EMBED_INFO%%|*}"; _rest="${EMBED_INFO#*|}"; EM="${_rest%%|*}"; ED="${_rest##*|}"
+    note "Embedding (search/recall): $EM  [profile: $EP, ${ED}d]"
+    # vectors.db was BUILT by VMODEL (stamp) — flag a profile↔vectors mismatch.
+    if [ -n "${VMODEL:-}" ] && [ "$VMODEL" != "$EM" ]; then
+        warn "active embed profile uses $EM but vectors.db was built by $VMODEL" "bash $MEMORY_SYSTEM/bin/index.sh --full   # rebuild under the active profile"
+    fi
+else
+    note "Embedding: could not resolve the active profile (embed.py import failed)"
+fi
+# Card extraction: the LLM that reads the transcript tail at session end and writes
+# agent-extracted memories. Defaults to Sonnet for quality (Haiku to economize).
+SIGNAL_MODEL="${EIDETIC_SIGNAL_CLAUDE_MODEL:-sonnet}"
+note "Card extraction (session-end signals): $SIGNAL_MODEL  (env EIDETIC_SIGNAL_CLAUDE_MODEL; codex fallback EIDETIC_SIGNAL_CODEX_CLI_MODEL)"
+# Cross-lingual query translation: NOT wired — a non-English query searches as-is.
+# A pre-translated (EN) query recalls better in testing (bin/recall_lab.py); an
+# automatic translate step (a small model, e.g. Haiku) is planned, not active.
+note "Query translation (cross-lingual): not wired — native-language search (planned: small model, e.g. Haiku)"
+
 # --------------------------------------------------------------------- HOOKS
 hdr "Hooks & automation (settings.json)"
 hookchk() { if grep -q "$1" "$SETTINGS" 2>/dev/null; then ok "$2 hook installed"; else warn "$2 hook NOT installed" "re-run install.sh"; fi; }
