@@ -1,11 +1,8 @@
+🇬🇧 **English** · [🇷🇺 Русский](README.ru.md)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.3.1-blue.svg)](CHANGELOG.md)
-[![Claude Code](https://img.shields.io/badge/Claude_Code-hooks%20%2B%20skills%20%2B%20rules-purple.svg)](#how-it-works)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.3.1-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
 
-
-
-**Long-term memory for Claude Code that knows when memories go bad.**
+**Long-term memory for AI coding agents that knows when memories go bad.** Claude Code-native (zero-config hooks); works with Codex, Gemini, Cursor, Cline, and any MCP agent.
 
 ```
 Session 1:  "Never mock the database in tests"
@@ -35,6 +32,17 @@ git clone https://github.com/LARIkoz/eidetic.git && cd eidetic && bash install.s
 ```
 
 One command. The **core** (FTS search, injection, drift, vault export) needs **zero pip installs** and works immediately; semantic / cross-lingual search adds one optional dependency — see [Dependencies](#dependencies).
+
+---
+
+## Works with any agent
+
+Eidetic is **agent-agnostic at the memory layer** — one `.md` store + FTS5 + e5 vector index; only the _integration surface_ changes per agent:
+
+- **Claude Code** — zero-config. `install.sh` wires SessionStart/Stop hooks, so memory **auto-injects** at the start of every session and signals **auto-capture** at the end. The deepest, hands-off experience.
+- **Codex · Gemini · Cursor · Cline — any MCP agent** — point the agent at the bundled **MCP server** (`memory_search`, `memory_search_detail`, `export_vault`, …) for on-demand recall + write-back. Session-end signal capture also runs on the `codex` CLI, not just `claude`.
+
+No lock-in to one agent. (Auto-injection is the Claude Code hook path; other agents recall on demand through MCP.)
 
 ---
 
@@ -92,7 +100,6 @@ One command. The **core** (FTS search, injection, drift, vault export) needs **z
 <img width="1074" height="1082" alt="image" src="https://github.com/user-attachments/assets/24e70c71-55a8-4d64-a819-050e9107120e" />
 
 ### Compound Ranking
-
 
 Every result is ranked by:
 
