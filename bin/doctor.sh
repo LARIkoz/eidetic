@@ -235,7 +235,11 @@ note "Card extraction (session-end signals): $SIGNAL_DESC  (install choice .sign
 # configured backend, which concrete backend resolves, and per-backend availability.
 # A non-English query is translated to English and dual-queried (native + translated,
 # min-rank fused) — measured 5/8 -> 7/8 recall@3 (bin/recall_lab.py --translate).
-TR_INFO=$(python3 -c "import sys; sys.path.insert(0,'$SCRIPT_DIR'); import translate; s=translate.backend_status(); print('|'.join([s['configured'],str(s['resolved']),'Y' if s['apple'] else 'n','Y' if s['opusmt'] else 'n','Y' if s['cli'] else 'n']))" 2>/dev/null)
+# Resolve the corpus/configured source language so the Apple pack check + label aren't
+# hardcoded to Russian: EIDETIC_TRANSLATE_LANG > .translate_lang > corpus auto-detect > ru.
+TR_LANG=$(python3 -c "import sys; sys.path.insert(0,'$SCRIPT_DIR'); import canary; print(canary._resolve_translate_lang('$DB') or 'ru')" 2>/dev/null)
+[ -z "$TR_LANG" ] && TR_LANG=ru
+TR_INFO=$(python3 -c "import sys; sys.path.insert(0,'$SCRIPT_DIR'); import translate; s=translate.backend_status(source='$TR_LANG'); print('|'.join([s['configured'],str(s['resolved']),'Y' if s['apple'] else 'n','Y' if s['opusmt'] else 'n','Y' if s['cli'] else 'n']))" 2>/dev/null)
 if [ -n "$TR_INFO" ]; then
     TR_CFG="${TR_INFO%%|*}"; _r="${TR_INFO#*|}"
     TR_RES="${_r%%|*}"; _r="${_r#*|}"
@@ -249,14 +253,15 @@ if [ -n "$TR_INFO" ]; then
     else
         note "Query translation (cross-lingual): $TR_CFG -> $TR_RES  [available: $AVAIL]"
     fi
-    # §3.3 — explicit Apple ru→en pack status (replaces the implicit apple=Y/n) when
-    # apple is actually in play. The pack is a macOS system asset the user downloads
-    # once via System Settings; it cannot be scripted, so the doctor must name it.
+    # §3.3 — explicit Apple <lang>→en pack status (replaces the implicit apple=Y/n) when
+    # apple is actually in play. <lang> is the resolved corpus/configured source language
+    # (not hardcoded ru). The pack is a macOS system asset downloaded once via System
+    # Settings; it cannot be scripted, so the doctor must name the pair.
     if [ "$TR_CFG" = "apple" ] || [ "$TR_RES" = "apple" ]; then
         if [ "$TR_A" = "Y" ]; then
-            ok "Apple translation pack ru→en: installed ✓"
+            ok "Apple translation pack ${TR_LANG}→en: installed ✓"
         else
-            warn "Apple translation pack ru→en: NOT installed — apple backend falls back to opusmt/cli/native" "download Russian: System Settings → General → Translation Languages → add Russian (one-time, ~tens of MB)"
+            warn "Apple translation pack ${TR_LANG}→en: NOT installed — apple backend falls back to opusmt/cli/native" "download the '${TR_LANG}' language: System Settings → General → Translation Languages (one-time, ~tens of MB)"
         fi
     fi
     # §3.6 — FUNCTIONALLY test the translator (not just availability): the canary

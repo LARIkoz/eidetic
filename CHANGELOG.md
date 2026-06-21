@@ -2,6 +2,10 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.11.0 (2026-06-21)
+
+- **The Apple pack check + label are language-adaptive too — finishing the "your language, not Russian" generalization.** v5.10.0 made the _functional_ translator probe (§3.6) adapt to the corpus language; now the _availability_ side does too. `backend_status(source=…)` probes the resolved corpus/configured language's pack (`source→en`) instead of a hardcoded `ru→en`, and the doctor labels the line with that language (e.g. `Apple translation pack de→en: installed ✓` for a German user, with `…→ add the 'de' language` guidance). The `apple_translate.swift` helper already accepted `--from <lang>` — only the Python default and the doctor label were hardcoded. +2 tests (138 total).
+
 ## v5.10.0 (2026-06-21)
 
 - **Translator canary is language-adaptive — checks YOUR language, not hardcoded Russian.** Translation is off by default (not everyone needs it), but those who enable it write memories in their own language. The §3.6 functional check now **auto-detects the corpus's dominant non-Latin script** (Cyrillic→ru, Han→zh, Kana→ja, Hangul→ko) and probes in _that_ language; Latin-script corpora (de/fr/es/it/pt) opt in via `EIDETIC_TRANSLATE_LANG` (or a `.translate_lang` file). When the language can't be determined it **skips the functional probe** rather than wrongly assuming Russian (which would false-fail a non-RU user who lacks the RU pack). +2 tests (136 total).

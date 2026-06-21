@@ -275,14 +275,17 @@ def translate(query, target="en", backend=None):
     return out
 
 
-def backend_status():
-    """For the doctor: the configured backend + per-backend availability."""
+def backend_status(source="ru"):
+    """For the doctor: the configured backend + per-backend availability. `source` is
+    the query language whose Apple pack is probed (source->en) — the doctor passes the
+    corpus/configured language so the pack check isn't hardcoded to Russian."""
     configured = active_backend()
     resolved = resolve_backend(configured) if configured != "off" else None
     return {
         "configured": configured,
         "resolved": resolved,
-        "apple": apple_available(),
+        "apple": apple_available(source=source),
+        "apple_source": source,
         "opusmt": opusmt_available(),
         "cli": cli_available(),
     }

@@ -178,5 +178,23 @@ class TranslateTimeoutParse(unittest.TestCase):
             self.assertEqual(search_impl._translate_timeout(), 8.0)
 
 
+class BackendStatusSource(unittest.TestCase):
+    def test_source_language_plumbed_to_apple_pack_check(self):
+        # the doctor passes the corpus/configured language → backend_status must probe
+        # THAT pair (source->en), not a hardcoded ru->en, and echo it back.
+        with mock.patch.object(translate, "apple_available", return_value=True) as m, \
+                mock.patch.object(translate, "opusmt_available", return_value=False), \
+                mock.patch.object(translate, "cli_available", return_value=False):
+            s = translate.backend_status(source="de")
+        self.assertEqual(s["apple_source"], "de")
+        m.assert_called_once_with(source="de")
+
+    def test_default_source_is_ru(self):
+        with mock.patch.object(translate, "apple_available", return_value=False), \
+                mock.patch.object(translate, "opusmt_available", return_value=False), \
+                mock.patch.object(translate, "cli_available", return_value=False):
+            self.assertEqual(translate.backend_status()["apple_source"], "ru")
+
+
 if __name__ == "__main__":
     unittest.main()
