@@ -2,6 +2,12 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.9.0 (2026-06-21)
+
+- **Doctor now FUNCTIONALLY tests the translator (§3.6), not just its availability.** The doctor showed the translation backend resolved and the Apple `ru→en` pack was installed — but "installed" is not "works". When translation is enabled, the doctor now **translates a fixed Russian sentence** through the resolved backend and asserts the result is non-empty, **changed**, and Cyrillic-free — so a backend that's present but silently returns nothing fails loud (parallel to the v5.7.0 embed canary). Skips cleanly when translation is off (the default). +6 tests (134 total).
+  - The probe is a full sentence (`"Память дрейфует со временем" → "Memory drifts with time"`): the Apple backend auto-detects the source language, and a short phrase like `"привет мир"` mis-detects as Kazakh — a full sentence detects as Russian reliably.
+- **README**: explicit "Background / idle = **none** (event-driven, no daemon, 0 CPU between sessions)" line in the Performance table.
+
 ## v5.8.1 (2026-06-21)
 
 - **Doctor §3.5 index-freshness fix — was a permanent false "behind".** The v5.7.0 freshness NOTE compared a naive recursive `find */memory/*.md` (which counts `MEMORY.md`, `BACKLOG.md`, and `memory/handoff-*/` sub-dir files the indexer NEVER indexes) against the indexed paths — so it always reported a large bogus delta (e.g. "Δ281 behind") even on a perfectly fresh index. Now the disk side matches the indexer's actual scope (`index_impl` SCAN_DIRS: `memory/*.md` + `memory/signals/*.md`, non-recursive, excluding `MEMORY.md`/`BACKLOG.md`), so a fresh index reads Δ0 and only a real incremental-hook lag shows.

@@ -156,5 +156,36 @@ class UsageCanaryTest(unittest.TestCase):
         self.assertEqual(before, after)
 
 
+class TranslateCanaryTest(unittest.TestCase):
+    def test_ok_when_translated(self):
+        r = canary.translate_canary(translate_fn=lambda q, t, b: "Memory drifts with time", backend="apple")
+        self.assertEqual(r["status"], "ok")
+        self.assertIn("functional", r["detail"])
+
+    def test_fail_when_empty(self):
+        r = canary.translate_canary(translate_fn=lambda q, t, b: "", backend="apple")
+        self.assertEqual(r["status"], "fail")
+        self.assertIn("EMPTY", r["detail"])
+
+    def test_fail_when_none(self):
+        r = canary.translate_canary(translate_fn=lambda q, t, b: None, backend="apple")
+        self.assertEqual(r["status"], "fail")
+
+    def test_fail_when_unchanged(self):
+        r = canary.translate_canary(translate_fn=lambda q, t, b: canary.TRANSLATE_PROBE, backend="opusmt")
+        self.assertEqual(r["status"], "fail")
+        self.assertIn("UNCHANGED", r["detail"])
+
+    def test_warn_when_cyrillic_remains(self):
+        r = canary.translate_canary(translate_fn=lambda q, t, b: "Память wat", backend="apple")
+        self.assertEqual(r["status"], "warn")
+
+    def test_fail_when_translator_raises(self):
+        def boom(q, t, b):
+            raise RuntimeError("backend died")
+        r = canary.translate_canary(translate_fn=boom, backend="apple")
+        self.assertEqual(r["status"], "fail")
+
+
 if __name__ == "__main__":
     unittest.main()

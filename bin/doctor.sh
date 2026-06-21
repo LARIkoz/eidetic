@@ -195,7 +195,7 @@ fi
 # confirm the usage logger fired (into a TEMP log, never prod). bin/canary.py. The
 # §3.2 usage verdict is rendered later in the Usage section.
 hdr "Functional canary (live embed → vector → search)"
-CANARY_EMBED_STATUS=""; CANARY_EMBED_DETAIL=""; CANARY_USAGE_STATUS=""; CANARY_USAGE_DETAIL=""
+CANARY_EMBED_STATUS=""; CANARY_EMBED_DETAIL=""; CANARY_USAGE_STATUS=""; CANARY_USAGE_DETAIL=""; CANARY_TRANSLATE_STATUS=""; CANARY_TRANSLATE_DETAIL=""
 if [ -f "$SCRIPT_DIR/canary.py" ] && [ -f "$DB" ]; then
     CANARY_OUT=$(python3 "$SCRIPT_DIR/canary.py" --index "$DB" --vectors "$VDB" --db "$DB" 2>/dev/null)
     eval "$CANARY_OUT" 2>/dev/null || true
@@ -259,6 +259,14 @@ if [ -n "$TR_INFO" ]; then
             warn "Apple translation pack ru→en: NOT installed — apple backend falls back to opusmt/cli/native" "download Russian: System Settings → General → Translation Languages → add Russian (one-time, ~tens of MB)"
         fi
     fi
+    # §3.6 — FUNCTIONALLY test the translator (not just availability): the canary
+    # translated a fixed RU probe; assert it came back as changed, non-Cyrillic English.
+    # off/skip = translation OFF (default) or no backend — the lines above already say so.
+    case "${CANARY_TRANSLATE_STATUS:-}" in
+        ok)   ok "translator works: $CANARY_TRANSLATE_DETAIL" ;;
+        warn) warn "translator degraded: $CANARY_TRANSLATE_DETAIL" "check the configured backend / its model" ;;
+        fail) bad "translator BROKEN: $CANARY_TRANSLATE_DETAIL" "set EIDETIC_QUERY_TRANSLATE=off, or fix/reinstall the backend" ;;
+    esac
 else
     note "Query translation: could not resolve (translate.py import failed)"
 fi

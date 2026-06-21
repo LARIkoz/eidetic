@@ -201,6 +201,51 @@ def usage_canary(db_path, probe_query, usage_mod=None, run_search=None, log_prob
             pass
 
 
+# --------------------------------------------------------------- §3.6 translate canary
+import re as _re
+
+# A LONG, unambiguously-Russian sentence: the apple backend auto-detects the source
+# language (NLLanguageRecognizer), and a short phrase like "привет мир" mis-detects as
+# Kazakh → no pack → empty (a false-positive). A full sentence detects as ru reliably.
+TRANSLATE_PROBE = "Память дрейфует со временем"  # → "Memory drifts with time"
+
+
+def _default_translate(query, target, backend):
+    import translate
+    return translate.translate(query, target, backend)
+
+
+def translate_canary(translate_fn=None, backend=None, configured=None):
+    """FUNCTIONALLY test the translator (parallel to the embed canary): translate a
+    fixed RU probe and assert the result is non-empty, CHANGED, and Cyrillic-free.
+    The doctor otherwise only shows backend AVAILABILITY (resolves? pack installed?) —
+    which is "is it present", not "does it actually translate". Skips cleanly when
+    translation is OFF (the default) or no backend is available."""
+    if translate_fn is None:
+        try:
+            import translate as _t
+            cfg = configured or _t.active_backend()
+            if cfg == "off":
+                return {"status": "off", "detail": "query translation OFF (default) — translator not functionally tested"}
+            backend = backend or _t.resolve_backend(cfg)
+            if not backend:
+                return {"status": "skip", "detail": f"'{cfg}' set but no translation backend available"}
+            translate_fn = _default_translate
+        except Exception as e:
+            return {"status": "skip", "detail": f"translate module unavailable: {type(e).__name__}"}
+    try:
+        out = translate_fn(TRANSLATE_PROBE, "en", backend)
+    except Exception as e:
+        return {"status": "fail", "backend": backend, "detail": f"translator ({backend}) raised: {type(e).__name__}: {e}"}
+    if not out or not out.strip():
+        return {"status": "fail", "backend": backend, "detail": f"translator ({backend}) returned EMPTY for '{TRANSLATE_PROBE}'"}
+    if out.strip().lower() == TRANSLATE_PROBE.lower():
+        return {"status": "fail", "backend": backend, "detail": f"translator ({backend}) returned the input UNCHANGED"}
+    if _re.search(r"[А-Яа-яЁё]", out):
+        return {"status": "warn", "backend": backend, "detail": f"translator ({backend}) output still has Cyrillic: '{out.strip()[:40]}'"}
+    return {"status": "ok", "backend": backend, "detail": f"'{TRANSLATE_PROBE}' -> '{out.strip()[:40]}' ({backend} functional)"}
+
+
 # --------------------------------------------------------------- CLI for doctor.sh
 def _emit(prefix, d):
     print(f"{prefix}_STATUS={shlex.quote(str(d.get('status', '')))}")
@@ -229,6 +274,8 @@ def main(argv=None):
     probe = emb.get("card") or "test"
     usg = usage_canary(db, probe)
     _emit("CANARY_USAGE", usg)
+    tr = translate_canary()
+    _emit("CANARY_TRANSLATE", tr)
     return 0
 
 
