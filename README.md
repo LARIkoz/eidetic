@@ -48,18 +48,21 @@ No lock-in to one agent. (Auto-injection is the Claude Code hook path; other age
 
 ## What It Does
 
-| Problem                                               | How Eidetic solves it                                                              |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| MEMORY.md caps at 200 lines (only a fraction visible) | Smart compression: **all 160 rules** in same token budget                          |
-| Keyword search only                                   | **Hybrid FTS5 + vector** search (e5-large, ~100 languages)                         |
-| Forgets between sessions                              | **Auto-extracts** decisions, failures, patterns at session end                     |
-| Knowledge piles up as duplicate files                 | **Compounds** — updates existing memories instead of creating new ones             |
-| Stale memories poison the agent                       | **Drift detection** — flags broken wikilinks, age staleness, confidence escalation |
-| Agent-created memories reinforce hallucinations       | **Self-referential discount** — agent-extracted = 0.5x weight                      |
-| All memories treated equally                          | **Evidence tiers** — validated > observed > hypothesis                             |
-| Can't search code                                     | **Tree-sitter** parses functions/classes into searchable chunks                    |
-| Good answers die in the chat log                      | **Promote** — file a synthesized answer back as one typed page (Karpathy's wiki)   |
-| Vector search fails silently (the 16-day outage)      | **Loud self-heal** — a failed embed surfaces a warning + logs, never goes dark     |
+| Problem                                               | How Eidetic solves it                                                                                                |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| MEMORY.md caps at 200 lines (only a fraction visible) | Smart compression: **all 160 rules** in same token budget                                                            |
+| Keyword search only                                   | **Hybrid FTS5 + vector** search (e5-large, ~100 languages)                                                           |
+| Forgets between sessions                              | **Auto-extracts** decisions, failures, patterns at session end                                                       |
+| Knowledge piles up as duplicate files                 | **Compounds** — updates existing memories instead of creating new ones                                               |
+| Stale memories poison the agent                       | **Drift detection** — flags broken wikilinks, age staleness, confidence escalation                                   |
+| Agent-created memories reinforce hallucinations       | **Self-referential discount** — agent-extracted = 0.5x weight                                                        |
+| All memories treated equally                          | **Evidence tiers** — validated > observed > hypothesis                                                               |
+| Can't search code                                     | **Tree-sitter** parses functions/classes into searchable chunks                                                      |
+| Good answers die in the chat log                      | **Promote** — file a synthesized answer back as one typed page (Karpathy's wiki)                                     |
+| Vector search fails silently (the 16-day outage)      | **Loud self-heal** — a failed embed surfaces a warning + logs, never goes dark                                       |
+| Non-English queries miss English-written memories     | **Cross-lingual translation** — translate the query → dual-query → min-rank fuse (opt-in; 5/8→7/8 recall@3)          |
+| No idea which memories actually get used              | **Usage telemetry** — logs which cards surface; flags **dead cards** to prune                                        |
+| "Healthy" hides a silently-broken embedder/translator | **Functional doctor** — a canary embeds→searches→asserts rank, and verifies the translator + usage logger really run |
 
 ---
 
@@ -81,8 +84,10 @@ No lock-in to one agent. (Auto-injection is the Claude Code hook path; other age
                      MID-SESSION
                         |
                 READ   /memory-recall "query"  or  MCP memory_search
-                        |    FTS5 + e5 vector (forced for non-English) + cross-encoder -> RRF merge
+                        |    non-English query? -> translate to English (opt-in: Apple NMT / Opus-MT) -> dual-query
+                        |    FTS5 + e5 vector (forced for non-English) + cross-encoder -> RRF merge (min-rank)
                         |    Calibrated confidence (two-signal gate) + drift warnings
+                        |    └─ confident hits logged -> usage stats (top cards · dead cards to prune)
                         |
                 WRITE  remember.py promote "<title>"   (file an answer back as a typed page)
                              └─ search-before-write: a re-promote appends ## Update, never duplicates
