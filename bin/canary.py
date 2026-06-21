@@ -204,10 +204,30 @@ def usage_canary(db_path, probe_query, usage_mod=None, run_search=None, log_prob
 # --------------------------------------------------------------- §3.6 translate canary
 import re as _re
 
-# A LONG, unambiguously-Russian sentence: the apple backend auto-detects the source
-# language (NLLanguageRecognizer), and a short phrase like "привет мир" mis-detects as
-# Kazakh → no pack → empty (a false-positive). A full sentence detects as ru reliably.
-TRANSLATE_PROBE = "Память дрейфует со временем"  # → "Memory drifts with time"
+# Probe sentences per source language — NOT hardcoded to Russian. The translator
+# exists to translate the USER's non-English queries to English, so the probe must be
+# in the language THEIR corpus actually uses. Each is a FULL sentence (the apple backend
+# auto-detects the source language; a short phrase mis-detects — e.g. "привет мир" reads
+# as Kazakh). Add a language here to give it a functional check.
+LANG_PROBES = {
+    "ru": ("Память дрейфует со временем", "Russian"),
+    "uk": ("Памʼять дрейфує з часом", "Ukrainian"),
+    "zh": ("记忆会随着时间而漂移", "Chinese"),
+    "ja": ("記憶は時間とともにずれていく", "Japanese"),
+    "ko": ("기억은 시간이 지나면서 변한다", "Korean"),
+    "de": ("Das Gedächtnis driftet mit der Zeit", "German"),
+    "fr": ("La mémoire dérive avec le temps", "French"),
+    "es": ("La memoria se desplaza con el tiempo", "Spanish"),
+    "it": ("La memoria va alla deriva nel tempo", "Italian"),
+    "pt": ("A memória se desvia com o tempo", "Portuguese"),
+}
+# Non-Latin scripts the corpus auto-detector can recognise (Latin-script languages
+# can't be told apart by script alone → those need an explicit EIDETIC_TRANSLATE_LANG).
+_SCRIPT_LANGS = [
+    (r"[Ѐ-ӿ]", "ru"), (r"[一-鿿]", "zh"),
+    (r"[぀-ヿ]", "ja"), (r"[가-힯]", "ko"),
+]
+TRANSLATE_PROBE = LANG_PROBES["ru"][0]  # back-compat default
 
 
 def _default_translate(query, target, backend):
@@ -215,12 +235,51 @@ def _default_translate(query, target, backend):
     return translate.translate(query, target, backend)
 
 
-def translate_canary(translate_fn=None, backend=None, configured=None):
+def _detect_corpus_lang(db_path, sample=300):
+    """Best-effort: the dominant non-Latin script in a sample of indexed content →
+    a language code. Latin-script corpora (en/de/fr/…) return None (script can't
+    distinguish them) — they opt in via EIDETIC_TRANSLATE_LANG."""
+    import sqlite3
+    import collections
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        rows = conn.execute(
+            "SELECT COALESCE(name,'')||' '||COALESCE(content,'') FROM memory_chunks LIMIT ?",
+            (sample,)).fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return None
+    counts = collections.Counter()
+    for (text,) in rows:
+        for pat, lang in _SCRIPT_LANGS:
+            if _re.search(pat, text or ""):
+                counts[lang] += 1
+    return counts.most_common(1)[0][0] if counts else None
+
+
+def _resolve_translate_lang(db_path):
+    """Source language for the functional probe: EIDETIC_TRANSLATE_LANG > .translate_lang
+    file > corpus auto-detect > None (skip the functional probe — never wrongly assume RU)."""
+    env = (os.environ.get("EIDETIC_TRANSLATE_LANG") or "").strip().lower()
+    if env:
+        return env
+    base = os.path.expanduser(os.environ.get("EIDETIC_MEMORY_SYSTEM") or "~/.claude/memory-system")
+    try:
+        with open(os.path.join(base, ".translate_lang"), encoding="utf-8") as f:
+            v = f.read().strip().lower()
+            if v:
+                return v
+    except OSError:
+        pass
+    return _detect_corpus_lang(db_path) if db_path else None
+
+
+def translate_canary(db_path=None, translate_fn=None, backend=None, configured=None, lang=None):
     """FUNCTIONALLY test the translator (parallel to the embed canary): translate a
-    fixed RU probe and assert the result is non-empty, CHANGED, and Cyrillic-free.
+    probe IN THE CORPUS'S LANGUAGE and assert the result is non-empty and CHANGED.
     The doctor otherwise only shows backend AVAILABILITY (resolves? pack installed?) —
-    which is "is it present", not "does it actually translate". Skips cleanly when
-    translation is OFF (the default) or no backend is available."""
+    "is it present", not "does it translate". Skips when translation is OFF (default),
+    no backend is available, or the corpus language has no probe / can't be detected."""
     if translate_fn is None:
         try:
             import translate as _t
@@ -233,17 +292,22 @@ def translate_canary(translate_fn=None, backend=None, configured=None):
             translate_fn = _default_translate
         except Exception as e:
             return {"status": "skip", "detail": f"translate module unavailable: {type(e).__name__}"}
+    if lang is None:
+        lang = _resolve_translate_lang(db_path)
+    entry = LANG_PROBES.get(lang or "")
+    if not entry:
+        hint = f"detected '{lang}'" if lang else "language not detected (Latin-script corpus?)"
+        return {"status": "skip", "detail": f"no functional probe for the corpus language ({hint}) — set EIDETIC_TRANSLATE_LANG; availability only"}
+    probe, langname = entry
     try:
-        out = translate_fn(TRANSLATE_PROBE, "en", backend)
+        out = translate_fn(probe, "en", backend)
     except Exception as e:
-        return {"status": "fail", "backend": backend, "detail": f"translator ({backend}) raised: {type(e).__name__}: {e}"}
+        return {"status": "fail", "backend": backend, "detail": f"translator ({backend}) raised on {langname}: {type(e).__name__}: {e}"}
     if not out or not out.strip():
-        return {"status": "fail", "backend": backend, "detail": f"translator ({backend}) returned EMPTY for '{TRANSLATE_PROBE}'"}
-    if out.strip().lower() == TRANSLATE_PROBE.lower():
-        return {"status": "fail", "backend": backend, "detail": f"translator ({backend}) returned the input UNCHANGED"}
-    if _re.search(r"[А-Яа-яЁё]", out):
-        return {"status": "warn", "backend": backend, "detail": f"translator ({backend}) output still has Cyrillic: '{out.strip()[:40]}'"}
-    return {"status": "ok", "backend": backend, "detail": f"'{TRANSLATE_PROBE}' -> '{out.strip()[:40]}' ({backend} functional)"}
+        return {"status": "fail", "backend": backend, "detail": f"translator ({backend}) returned EMPTY for the {langname} probe"}
+    if out.strip().lower() == probe.lower():
+        return {"status": "fail", "backend": backend, "detail": f"translator ({backend}) returned the {langname} input UNCHANGED"}
+    return {"status": "ok", "backend": backend, "detail": f"{langname}->en: '{probe[:24]}' -> '{out.strip()[:32]}' ({backend} functional)"}
 
 
 # --------------------------------------------------------------- CLI for doctor.sh
@@ -274,7 +338,7 @@ def main(argv=None):
     probe = emb.get("card") or "test"
     usg = usage_canary(db, probe)
     _emit("CANARY_USAGE", usg)
-    tr = translate_canary()
+    tr = translate_canary(db_path=db)
     _emit("CANARY_TRANSLATE", tr)
     return 0
 

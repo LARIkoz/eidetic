@@ -158,33 +158,51 @@ class UsageCanaryTest(unittest.TestCase):
 
 class TranslateCanaryTest(unittest.TestCase):
     def test_ok_when_translated(self):
-        r = canary.translate_canary(translate_fn=lambda q, t, b: "Memory drifts with time", backend="apple")
+        r = canary.translate_canary(translate_fn=lambda q, t, b: "Memory drifts with time", backend="apple", lang="ru")
         self.assertEqual(r["status"], "ok")
         self.assertIn("functional", r["detail"])
 
     def test_fail_when_empty(self):
-        r = canary.translate_canary(translate_fn=lambda q, t, b: "", backend="apple")
+        r = canary.translate_canary(translate_fn=lambda q, t, b: "", backend="apple", lang="ru")
         self.assertEqual(r["status"], "fail")
         self.assertIn("EMPTY", r["detail"])
 
     def test_fail_when_none(self):
-        r = canary.translate_canary(translate_fn=lambda q, t, b: None, backend="apple")
+        r = canary.translate_canary(translate_fn=lambda q, t, b: None, backend="apple", lang="ru")
         self.assertEqual(r["status"], "fail")
 
     def test_fail_when_unchanged(self):
-        r = canary.translate_canary(translate_fn=lambda q, t, b: canary.TRANSLATE_PROBE, backend="opusmt")
+        r = canary.translate_canary(translate_fn=lambda q, t, b: canary.LANG_PROBES["ru"][0], backend="opusmt", lang="ru")
         self.assertEqual(r["status"], "fail")
         self.assertIn("UNCHANGED", r["detail"])
-
-    def test_warn_when_cyrillic_remains(self):
-        r = canary.translate_canary(translate_fn=lambda q, t, b: "Память wat", backend="apple")
-        self.assertEqual(r["status"], "warn")
 
     def test_fail_when_translator_raises(self):
         def boom(q, t, b):
             raise RuntimeError("backend died")
-        r = canary.translate_canary(translate_fn=boom, backend="apple")
+        r = canary.translate_canary(translate_fn=boom, backend="apple", lang="ru")
         self.assertEqual(r["status"], "fail")
+
+    def test_skip_when_language_has_no_probe(self):
+        # a Latin-script / undetected corpus → skip the functional probe (no false RU assumption)
+        r = canary.translate_canary(translate_fn=lambda q, t, b: "x", backend="apple", lang=None)
+        self.assertEqual(r["status"], "skip")
+
+    def test_probe_matches_detected_language(self):
+        # German env override picks the German probe, not the Russian one
+        r = canary.translate_canary(translate_fn=lambda q, t, b: "Memory drifts with time", backend="apple", lang="de")
+        self.assertEqual(r["status"], "ok")
+        self.assertIn("German", r["detail"])
+
+    def test_detect_corpus_lang_cyrillic(self):
+        import sqlite3
+        fd, db = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self.addCleanup(lambda: os.path.exists(db) and os.remove(db))
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE memory_chunks (name TEXT, content TEXT)")
+        conn.execute("INSERT INTO memory_chunks VALUES (?,?)", ("дрейф памяти", "русский текст про память"))
+        conn.commit(); conn.close()
+        self.assertEqual(canary._detect_corpus_lang(db), "ru")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,10 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.10.0 (2026-06-21)
+
+- **Translator canary is language-adaptive — checks YOUR language, not hardcoded Russian.** Translation is off by default (not everyone needs it), but those who enable it write memories in their own language. The §3.6 functional check now **auto-detects the corpus's dominant non-Latin script** (Cyrillic→ru, Han→zh, Kana→ja, Hangul→ko) and probes in _that_ language; Latin-script corpora (de/fr/es/it/pt) opt in via `EIDETIC_TRANSLATE_LANG` (or a `.translate_lang` file). When the language can't be determined it **skips the functional probe** rather than wrongly assuming Russian (which would false-fail a non-RU user who lacks the RU pack). +2 tests (136 total).
+
 ## v5.9.0 (2026-06-21)
 
 - **Doctor now FUNCTIONALLY tests the translator (§3.6), not just its availability.** The doctor showed the translation backend resolved and the Apple `ru→en` pack was installed — but "installed" is not "works". When translation is enabled, the doctor now **translates a fixed Russian sentence** through the resolved backend and asserts the result is non-empty, **changed**, and Cyrillic-free — so a backend that's present but silently returns nothing fails loud (parallel to the v5.7.0 embed canary). Skips cleanly when translation is off (the default). +6 tests (134 total).
