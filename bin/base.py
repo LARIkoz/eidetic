@@ -22,11 +22,13 @@ Zero external deps — python3 stdlib only.
 """
 
 import argparse
+import fcntl
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 
 BIN = os.path.dirname(os.path.abspath(__file__))
 EIDETIC_ROOT = os.path.dirname(BIN)
@@ -39,6 +41,17 @@ DEFAULT_BASES_DIR = "~/eidetic-bases"
 
 MANIFEST = ".eidetic-base.json"
 ADD_SIZE_THRESHOLD = 2000  # chars: smaller → a note card, larger → a doc page
+# A base name becomes an MCP tool prefix (`<name>_search`) AND is printed into the
+# `claude mcp add <name> …` line. Restrict it so a manifest can't inject shell or emit a
+# protocol-invalid tool name: lowercase, start with a letter, only [a-z0-9_-], ≤40.
+NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,40}$")
+
+
+def _require_valid_name(name):
+    if not (isinstance(name, str) and NAME_RE.match(name)):
+        sys.exit(f"error: invalid base name {name!r} — must match {NAME_RE.pattern} "
+                 f"(lowercase, start with a letter, only a-z 0-9 _ - , ≤40 chars)")
+    return name
 
 
 # --------------------------------------------------------------------------- registry
@@ -52,13 +65,20 @@ def _load_registry():
 
 
 def _register(name, path):
-    r = _load_registry()
-    r[name] = os.path.abspath(path)
+    # serialize the read-modify-write under an exclusive lock + write through a UNIQUE
+    # temp file → two parallel `base init` can't race on a shared tmp or lose each other.
     os.makedirs(os.path.dirname(REGISTRY), exist_ok=True)
-    tmp = REGISTRY + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(r, f, indent=2, ensure_ascii=False)
-    os.replace(tmp, REGISTRY)
+    with open(REGISTRY + ".lock", "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            r = _load_registry()
+            r[name] = os.path.abspath(path)
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(REGISTRY), prefix=".reg-", suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(r, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, REGISTRY)
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
 
 
 def resolve_base(arg):
@@ -85,7 +105,7 @@ def _slug(text, fallback="note"):
 
 # ------------------------------------------------------------------------------- init
 def cmd_init(args):
-    name = args.name
+    name = _require_valid_name(args.name)
     # precedence: explicit --dir > EIDETIC_BASES_DIR env > neutral default bases-root.
     # NOT cwd — a base must not land loose inside whatever project you happen to be in.
     parent = os.path.abspath(os.path.expanduser(
@@ -163,7 +183,7 @@ def cmd_add(args):
 # ----------------------------------------------------------------------------- attach
 def cmd_attach(args):
     base = resolve_base(args.name)
-    name = read_manifest(base).get("name") or os.path.basename(base)
+    name = _require_valid_name(read_manifest(base).get("name") or os.path.basename(base))
     cmd = ["claude", "mcp", "add", name, "-s", args.scope,
            "-e", f"EIDETIC_MEMORY_SYSTEM={base}", "--", "python3", MCP_SERVER]
     line = " ".join(cmd)
@@ -195,10 +215,22 @@ def cmd_doctor(args):
     vec = os.path.join(base, "db", "vectors.db")
     if not os.path.exists(db):
         sys.exit(f"error: base not indexed yet (no {db}). run: eidetic base index {args.name}")
+    # don't report green on an EMPTY index — the canary's "skip" would otherwise hide a
+    # base that was init'd but never indexed (or whose db was wiped).
+    import sqlite3
+    try:
+        with sqlite3.connect(db) as c:
+            n_chunks = c.execute("SELECT count(*) FROM memory_chunks").fetchone()[0]
+    except sqlite3.Error:
+        n_chunks = 0
+    if n_chunks == 0:
+        print(f"FAIL: base index is EMPTY (0 chunks) — add docs under {base}/docs/ then: "
+              f"eidetic base index {args.name}")
+        return 2
     sys.path.insert(0, BIN)
     import canary
     emb = canary.embed_canary(db, vec)
-    print(f"embed→vector→search: {emb['status']} — {emb.get('detail','')}")
+    print(f"chunks={n_chunks} · embed→vector→search: {emb['status']} — {emb.get('detail','')}")
     return 0 if emb["status"] in ("ok", "warn", "skip") else 1
 
 

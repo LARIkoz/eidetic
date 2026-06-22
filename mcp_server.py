@@ -12,6 +12,7 @@ Usage:
 
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -25,15 +26,26 @@ def default_memory_system():
 MEMORY_SYSTEM = os.path.expanduser(
     os.environ.get("EIDETIC_MEMORY_SYSTEM") or default_memory_system()
 )
+_BASE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,40}$")
+
+
 def _base_name():
     """Topic-base name if MEMORY_SYSTEM is a base (has .eidetic-base.json), else None.
-    A base holds only docs/notes/db — its engine scripts come from THIS install instead."""
+    A base holds only docs/notes/db — its engine scripts come from THIS install instead.
+    The name becomes an MCP tool prefix + is shell-printed by `base attach`, so refuse to
+    serve a base whose manifest name is malformed (injection / protocol-invalid tool name)."""
     try:
         with open(os.path.join(MEMORY_SYSTEM, ".eidetic-base.json"), encoding="utf-8") as f:
             m = json.load(f)
-        return m.get("name") if isinstance(m, dict) else None
     except (OSError, ValueError):
         return None
+    if not isinstance(m, dict) or m.get("name") is None:
+        return None
+    name = m.get("name")
+    if not (isinstance(name, str) and _BASE_NAME_RE.match(name)):
+        sys.exit(f"error: base manifest name {name!r} is invalid — must match "
+                 f"{_BASE_NAME_RE.pattern}; refusing to start the MCP server")
+    return name
 
 
 BASE_NAME = _base_name()

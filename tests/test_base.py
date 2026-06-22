@@ -171,6 +171,33 @@ class BaseCliTest(unittest.TestCase):
         base.cmd_add(argparse.Namespace(name=root, file=None, text="short", title="forced", as_="doc"))
         self.assertTrue(os.path.exists(os.path.join(root, "docs", "forced.md")))
 
+    def test_init_rejects_invalid_name(self):
+        # I1: a base name becomes an MCP tool prefix + is shell-printed by `attach` — reject
+        # anything that could inject or emit a protocol-invalid tool name.
+        for bad in ("Bad Name", "UPPER", "foo;rm -rf x", "9starts", "has/slash", "a" * 50):
+            with self.assertRaises(SystemExit):
+                base.cmd_init(argparse.Namespace(name=bad, dir=self.tmp))
+        # a clean name still works
+        base.cmd_init(argparse.Namespace(name="good-base_1", dir=self.tmp))
+        self.assertIn("good-base_1", base._load_registry())
+
+    def test_doctor_empty_index_is_not_green(self):
+        # I3: an init'd-but-empty (0-chunk) index must NOT report green
+        root = _mk_base()
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        db = os.path.join(root, "db", "index.db")
+        os.makedirs(os.path.dirname(db), exist_ok=True)
+        index_impl.init_db(db)                      # real schema, 0 chunks
+        self.assertEqual(base.cmd_doctor(argparse.Namespace(name=root)), 2)
+
+    def test_register_atomic_keeps_all(self):
+        # I4: the locked/unique-tmp register path keeps every entry (no lost writes)
+        for nm in ("alpha", "beta", "gamma"):
+            base._register(nm, os.path.join(self.tmp, f"{nm}-base"))
+        reg = base._load_registry()
+        for nm in ("alpha", "beta", "gamma"):
+            self.assertIn(nm, reg)
+
 
 if __name__ == "__main__":
     unittest.main()
