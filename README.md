@@ -19,6 +19,8 @@ Eidetic gives an AI coding agent **long-term memory** that lives in plain Markdo
 
 What makes it different from every other memory tool: it **detects when memories go stale** and down-ranks them — so more memory doesn't quietly make the agent _worse_ (that's [why](#why-eidetic) it exists). Claude Code-native via zero-config hooks; works with Codex, Gemini, Cursor, Cline, and any MCP agent.
 
+_Lineage: [Luhmann's Zettelkasten](https://en.wikipedia.org/wiki/Zettelkasten), [Tiago Forte's Second Brain](https://www.buildingasecondbrain.com/), and [Karpathy's **LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) — implemented end-to-end (compounding pages, a typed schema, an op-log, typed pages), with drift detection layered on top. More in [Design philosophy](#design-philosophy)._
+
 ---
 
 ## Why Eidetic?
