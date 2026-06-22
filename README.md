@@ -1,6 +1,6 @@
 🇬🇧 **English** · [🇷🇺 Русский](README.ru.md)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.12.0-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.12.2-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
 
 **Long-term memory for AI coding agents that knows when memories go bad.** Claude Code-native (zero-config hooks); works with Codex, Gemini, Cursor, Cline, and any MCP agent.
 
@@ -184,6 +184,29 @@ Updates preserve databases, rules, and hooks — only code files are replaced.
 ```
 
 7 tools: `memory_search`, `memory_search_detail`, `memory_serendipity`, `memory_health`, `memory_reindex`, `memory_lint`, `export_vault`.
+
+---
+
+## Topic bases — attach an external corpus (PULL)
+
+Personal memory is **PUSH** — auto-injected every session from your own work. A **topic base**
+is the other half: a **PULL** knowledge-base. An isolated corpus (scraped API docs, a
+methodology, a book) you **attach only to the projects that need it** and query on demand over
+MCP — never polluting your work-memory recall. Same engine (e5-large + FTS5 + vectors), a
+separate index, its **own git repo**.
+
+```bash
+python3 ~/.claude/memory-system/bin/base.py init   acme                 # → ~/eidetic-bases/acme-base/
+python3 ~/.claude/memory-system/bin/base.py index  acme                 # build FTS + e5 vectors
+python3 ~/.claude/memory-system/bin/base.py attach acme --scope project # wire into a project over MCP
+```
+
+- **Full guide + agent contract:** **[docs/topic-bases.md](docs/topic-bases.md)** — the storage
+  model, ingest scenarios, API-doc gotchas, and a step-by-step contract for building one.
+- **Hand it to an agent:** the bundled **`/eidetic-base`** skill triggers on "build a topic base
+  from `<source>`" and runs the contract (scrape → pages → index → verify → attach).
+- A base is a **separate repo** outside the eidetic tree — your corpora stay private even though
+  eidetic itself is public.
 
 ---
 

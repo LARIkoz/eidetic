@@ -2,6 +2,10 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.12.2 (2026-06-22)
+
+- **`/eidetic-base` skill + discoverable topic bases.** The topic-base workflow now ships as a bundled Claude Code skill (`skill/eidetic-base/SKILL.md`, installed to `~/.claude/skills/eidetic-base/` by `install.sh`): it triggers on "build a topic base / собери базу из &lt;source&gt;" and runs the contract end to end (init → ingest → index → verify → attach), with the isolation / explicit-write / bases-root invariants inline so an agent gets the procedure without being hand-pointed at the docs. README gains a **Topic bases** section linking [`docs/topic-bases.md`](docs/topic-bases.md) — the feature is now findable instead of buried.
+
 ## v5.12.1 (2026-06-22)
 
 - **Topic bases — bases-root default + agent contract.** `eidetic base init` now scaffolds under a single bases-root (`$EIDETIC_BASES_DIR`, default `~/eidetic-bases/`) — **never the current working directory** — so a base can't land loose inside whatever project you happen to be in. [`docs/topic-bases.md`](docs/topic-bases.md) is now a complete operating contract rather than a "planned recipe": the real `bin/base.py` CLI (`init`/`index`/`add`/`attach`/`list`/`doctor`/`refresh`), the storage convention, an executable **Agent contract** for building a base end to end, and a _no-divergence_ map of engine (code) vs base data (`~/eidetic-bases/`) vs registry (`~/.claude/eidetic-bases.json`). Corrected the per-base tool list to the real surface (`<name>_search` / `_search_detail` / `_serendipity` / `_add`).

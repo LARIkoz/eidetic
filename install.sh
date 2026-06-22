@@ -137,11 +137,29 @@ for src in hooks/*.sh; do
 done
 
 # Install skill
-echo "4. Installing recall skill..."
+echo "4. Installing skills (recall + topic-base)..."
 mkdir -p "$SKILLS_DIR"
 atomic_install skill/SKILL.md "$SKILLS_DIR/SKILL.md" 644
 if [ "$MEMORY_SYSTEM" != "$HOME/.claude/memory-system" ]; then
     python3 - "$SKILLS_DIR/SKILL.md" "$MEMORY_SYSTEM" << 'PYEOF'
+import os, pathlib, shlex, sys, tempfile
+
+path = pathlib.Path(sys.argv[1])
+memory_system = sys.argv[2]
+text = path.read_text(encoding="utf-8")
+fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".tmp.")
+with os.fdopen(fd, "w", encoding="utf-8") as f:
+    f.write(text.replace("~/.claude/memory-system", shlex.quote(memory_system)))
+os.replace(tmp, path)
+PYEOF
+fi
+
+# Install topic-base skill (/eidetic-base)
+BASE_SKILL_DIR="$HOME/.claude/skills/eidetic-base"
+mkdir -p "$BASE_SKILL_DIR"
+atomic_install skill/eidetic-base/SKILL.md "$BASE_SKILL_DIR/SKILL.md" 644
+if [ "$MEMORY_SYSTEM" != "$HOME/.claude/memory-system" ]; then
+    python3 - "$BASE_SKILL_DIR/SKILL.md" "$MEMORY_SYSTEM" << 'PYEOF'
 import os, pathlib, shlex, sys, tempfile
 
 path = pathlib.Path(sys.argv[1])
