@@ -26,8 +26,13 @@ work dirs and the content auto-injects into unrelated sessions.
 
 ## Where a base lives
 
-A base is its **own git repo** (e.g. `~/.../<name>-base/`), versioned and portable.
+A base is its **own git repo** (e.g. `~/eidetic-bases/<name>-base/`), versioned and portable.
 
+- **All bases share one root, OUTSIDE any project tree.** `eidetic base init <name>`
+  scaffolds `<root>/<name>-base/`, where `<root>` is `$EIDETIC_BASES_DIR` if set, else
+  `~/eidetic-bases/` — **never the current working directory**. That keeps a base from
+  landing loose inside whatever project you happen to be in. Point `EIDETIC_BASES_DIR` at
+  your own bases folder, or pass `--dir` for a one-off location.
 - **One base, many projects.** Build it once; attach it wherever needed. Never store a
   reusable corpus _inside_ a consuming project — that duplicates it per project, bloats
   the repo, and forces a re-scrape. **API docs are ALWAYS a separate base from the

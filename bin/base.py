@@ -33,6 +33,9 @@ EIDETIC_ROOT = os.path.dirname(BIN)
 MCP_SERVER = os.path.join(EIDETIC_ROOT, "mcp_server.py")
 INDEX_SH = os.path.join(BIN, "index.sh")
 REGISTRY = os.path.expanduser(os.environ.get("EIDETIC_BASES_REGISTRY") or "~/.claude/eidetic-bases.json")
+# bases live together under one root, kept OUT of any project tree (a base is a separate
+# PULL repo, never your personal memory). Override per-machine with EIDETIC_BASES_DIR.
+DEFAULT_BASES_DIR = "~/eidetic-bases"
 
 MANIFEST = ".eidetic-base.json"
 ADD_SIZE_THRESHOLD = 2000  # chars: smaller → a note card, larger → a doc page
@@ -83,7 +86,11 @@ def _slug(text, fallback="note"):
 # ------------------------------------------------------------------------------- init
 def cmd_init(args):
     name = args.name
-    parent = os.path.abspath(os.path.expanduser(args.dir or os.getcwd()))
+    # precedence: explicit --dir > EIDETIC_BASES_DIR env > neutral default bases-root.
+    # NOT cwd — a base must not land loose inside whatever project you happen to be in.
+    parent = os.path.abspath(os.path.expanduser(
+        args.dir or os.environ.get("EIDETIC_BASES_DIR") or DEFAULT_BASES_DIR))
+    os.makedirs(parent, exist_ok=True)
     base = os.path.join(parent, f"{name}-base")
     if os.path.exists(os.path.join(base, MANIFEST)):
         sys.exit(f"error: a base already exists at {base}")
@@ -207,7 +214,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="eidetic base", description="manage topic knowledge-bases")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("init"); p.add_argument("name"); p.add_argument("--dir"); p.set_defaults(fn=cmd_init)
+    p = sub.add_parser("init"); p.add_argument("name")
+    p.add_argument("--dir", help="parent dir for <name>-base/ (default: $EIDETIC_BASES_DIR or ~/eidetic-bases)")
+    p.set_defaults(fn=cmd_init)
     p = sub.add_parser("index"); p.add_argument("name"); p.add_argument("--incremental", action="store_true"); p.set_defaults(fn=cmd_index)
     p = sub.add_parser("add"); p.add_argument("name")
     p.add_argument("--file"); p.add_argument("--text"); p.add_argument("--title")

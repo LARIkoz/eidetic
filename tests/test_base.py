@@ -98,6 +98,15 @@ class BaseCliTest(unittest.TestCase):
         self.assertEqual(_r(os.path.join(root, ".gitignore")).strip(), "db/")
         self.assertIn("acme", base._load_registry())
 
+    def test_init_honors_bases_dir_env(self):
+        # no --dir → falls back to $EIDETIC_BASES_DIR, never cwd (so a base can't land
+        # loose inside whatever project you happen to be in)
+        os.environ["EIDETIC_BASES_DIR"] = self.tmp
+        self.addCleanup(lambda: os.environ.pop("EIDETIC_BASES_DIR", None))
+        base.cmd_init(argparse.Namespace(name="envbase", dir=None))
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "envbase-base", ".eidetic-base.json")))
+        self.assertIn("envbase", base._load_registry())
+
     def test_resolve_base_by_path_and_name(self):
         root = _mk_base()
         self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
