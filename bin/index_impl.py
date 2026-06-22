@@ -411,18 +411,34 @@ def base_manifest(memory_system):
 def _collect_base_files(memory_system, manifest):
     """Topic base: collect .md RECURSIVELY from the manifest's corpus_dirs only
     (`docs/` nests: `api/`, `library/<book>/`…). corpus_dirs are relative to the base
-    root (portable across clones); absolute is honored too. REPLACES BASE_SCAN_DIRS."""
+    root (portable across clones). REPLACES BASE_SCAN_DIRS.
+
+    P1 ISOLATION (load-bearing): a corpus_dir that resolves OUTSIDE the base root — via
+    an absolute path, a `../` escape, or a symlink — is REFUSED (it would otherwise scan
+    personal memory). Containment is enforced on the realpath of every corpus root AND
+    every collected file, so a symlinked dir or file can never leak in."""
+    base_real = os.path.realpath(memory_system)
+
+    def _inside(path):
+        rp = os.path.realpath(path)
+        return rp == base_real or rp.startswith(base_real + os.sep)
+
     files, seen = [], set()
     for d in (manifest.get("corpus_dirs") or ["docs", "notes"]):
         root = d if os.path.isabs(d) else os.path.join(memory_system, d)
+        if not _inside(root):
+            print(f"WARN: corpus_dir {d!r} escapes the base root — skipped (P1 isolation)",
+                  file=sys.stderr)
+            continue
         for dirpath, _subdirs, fnames in os.walk(root):
             for f in fnames:
                 if not f.endswith(".md") or f in EXCLUDE_FILES or f.endswith(".bak"):
                     continue
                 fp = os.path.join(dirpath, f)
-                if fp not in seen:
-                    seen.add(fp)
-                    files.append(fp)
+                if fp in seen or not _inside(fp):   # per-file realpath: blocks symlinked leaks
+                    continue
+                seen.add(fp)
+                files.append(fp)
     return files
 
 

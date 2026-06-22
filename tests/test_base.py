@@ -6,6 +6,7 @@ ONLY its corpus_dirs; a personal index (no manifest) is byte-identical to before
 import argparse
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -57,8 +58,42 @@ class ScanScopeIsolationTest(unittest.TestCase):
         self.assertEqual(rel, ["docs/HOME.md", "docs/api/endpoint.md", "notes/fact.md"])
 
     def test_base_never_scans_claude(self):
-        # P1: a base index must never pull in personal memory
-        self.assertFalse(any("/.claude/" in p for p in index_impl.collect_files(self.base)))
+        # P1: every collected file must resolve INSIDE the base root. Check the REALPATH,
+        # not the path string — a symlinked corpus dir yields in-base path strings while
+        # its realpath points elsewhere, so a naive `"/.claude/" in p` test is fooled.
+        base_real = os.path.realpath(self.base)
+        for p in index_impl.collect_files(self.base):
+            self.assertTrue(os.path.realpath(p).startswith(base_real + os.sep),
+                            f"{p} escapes base root {base_real}")
+
+    def test_absolute_corpus_dir_escape_refused(self):
+        # P1 containment: an absolute corpus_dir pointing OUTSIDE the base collects ZERO
+        # of those files (a malformed manifest must not leak personal memory) — but the
+        # legit relative corpus_dirs still work.
+        outside = tempfile.mkdtemp(suffix="-outside")
+        self.addCleanup(lambda: shutil.rmtree(outside, ignore_errors=True))
+        _w(os.path.join(outside, "secret.md"), "# personal-ish")
+        b = _mk_base()
+        self.addCleanup(lambda: shutil.rmtree(b, ignore_errors=True))
+        _w(os.path.join(b, ".eidetic-base.json"),
+           json.dumps({"name": "abs", "corpus_dirs": ["docs", outside], "db": "db/index.db"}))
+        got = index_impl.collect_files(b)
+        self.assertFalse(any("secret.md" in p for p in got), "absolute escaping corpus_dir leaked")
+        self.assertTrue(any(p.endswith("HOME.md") for p in got), "legit docs/ dropped")
+
+    def test_symlinked_corpus_dir_escape_refused(self):
+        # P1 containment: a corpus dir that is a SYMLINK pointing outside the base must
+        # collect none of the target's files (the vector the string-test missed).
+        outside = tempfile.mkdtemp(suffix="-outside")
+        self.addCleanup(lambda: shutil.rmtree(outside, ignore_errors=True))
+        _w(os.path.join(outside, "secret.md"), "# personal-ish")
+        b = tempfile.mkdtemp(suffix="-base")
+        self.addCleanup(lambda: shutil.rmtree(b, ignore_errors=True))
+        _w(os.path.join(b, ".eidetic-base.json"),
+           json.dumps({"name": "sym", "corpus_dirs": ["docs"], "db": "db/index.db"}))
+        os.symlink(outside, os.path.join(b, "docs"))   # docs -> outside
+        self.assertFalse(any("secret.md" in p for p in index_impl.collect_files(b)),
+                         "symlinked corpus dir leaked files")
 
     def test_bak_and_excluded_skipped(self):
         names = {os.path.basename(p) for p in index_impl.collect_files(self.base)}
