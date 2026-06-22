@@ -199,5 +199,40 @@ class BaseCliTest(unittest.TestCase):
             self.assertIn(nm, reg)
 
 
+class CorpusLangDetectTest(unittest.TestCase):
+    """The corpus-language auto-detector that stamps .translate_lang at index time.
+    The load-bearing property is the DOMINANCE THRESHOLD: a mostly-English corpus
+    with a little non-Latin text must stay None (English) — otherwise it would
+    mis-translate the majority language away. A genuinely non-Latin corpus wins."""
+
+    @staticmethod
+    def _mk_base_with_chunks(d, contents):
+        import sqlite3
+        os.makedirs(os.path.join(d, "db"))
+        conn = sqlite3.connect(os.path.join(d, "db", "index.db"))
+        conn.execute("CREATE TABLE memory_chunks (content TEXT)")
+        conn.executemany("INSERT INTO memory_chunks VALUES (?)", [(c,) for c in contents])
+        conn.commit()
+        conn.close()
+
+    def test_dominant_russian_detected(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._mk_base_with_chunks(d, ["Переменное вознаграждение и триггеры привычки"] * 10)
+            self.assertEqual(base._detect_corpus_lang(d), "ru")
+
+    def test_mostly_english_stays_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            rows = ["The hook model: trigger, action, variable reward, investment"] * 12
+            rows.append("немного русского текста в углу")   # a little Cyrillic — must NOT flip
+            self._mk_base_with_chunks(d, rows)
+            self.assertIsNone(base._detect_corpus_lang(d))
+
+    def test_empty_or_missing_db_is_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(base._detect_corpus_lang(d))           # no db at all
+            self._mk_base_with_chunks(d, [])                          # db, no rows
+            self.assertIsNone(base._detect_corpus_lang(d))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,15 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.12.3 (2026-06-22)
+
+- **Cross-lingual topic-base search — a query now reaches a base in ANY language, not just English.** Query translation was hardwired to translate _into_ English (right for personal memory, whose artifacts are English) — so an English query against a Russian book base never reached the Russian pages; it only matched whatever English helper pages happened to exist. A base now records its dominant language and search translates a foreign-language query **into the corpus language**: an English "variable reward — tribe / hunt / self" now surfaces the exact Russian subsection, while a Russian query still matches natively.
+  - `translate.should_translate(query, target)` generalised to any target script (Cyrillic / CJK / Hangul / Arabic), not only `→ en`.
+  - `search_impl` resolves the corpus language **explicitly** (env `EIDETIC_TRANSLATE_LANG` > a `.translate_lang` file at the base root) and targets it — **no per-query corpus auto-detect**, so the mixed-but-mostly-English personal corpus can never be mis-targeted. A personal index has no `.translate_lang` → resolves to `en` → search is byte-identical to before this change (regression-tested: personal doctor unchanged, full suite green).
+  - `eidetic base init --lang <code>` sets it explicitly; otherwise `eidetic base index` **auto-detects** the dominant language (dominance-thresholded — a little Cyrillic in an English base stays English) and stamps `.translate_lang`.
+- **`doctor` is topic-base aware — no more false `❌ broken` on a base.** Pointed at a base (`EIDETIC_MEMORY_SYSTEM=<base>`) the doctor ran PUSH-only checks a PULL base has none of (Obsidian wiki export, compound/op-log deploy, session hooks, the `~/.claude/projects` file count, session-end signal extraction), flipping the verdict to broken (1 FAIL + 3 WARN) on a perfectly healthy base. Those sections are now marked **N/A** in base mode while the index / vectors / canary / translation / search / usage checks that DO apply still run; a healthy base reads `✅ healthy`.
+- _Also included since v5.12.2 (prior untagged commits):_ topic-base **isolation hardening** — `_collect_base_files` enforces realpath containment so a base's `corpus_dirs` can't escape its root via `..`/symlink; **malformed-manifest hardening** — base-name validation (no shell-inject / protocol-invalid MCP tool names), a doctor empty-index check, and atomic registry writes.
+
 ## v5.12.2 (2026-06-22)
 
 - **`/eidetic-base` skill + discoverable topic bases.** The topic-base workflow now ships as a bundled Claude Code skill (`skill/eidetic-base/SKILL.md`, installed to `~/.claude/skills/eidetic-base/` by `install.sh`): it triggers on "build a topic base / собери базу из &lt;source&gt;" and runs the contract end to end (init → ingest → index → verify → attach), with the isolation / explicit-write / bases-root invariants inline so an agent gets the procedure without being hand-pointed at the docs. README gains a **Topic bases** section linking [`docs/topic-bases.md`](docs/topic-bases.md) — the feature is now findable instead of buried.

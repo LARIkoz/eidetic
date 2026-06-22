@@ -54,6 +54,57 @@ def _require_valid_name(name):
     return name
 
 
+# --- corpus language (for cross-lingual query translation). A base records its
+# dominant language in a `.translate_lang` file at its root; search reads it to
+# translate a foreign-language query INTO the corpus language. Auto-detected at
+# index time (dominance-thresholded so a mostly-English corpus stays unset/English),
+# or set explicitly via `init --lang`.
+TRANSLATE_LANG_FILE = ".translate_lang"
+_SCRIPT_BLOCKS = [
+    ("ru", (0x0400, 0x052F)), ("ar", (0x0600, 0x06FF)),
+    ("ja", (0x3040, 0x30FF)), ("ko", (0xAC00, 0xD7AF)), ("zh", (0x3400, 0x9FFF)),
+]
+
+
+def _detect_corpus_lang(base, threshold=0.5, sample=500):
+    """The dominant non-Latin language across the indexed corpus, or None for a
+    Latin-script (English/de/fr/…) corpus. A non-Latin script must exceed `threshold`
+    of all alphabetic chars to win, so a few Cyrillic words in an English base stay
+    None (English) — never mis-translate the majority language away."""
+    import sqlite3
+    db = os.path.join(base, "db", "index.db")
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        rows = conn.execute("SELECT COALESCE(content,'') FROM memory_chunks LIMIT ?",
+                            (sample,)).fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return None
+    latin = 0
+    counts = {lang: 0 for lang, _ in _SCRIPT_BLOCKS}
+    for (text,) in rows:
+        for ch in text:
+            o = ord(ch)
+            if 0x41 <= o <= 0x7A:
+                latin += 1
+            else:
+                for lang, (a, b) in _SCRIPT_BLOCKS:
+                    if a <= o <= b:
+                        counts[lang] += 1
+                        break
+    total = latin + sum(counts.values())
+    if total == 0:
+        return None
+    lang, n = max(counts.items(), key=lambda kv: kv[1])
+    return lang if n / total >= threshold else None
+
+
+def _write_translate_lang(base, lang):
+    if lang:
+        with open(os.path.join(base, TRANSLATE_LANG_FILE), "w", encoding="utf-8") as f:
+            f.write(lang.strip().lower() + "\n")
+
+
 # --------------------------------------------------------------------------- registry
 def _load_registry():
     try:
@@ -125,6 +176,9 @@ def cmd_init(args):
         f.write(f"# {name}\n\nTopic base. Add scraped docs under `docs/`, curated facts "
                 f"under `notes/`. Cross-link with [[wikilinks]].\n")
     _register(name, base)
+    if getattr(args, "lang", None):
+        _write_translate_lang(base, args.lang)
+        print(f"  corpus language: {args.lang.strip().lower()} (cross-lingual queries translate into it)")
     print(f"created base '{name}' at {base}")
     print(f"  next: add docs under {base}/docs/, then  eidetic base index {name}")
     print(f"  attach:  eidetic base attach {name} --scope project")
@@ -143,6 +197,14 @@ def cmd_index(args):
     # default = full (FTS + vectors) — a base is small, built once; --incremental = FTS only
     rc = _run_index(base, full=not args.incremental)
     if rc == 0:
+        # auto-stamp the corpus language once (dominance-thresholded) so cross-lingual
+        # query translation targets THIS base's language — unless already set/explicit.
+        if not os.path.exists(os.path.join(base, TRANSLATE_LANG_FILE)):
+            detected = _detect_corpus_lang(base)
+            if detected:
+                _write_translate_lang(base, detected)
+                print(f"detected corpus language: {detected} → wrote {TRANSLATE_LANG_FILE} "
+                      f"(cross-lingual queries now translate into {detected})")
         print(f"indexed base at {base}")
     return rc
 
@@ -248,6 +310,7 @@ def main(argv=None):
 
     p = sub.add_parser("init"); p.add_argument("name")
     p.add_argument("--dir", help="parent dir for <name>-base/ (default: $EIDETIC_BASES_DIR or ~/eidetic-bases)")
+    p.add_argument("--lang", help="corpus language code (e.g. ru) for cross-lingual query translation; auto-detected at index time if omitted")
     p.set_defaults(fn=cmd_init)
     p = sub.add_parser("index"); p.add_argument("name"); p.add_argument("--incremental", action="store_true"); p.set_defaults(fn=cmd_index)
     p = sub.add_parser("add"); p.add_argument("name")

@@ -82,9 +82,37 @@ def is_non_english(text):
     return False
 
 
+# Target-language → the Unicode block its script lives in. A query that ALREADY
+# contains the target script is same-language → don't translate. `en` = Latin (handled
+# by is_non_english). Lets a non-English corpus (e.g. a Russian topic base, target='ru')
+# pull a foreign-language query INTO its language so it can match.
+_TARGET_SCRIPTS = {
+    "ru": (0x0400, 0x052F), "uk": (0x0400, 0x052F), "be": (0x0400, 0x052F),
+    "bg": (0x0400, 0x052F), "sr": (0x0400, 0x052F),
+    "ar": (0x0600, 0x06FF), "zh": (0x3400, 0x9FFF),
+    "ja": (0x3040, 0x30FF), "ko": (0xAC00, 0xD7AF),
+}
+
+
+def _in_script(text, rng):
+    a, b = rng
+    return any(a <= ord(ch) <= b for ch in text or "")
+
+
 def should_translate(query, target="en"):
-    """Cheap gate: only translate a non-English query when the target is English."""
-    return target == "en" and is_non_english(query)
+    """Gate: translate when the query is NOT already in the target language.
+
+    target='en' (the personal-memory default): translate a non-English (non-Latin
+    script) query — unchanged from the original behavior. A non-English target
+    (a topic base whose corpus is e.g. Russian, target='ru'): translate a query that
+    lacks the target script — an English query → 'ru' — so it can reach the corpus.
+    An unknown/unsupported target fails safe (no translation)."""
+    if not query or not query.strip():
+        return False
+    if target == "en":
+        return is_non_english(query)
+    rng = _TARGET_SCRIPTS.get(target)
+    return bool(rng) and not _in_script(query, rng)
 
 
 # ------------------------------------------------------------------------ apple backend

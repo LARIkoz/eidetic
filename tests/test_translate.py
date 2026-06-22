@@ -67,11 +67,22 @@ class LanguageDetection(unittest.TestCase):
     def test_ascii_is_english(self):
         self.assertFalse(translate.is_non_english("stale memory drift detection"))
 
-    def test_should_translate_only_non_english_to_english(self):
+    def test_should_translate_into_english_corpus(self):
+        # personal-memory default (English corpus): translate a non-English query
         self.assertTrue(translate.should_translate("привет", "en"))
         self.assertFalse(translate.should_translate("hello", "en"))
-        # target not English ⇒ this feature does not fire (v1 targets English)
-        self.assertFalse(translate.should_translate("привет", "ru"))
+
+    def test_should_translate_into_non_english_corpus(self):
+        # a non-English topic base (e.g. Russian, target='ru'): an English query is
+        # translated INTO the corpus language; a query already in that script is not.
+        self.assertTrue(translate.should_translate("variable reward", "ru"))
+        self.assertFalse(translate.should_translate("переменное вознаграждение", "ru"))
+        # CJK / Hangul targets behave the same
+        self.assertTrue(translate.should_translate("memory", "ja"))
+        self.assertFalse(translate.should_translate("メモリ", "ja"))
+        # unknown/unsupported target fails safe (no translation)
+        self.assertFalse(translate.should_translate("hello", "xx"))
+        self.assertFalse(translate.should_translate("", "ru"))
 
 
 class ResolveBackend(unittest.TestCase):
@@ -156,7 +167,44 @@ class TranslationOffByDefault(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("EIDETIC_QUERY_TRANSLATE", None)
             # Even a Cyrillic query stays native when the backend is off.
-            self.assertIsNone(search_impl._resolve_query_translation("обнаружение памяти"))
+            self.assertIsNone(
+                search_impl._resolve_query_translation("обнаружение памяти", "/nope/db/index.db"))
+
+
+class CorpusLang(unittest.TestCase):
+    """Corpus-language targeting: explicit-only (env > .translate_lang file > None).
+    No per-query auto-detect, so the mixed-but-English personal corpus stays 'en'."""
+
+    def setUp(self):
+        search_impl._corpus_lang_cache.clear()
+
+    def test_none_when_no_signal(self):
+        # personal memory: no .translate_lang at the root → None → target 'en'
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "db"))
+            db = os.path.join(d, "db", "index.db")
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("EIDETIC_TRANSLATE_LANG", None)
+                self.assertIsNone(search_impl._corpus_lang(db))
+
+    def test_translate_lang_file_at_base_root(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "db"))
+            db = os.path.join(d, "db", "index.db")
+            with open(os.path.join(d, ".translate_lang"), "w") as f:
+                f.write("ru\n")  # whitespace tolerated, lowercased
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("EIDETIC_TRANSLATE_LANG", None)
+                self.assertEqual(search_impl._corpus_lang(db), "ru")
+
+    def test_env_overrides_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "db"))
+            db = os.path.join(d, "db", "index.db")
+            with open(os.path.join(d, ".translate_lang"), "w") as f:
+                f.write("ru")
+            with mock.patch.dict(os.environ, {"EIDETIC_TRANSLATE_LANG": "ja"}):
+                self.assertEqual(search_impl._corpus_lang(db), "ja")
 
 
 class TranslateTimeoutParse(unittest.TestCase):

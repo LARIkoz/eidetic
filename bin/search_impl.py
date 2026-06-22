@@ -833,10 +833,36 @@ def _log_usage(results, query, db_path):
         pass
 
 
-def _resolve_query_translation(query):
-    """Resolved backend name iff query-translation is ON, the query is
-    cross-lingual, and a backend is available — else None (plain native search).
-    Default config is "off", so this returns None and search is unchanged."""
+_corpus_lang_cache = {}
+
+
+def _corpus_lang(db_path):
+    """The corpus's dominant language, for cross-lingual targeting: env
+    EIDETIC_TRANSLATE_LANG > a `.translate_lang` file at the memory-system/base root
+    > None. EXPLICIT-ONLY by design — no per-query corpus auto-detect — so search
+    stays fast AND the mixed-but-mostly-English personal corpus can never be
+    mis-read as non-English (which would translate English queries away from it).
+    None ⇒ English/Latin corpus ⇒ target 'en' ⇒ behavior identical to before."""
+    if db_path in _corpus_lang_cache:
+        return _corpus_lang_cache[db_path]
+    lang = (os.environ.get("EIDETIC_TRANSLATE_LANG") or "").strip().lower() or None
+    if not lang:
+        # db lives at <root>/db/index.db → the root holds .translate_lang (+ a base's manifest)
+        root = os.path.dirname(os.path.dirname(os.path.abspath(db_path)))
+        try:
+            with open(os.path.join(root, ".translate_lang"), encoding="utf-8") as f:
+                lang = f.read().strip().lower() or None
+        except OSError:
+            lang = None
+    _corpus_lang_cache[db_path] = lang
+    return lang
+
+
+def _resolve_query_translation(query, db_path):
+    """Resolved backend name iff query-translation is ON, the query is cross-lingual
+    vs the CORPUS language, and a backend is available — else None (plain native
+    search). Default config is "off", so this returns None and search is unchanged.
+    The translation target is the corpus language (English corpus → 'en')."""
     try:
         tr = _load_translate_module()
         if tr is None:
@@ -844,7 +870,8 @@ def _resolve_query_translation(query):
         configured = tr.active_backend()
         if configured == "off":
             return None
-        if not tr.should_translate(query):
+        target = _corpus_lang(db_path) or "en"
+        if not tr.should_translate(query, target):
             return None
         return tr.resolve_backend(configured)
     except Exception:
@@ -881,8 +908,9 @@ def _translate_timeout():
         return 8.0
 
 
-def _search_dual(db_path, query, limit, type_filter, backend, warn):
-    """Run native and translated searches concurrently, fuse by min-rank.
+def _search_dual(db_path, query, limit, type_filter, backend, target, warn):
+    """Run native and translated searches concurrently, fuse by min-rank. `target`
+    is the corpus language the query is translated INTO ('en' for personal memory).
 
     FAIL-OPEN by construction: the native search runs in THIS thread and is always
     returned. The translated query runs in a DAEMON thread, so a slow/wedged
@@ -898,10 +926,10 @@ def _search_dual(db_path, query, limit, type_filter, backend, warn):
             tr = _load_translate_module()
             if tr is None:
                 return
-            english = tr.translate(query, "en", backend)
-            if not english or english.strip().lower() == query.strip().lower():
+            translated = tr.translate(query, target, backend)
+            if not translated or translated.strip().lower() == query.strip().lower():
                 return
-            box["res"] = _run_query(db_path, english, limit, type_filter, warn=False)
+            box["res"] = _run_query(db_path, translated, limit, type_filter, warn=False)
         except Exception:
             pass
 
@@ -924,9 +952,10 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False, json_o
     limit = _normalize_limit(limit)
     warn = not (output_json or json_object)
 
-    backend = _resolve_query_translation(query)
+    backend = _resolve_query_translation(query, db_path)
     if backend:
-        results = _search_dual(db_path, query, limit, type_filter, backend, warn)
+        target = _corpus_lang(db_path) or "en"
+        results = _search_dual(db_path, query, limit, type_filter, backend, target, warn)
     else:
         results = _run_query(db_path, query, limit, type_filter, warn=warn)
 

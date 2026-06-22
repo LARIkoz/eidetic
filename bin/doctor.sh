@@ -28,6 +28,18 @@ VDB="$MEMORY_SYSTEM/db/vectors.db"
 CAUDIT="$SCRIPT_DIR/coverage_audit.py"   # guard-accurate vector-alignment truth (replaces gross lag)
 SETTINGS="$HOME/.claude/settings.json"
 
+# Topic-base mode: pointed at a base (a .eidetic-base.json at the root) the PUSH-only
+# machinery — session hooks, Obsidian wiki export, auto-compound/op-log, the
+# ~/.claude/projects file count, session-end signal extraction — is N/A by design.
+# Checking it against a base root yields FALSE ❌/⚠️ (a base has none of it). Gate those
+# sections so a base reads true; the index/vectors/canary/translation/search/usage
+# checks that DO apply to a base still run.
+BASE_MODE=0; BASE_NAME=""
+if [ -f "$MEMORY_SYSTEM/.eidetic-base.json" ]; then
+    BASE_MODE=1
+    BASE_NAME=$(python3 -c "import json; print(json.load(open('$MEMORY_SYSTEM/.eidetic-base.json')).get('name',''))" 2>/dev/null)
+fi
+
 # --brief: one-line health snapshot for handoffs / status lines (no full report).
 if [ "${1:-}" = "--brief" ]; then
     DDB="$MEMORY_SYSTEM/db/drift_state.db"
@@ -61,6 +73,7 @@ hdr()  { echo; echo "$1"; }
 
 echo "=== Eidetic Doctor ==="
 echo "memory-system: $MEMORY_SYSTEM"
+[ "$BASE_MODE" = 1 ] && echo "mode: topic base${BASE_NAME:+ '$BASE_NAME'} (PULL — search/translation checked; PUSH machinery N/A)"
 
 # ---------------------------------------------------------------- DEPENDENCIES
 hdr "Dependencies"
@@ -91,11 +104,13 @@ fi
 
 # memory files on disk — the SOURCE of the index and the wiki. Zero here is the
 # #1 reason a fresh install shows "no wiki": there is simply nothing to export.
+if [ "$BASE_MODE" = 0 ]; then
 MEM_FILES=$(find "$HOME/.claude/projects" -path "*/memory/*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
 if [ "${MEM_FILES:-0}" -gt 0 ]; then
     ok "$MEM_FILES memory .md files on disk (~/.claude/projects/*/memory/)"
 else
     warn "0 memory files found — nothing to index or turn into a wiki yet" "memories accrue as you work; or check the session-signals Stop hook is capturing"
+fi
 fi
 
 # §3.5 (informational) — index freshness: of the files the indexer's OWN collect_files()
@@ -123,7 +138,7 @@ print('{}|{}'.format(len(disk), sum(1 for p in disk if p not in idx)))
         if [ "$LAG" -gt "$THRESH" ]; then
             note "index vs disk: $IDX_MEM indexed / $SCOPE_FILES in-scope files (Δ$LAG missing from FTS — incremental index may be lagging). Catch up: bash $MEMORY_SYSTEM/bin/index.sh --incremental"
         else
-            ok "index fresh vs disk: $IDX_MEM / $SCOPE_FILES in-scope files in FTS (Δ$LAG; covers projects+agent-memory+skills+signals)"
+            ok "index fresh vs disk: $IDX_MEM / $SCOPE_FILES in-scope files in FTS (Δ$LAG; $([ "$BASE_MODE" = 1 ] && echo "base corpus_dirs" || echo "covers projects+agent-memory+skills+signals"))"
         fi
     fi
 fi
@@ -236,9 +251,13 @@ else
 fi
 # Card extraction: the LLM that reads the transcript tail at session end and writes
 # agent-extracted memories. Defaults to Sonnet for quality (Haiku to economize).
+if [ "$BASE_MODE" = 1 ]; then
+    note "Card extraction (session-end signals): N/A for a topic base (no session-end capture)"
+else
 SIGNAL_DESC=$(EIDETIC_MEMORY_SYSTEM="$MEMORY_SYSTEM" python3 "$SCRIPT_DIR/signal_model.py" --describe 2>/dev/null)
 [ -z "$SIGNAL_DESC" ] && SIGNAL_DESC="${EIDETIC_SIGNAL_CLAUDE_MODEL:-sonnet (default)}"
 note "Card extraction (session-end signals): $SIGNAL_DESC  (install choice .signal_model; runtime override EIDETIC_SIGNAL_CLAUDE_MODEL; codex fallback EIDETIC_SIGNAL_CODEX_MODEL)"
+fi
 # Cross-lingual query translation: WIRED (opt-in, OFF by default). Show the
 # configured backend, which concrete backend resolves, and per-backend availability.
 # A non-English query is translated to English and dual-queried (native + translated,
@@ -286,6 +305,9 @@ fi
 
 # --------------------------------------------------------------------- HOOKS
 hdr "Hooks & automation (settings.json)"
+if [ "$BASE_MODE" = 1 ]; then
+    note "N/A for a topic base (PULL) — no session-start inject / signal-capture / wiki-export hooks"
+else
 hookchk() { if grep -q "$1" "$SETTINGS" 2>/dev/null; then ok "$2 hook installed"; else warn "$2 hook NOT installed" "re-run install.sh"; fi; }
 hookchk "smart-memory-inject" "session-start inject"
 hookchk "session-signals"     "memory-capture (signals)"
@@ -293,9 +315,13 @@ hookchk "session-signals"     "memory-capture (signals)"
 # its absence is a prime suspect for "no wiki".
 if grep -q "export-vault" "$SETTINGS" 2>/dev/null; then ok "export-vault (wiki build) hook installed"; else warn "export-vault hook NOT installed — wiki is never auto-built" "add a Stop hook running bin/export-vault.sh, or run it manually"; fi
 if crontab -l 2>/dev/null | grep -q "export-vault"; then ok "export-vault cron present"; else note "no export-vault cron (optional nightly rebuild)"; fi
+fi
 
 # ------------------------------------------------------------- WIKI / VAULT
 hdr "Wiki / vault (Obsidian export)"
+if [ "$BASE_MODE" = 1 ]; then
+    note "N/A for a topic base (PULL) — a base is queried over MCP, not exported to an Obsidian wiki"
+else
 EXPORT_SH="$MEMORY_SYSTEM/bin/export-vault.sh"
 [ -x "$EXPORT_SH" ] && ok "export-vault.sh present + executable" || bad "export-vault.sh missing/not executable" "re-run install.sh"
 # figure out WHERE the vault should be: the hook/cron target, else the default.
@@ -324,6 +350,7 @@ if [ ! -d "$VAULT" ] || [ "${PAGES:-0}" = "0" ]; then
     grep -q "export-vault" "$SETTINGS" 2>/dev/null || echo "     2. The export-vault hook isn't installed — the wiki is never auto-built."
     [ -x "$EXPORT_SH" ] && echo "     3. It may have never run — try once manually: bash $EXPORT_SH"
 fi
+fi
 
 # ------------------------------------------------------------------- SEARCH
 hdr "Search"
@@ -335,9 +362,13 @@ if "$SEARCH_BIN" "test" --limit 1 >/dev/null 2>&1; then ok "search runs"; else b
 hdr "Compounding & op-log"
 # Write-side primitives: compounding (Stop-hook signals), promote (a synthesized
 # answer -> one typed page), and the op-log. Missing here = not deployed.
+if [ "$BASE_MODE" = 1 ]; then
+    note "compounding/op-log: N/A for a topic base (curate-write only — explicit add, no auto-compound)"
+else
 for tool in compound.py remember.py oplog.py; do
     if [ -f "$MEMORY_SYSTEM/bin/$tool" ]; then ok "$tool present"; else warn "$tool NOT deployed — promote/op-log unavailable" "sync source bin/ to $MEMORY_SYSTEM/bin/ (re-run install.sh)"; fi
 done
+fi
 # card_kind distribution — confirms typed pages (synthesis/concept/entity) flow.
 if [ -f "$DB" ]; then
     KINDS=$(sqlite3 "$DB" "SELECT group_concat(card_kind || '=' || n, ' ') FROM (SELECT card_kind, COUNT(*) n FROM memory_chunks WHERE card_kind IS NOT NULL AND card_kind != '' GROUP BY card_kind ORDER BY n DESC LIMIT 6)" 2>/dev/null)
@@ -357,13 +388,16 @@ fi
 # The READ side: which cards searches actually surface (usage.py logs medium+ hits;
 # usage_stats.py aggregates). Answers "is this memory useful" + flags dead cards.
 hdr "Usage (which cards get surfaced)"
-if [ -f "$MEMORY_SYSTEM/bin/usage_stats.py" ]; then
-    USAGE=$(python3 "$MEMORY_SYSTEM/bin/usage_stats.py" --db "$DB" --summary 2>/dev/null)
+# a base has no bin/ of its own — fall back to the running install's usage_stats.py
+# (queried against the base's own DB), so usage renders for a base too.
+USAGE_BIN="$MEMORY_SYSTEM/bin/usage_stats.py"; [ -f "$USAGE_BIN" ] || USAGE_BIN="$SCRIPT_DIR/usage_stats.py"
+if [ -f "$USAGE_BIN" ]; then
+    USAGE=$(python3 "$USAGE_BIN" --db "$DB" --summary 2>/dev/null)
     if [ -n "$USAGE" ]; then
         SURF=$(echo "$USAGE" | sed -nE 's/.*surfacings=([0-9]+).*/\1/p')
         if [ "${SURF:-0}" -gt 0 ]; then
             note "$USAGE"
-            note "report: python3 $MEMORY_SYSTEM/bin/usage_stats.py --top 20   ·   compact: --rollup"
+            note "report: python3 $USAGE_BIN --top 20   ·   compact: --rollup"
         else
             note "no usage logged yet — searches will start recording (usage_stats.py --top 20)"
         fi
