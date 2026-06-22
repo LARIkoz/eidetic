@@ -303,7 +303,9 @@ def fetch_feedback(conn, budget_chars, current_slug=""):
         used += len(text)
 
     total_rules = clustered_displayed + n
-    return "".join(result), used, total_rules
+    # Phase 1: every feedback card is injected (P3 never-invisible), so all paths count.
+    feedback_slugs = sorted({os.path.basename(r[0]).replace(".md", "") for r in rows})
+    return "".join(result), used, total_rules, feedback_slugs
 
 
 def fetch_project(conn, cwd, budget_chars, drift_map=None):
@@ -338,19 +340,21 @@ def fetch_project(conn, cwd, budget_chars, drift_map=None):
         short_path = path.replace(os.path.expanduser("~"), "~")
         snippet = content[:500] if len(content) > 500 else content
         text = f"**{name or heading}** ({card_kind or typ}{status_tag}) — {short_path}\n{snippet}\n\n"
-        chunks.append((w, text))
+        chunks.append((w, text, path))
 
     chunks.sort(key=lambda x: x[0], reverse=True)
 
     result = []
     used = 0
-    for w, text in chunks:
+    included = []
+    for w, text, path in chunks:
         if used + len(text) > budget_chars and used > 0:
             break
         result.append(text)
         used += len(text)
+        included.append(os.path.basename(path).replace(".md", ""))
 
-    return "".join(result), used
+    return "".join(result), used, sorted(set(included))
 
 
 def fetch_recent(conn, budget_chars, exclude_project=None, drift_map=None):
@@ -391,19 +395,21 @@ def fetch_recent(conn, budget_chars, exclude_project=None, drift_map=None):
         short_path = path.replace(os.path.expanduser("~"), "~")
         snippet = content[:300] if len(content) > 300 else content
         text = f"**{name or heading}**{stale_tag} ({card_kind or typ}{status_tag}, {proj or 'cross-project'}) — {short_path}\n{snippet}\n\n"
-        chunks.append((w, text))
+        chunks.append((w, text, path))
 
     chunks.sort(key=lambda x: x[0], reverse=True)
 
     result = []
     used = 0
-    for w, text in chunks:
+    included = []
+    for w, text, path in chunks:
         if used + len(text) > budget_chars and used > 0:
             break
         result.append(text)
         used += len(text)
+        included.append(os.path.basename(path).replace(".md", ""))
 
-    return "".join(result), used
+    return "".join(result), used, sorted(set(included))
 
 
 HANDOFF_MAX_AGE_MINUTES = 30
@@ -482,11 +488,11 @@ def main():
     if handoff_used > 0:
         project_budget = max(1000, project_budget - handoff_used // 2)
 
-    project_text, project_used = fetch_project(conn, cwd, project_budget, drift_map)
-    recent_text, recent_used = fetch_recent(conn, recent_budget, slug, drift_map)
+    project_text, project_used, project_slugs = fetch_project(conn, cwd, project_budget, drift_map)
+    recent_text, recent_used, recent_slugs = fetch_recent(conn, recent_budget, slug, drift_map)
 
     feedback_budget = max(1000, TOKEN_BUDGET_CHARS - project_used - recent_used - handoff_used - drift_used)
-    feedback_text, feedback_used, feedback_total = fetch_feedback(conn, feedback_budget, slug)
+    feedback_text, feedback_used, feedback_total, feedback_slugs = fetch_feedback(conn, feedback_budget, slug)
 
     total_chars = feedback_used + project_used + recent_used + handoff_used + drift_used
     total_tokens = total_chars // 4
@@ -547,6 +553,7 @@ def main():
                         break
             except Exception:
                 pass
+            _all_slugs = sorted(set(feedback_slugs) | set(project_slugs) | set(recent_slugs))
             row = {
                 "ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                 "session_id": os.environ.get("EIDETIC_SESSION_ID", ""),
@@ -558,6 +565,8 @@ def main():
                 "handoff_tokens": handoff_used // 4,
                 "drift_tokens": drift_used // 4,
                 "n_rules": feedback_total,
+                "n_cards": len(_all_slugs),
+                "slugs": _all_slugs,
                 "memory_md_bytes": mem_md_bytes,
             }
             inj_log = os.path.join(os.path.dirname(os.path.abspath(db_path)), "inject_log.jsonl")

@@ -24,6 +24,7 @@ import os
 import sys
 
 DEFAULT_LOG = os.path.expanduser("~/.claude/memory-system/db/inject_log.jsonl")
+SESSION_VALUE = os.path.expanduser("~/.claude/memory-system/db/session_value.jsonl")
 
 
 def load_rows(path):
@@ -132,9 +133,27 @@ def main():
         for proj, taxes in sorted(by_proj.items(), key=lambda kv: -_avg(kv[1])):
             print(f"  {round(_avg(taxes)):>6}t  ×{len(taxes):<3} {proj}")
         print()
-    print("NOTE: COST only. Benefit (did a card help) = Phase 1 (passive_stats.py), not built.")
     if md_share >= 50:
         print(f"FLAG: MEMORY.md is {md_share:.0f}% of every session's memory tax — top compress target.")
+
+    # ---- BENEFIT side (Phase 1): referenced_k from session_value.jsonl ----
+    sv = [r for r in load_rows(SESSION_VALUE) if r.get("n_cards")]
+    print()
+    if sv:
+        from collections import Counter
+        cnt = Counter()
+        for r in sv:
+            for s in r.get("referenced_slugs", []):
+                cnt[s] += 1
+        avg_ref = _avg([r.get("referenced_k", 0) for r in sv])
+        avg_util = _avg([r.get("utilization", 0) for r in sv])
+        print(f"BENEFIT — injected cards REFERENCED in real session work ({len(sv)} sessions):")
+        print(f"  referenced / session : avg {avg_ref:.1f} cards   utilization avg {avg_util * 100:.1f}%")
+        if cnt:
+            print("  most-referenced      : " + ", ".join(f"{s}×{c}" for s, c in cnt.most_common(5)))
+        print("  (LOWER BOUND: literal slug match only — paraphrased use is missed; not causation.)")
+    else:
+        print("BENEFIT: no measured sessions yet (session_value.jsonl empty) — fills at SessionEnd.")
     return 0
 
 
