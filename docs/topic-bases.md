@@ -120,10 +120,13 @@ claude mcp add <name> -s project \
   -- python3 /path/to/eidetic/mcp_server.py
 ```
 
+- **Turnkey:** `eidetic base attach <name> --scope project` prints this exact line for you
+  (add `--run` to execute it) — no need to hand-write it.
 - `-s project` → written to that repo's `.mcp.json` — available **only** there (and
   shareable with the team via the repo). `-s user` → global.
-- Tools are **named per base** (`<name>_search`, `<name>_ask`, `<name>_add`), so you can
-  attach several at once (`stripe_search` + `acme_search`) with no collision.
+- Tools are **named per base** (`<name>_search`, `<name>_search_detail`,
+  `<name>_serendipity`, `<name>_add`), so you can attach several at once
+  (`stripe_search` + `acme_search`) with no collision.
 - Detach: `claude mcp remove <name>`. List: `claude mcp list`.
 
 You keep several bases and plug whichever a project needs, like a USB stick.
@@ -138,11 +141,71 @@ A base is a **coherent knowledge domain you attach as a unit**.
   pure-integration project that needs the API but not the methodology), or when
   lifecycles/sizes diverge sharply.
 
-## Status
+## The CLI
 
-Today this is a **recipe** (the steps above, run by your agent), using eidetic's existing
-MCP server (which already keys off `EIDETIC_MEMORY_SYSTEM`). A turnkey
-`eidetic base init <name>` / `index` / `add` / `attach` CLI — one command per step — is
-the next planned feature. The only engine gap it closes is **scan-scope isolation** (so a
-base indexes _only_ its corpus, never your `~/.claude` memory); the DB path, search, the
-doctor, and this MCP server already key off `EIDETIC_MEMORY_SYSTEM`.
+The CLI is **`bin/base.py`** in your eidetic install (the dir that holds `mcp_server.py`,
+e.g. `~/.claude/memory-system`). There is no `eidetic` binary on `PATH` yet — call it
+directly, or alias it once:
+
+```bash
+python3 ~/.claude/memory-system/bin/base.py <cmd> …      # direct
+alias eidetic-base='python3 ~/.claude/memory-system/bin/base.py'   # then: eidetic-base init acme …
+```
+
+> This guide and the tool's own messages write `eidetic base <cmd>` for readability — it
+> means exactly `base.py <cmd>` (`eidetic-base <cmd>` with the alias above).
+
+| `<cmd>`                                                          | What it does                                                                                                                                                                                  |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `init <name> [--dir DIR]`                                        | Scaffold `<root>/<name>-base/` (`docs/` + `notes/` + manifest + gitignored `db/` + `HOME.md`) and register it. `<root>` = `--dir` ▸ `$EIDETIC_BASES_DIR` ▸ `~/eidetic-bases` — **never cwd**. |
+| `index <name> [--incremental]`                                   | Build the index — default **full** (FTS5 + e5 vectors); `--incremental` = FTS only.                                                                                                           |
+| `add <name> (--file F \| --text T) [--as note\|doc] [--title T]` | Curate-write one md (auto-routes note vs doc by size), tag `source: user`, reindex.                                                                                                           |
+| `attach <name> [--scope project\|user\|local] [--run]`           | Print (or `--run`) the `claude mcp add … -e EIDETIC_MEMORY_SYSTEM=<base> …` line for a project.                                                                                               |
+| `list`                                                           | List registered bases (`~/.claude/eidetic-bases.json`).                                                                                                                                       |
+| `doctor <name>`                                                  | Functional canary: embed → vector → search against the base.                                                                                                                                  |
+| `refresh <name>`                                                 | Re-run your scrape recipe, then full-reindex (host-only).                                                                                                                                     |
+
+A base is resolved by its **registered name** _or_ by **path** (any dir containing
+`.eidetic-base.json`).
+
+## Agent contract — build a base end to end
+
+Hand an agent a source plus this contract. Every step is a real command from the table above.
+
+1. **Init** — `eidetic base init <name>` → `~/eidetic-bases/<name>-base/` (or
+   `$EIDETIC_BASES_DIR`). Never inside the consuming project; never inside the eidetic repo.
+2. **Ingest** — scrape the source yourself, convert to clean Markdown (**format conversion,
+   not translation** — keep the source language), and write pages into `docs/` per the
+   **Storage model** above: one readable page per unit, split a book by chapter and an API
+   by endpoint, always a `HOME.md` hub with `[[cross-links]]`. **Raw pages, not distilled
+   fact-cards** — no LLM auto-extraction (lossy, hallucinates, drops the source).
+3. **Index** — `eidetic base index <name>` (full: FTS + vectors).
+4. **Verify** — `eidetic base doctor <name>` must report `ok`; spot-check 2–3 real queries
+   return the right page.
+5. **Attach** — `eidetic base attach <name> --scope project` (run inside the project that
+   needs it), exposing `<name>_search` / `<name>_search_detail` / `<name>_serendipity` /
+   `<name>_add`.
+
+**Invariants — do not break:**
+
+- **Isolation** — a base indexes ONLY its own `corpus_dirs`, never `~/.claude`; it is PULL
+  (attached per project), never auto-injected like personal memory. External docs go in a
+  base, **never** in your personal memory index.
+- **Curate-write is explicit-only** — `add` / `<name>_add` run **only** when the user says
+  "save this to the base". Never write to a base autonomously; what an agent learns on its
+  own compounds into **core** memory, not a base.
+- **Storage location** — bases live under one root outside any project tree
+  (`$EIDETIC_BASES_DIR` ▸ `~/eidetic-bases`); each base is its own git repo (source
+  committed, `db/` rebuilt).
+
+## Where it all lives — no divergence
+
+| Layer             | Location                                                                              | Published with eidetic?                |
+| ----------------- | ------------------------------------------------------------------------------------- | -------------------------------------- |
+| **Engine (code)** | the eidetic install / repo — shared by personal memory **and** every base             | yes (the mechanism)                    |
+| **Base data**     | `$EIDETIC_BASES_DIR/<name>-base/` (default `~/eidetic-bases/`), one git repo per base | **no — separate repo by construction** |
+| **Registry**      | `~/.claude/eidetic-bases.json` (name → path)                                          | no — local only                        |
+
+Publishing eidetic ships the **mechanism**; it can never carry a base's contents, because a
+base is a separate repo outside the eidetic tree. That is the structural guarantee that
+personal corpora stay private even though the feature is public.

@@ -2,6 +2,11 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.12.1 (2026-06-22)
+
+- **Topic bases — bases-root default + agent contract.** `eidetic base init` now scaffolds under a single bases-root (`$EIDETIC_BASES_DIR`, default `~/eidetic-bases/`) — **never the current working directory** — so a base can't land loose inside whatever project you happen to be in. [`docs/topic-bases.md`](docs/topic-bases.md) is now a complete operating contract rather than a "planned recipe": the real `bin/base.py` CLI (`init`/`index`/`add`/`attach`/`list`/`doctor`/`refresh`), the storage convention, an executable **Agent contract** for building a base end to end, and a _no-divergence_ map of engine (code) vs base data (`~/eidetic-bases/`) vs registry (`~/.claude/eidetic-bases.json`). Corrected the per-base tool list to the real surface (`<name>_search` / `_search_detail` / `_serendipity` / `_add`).
+- **Value-measurement telemetry (Phase 0–1).** Passive memory-injection cost log + de-polluted recall benchmarks (Phase 0); a lexical `referenced_k` benefit proxy (Phase 1).
+
 ## v5.12.0 (2026-06-22)
 
 - **Topic bases — attachable PULL knowledge-bases, separate from your PUSH memory.** Build a base from any corpus (scraped API docs, a methodology, a book), keep it as its **own git repo**, and **attach it per-project over MCP** — so an agent queries it on demand instead of re-deriving from scratch every time, without polluting your personal memory recall. Personal memory stays PUSH (auto-injected every session); a base is PULL (attached only where needed). Same engine (e5-large + FTS5 + vectors), separate isolated index. Full guide: [`docs/topic-bases.md`](docs/topic-bases.md).
