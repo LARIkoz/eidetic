@@ -56,6 +56,32 @@ class SignalModelResolveTest(unittest.TestCase):
         self._write("sonnet")
         self.assertNotEqual(signal_model.resolve(env={}, root=self.root), "sonnet")
 
+    def test_env_friendly_name_maps_to_pinned_id(self):
+        # README documents EIDETIC_SIGNAL_CLAUDE_MODEL=haiku — it MUST map to the pinned
+        # id, not leak the bare alias into ANTHROPIC_MODEL on the live Stop hook.
+        env = {"EIDETIC_SIGNAL_CLAUDE_MODEL": "haiku"}
+        self.assertEqual(signal_model.resolve(env=env, root=self.root), "claude-haiku-4-5-20251001")
+
+    def test_env_friendly_name_case_insensitive(self):
+        env = {"EIDETIC_SIGNAL_CLAUDE_MODEL": "Sonnet"}
+        self.assertEqual(signal_model.resolve(env=env, root=self.root), "claude-sonnet-4-6")
+
+    def test_env_bare_alias_never_leaks(self):
+        # the bug C10: env 'haiku' used to be returned verbatim -> exported as the bare
+        # alias 'haiku', which a sonnet/haiku remap could re-route to a flagship + drain quota.
+        env = {"EIDETIC_SIGNAL_CLAUDE_MODEL": "haiku"}
+        self.assertNotIn(signal_model.resolve(env=env, root=self.root), ("haiku", "sonnet"))
+
+    def test_env_garbage_falls_through(self):
+        # a set-but-unrecognized env must NOT be exported verbatim; fall to the file/default
+        env = {"EIDETIC_SIGNAL_CLAUDE_MODEL": "banana"}
+        self._write("haiku")
+        self.assertEqual(signal_model.resolve(env=env, root=self.root), "claude-haiku-4-5-20251001")
+
+    def test_describe_env_friendly_shows_pinned_id(self):
+        env = {"EIDETIC_SIGNAL_CLAUDE_MODEL": "haiku"}
+        self.assertIn("claude-haiku-4-5-20251001", signal_model.describe(env=env, root=self.root))
+
     def test_describe_marks_source(self):
         self.assertIn("default", signal_model.describe(env={}, root=self.root))
         self._write("haiku")

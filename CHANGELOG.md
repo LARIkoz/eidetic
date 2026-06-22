@@ -2,6 +2,14 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.11.1 (2026-06-22)
+
+Three correctness fixes from an adversarial audit of v5.6.0–v5.11.0 (the releases that shipped without a review pass). Each is a case where a green check or a documented usage didn't match the code.
+
+- **`EIDETIC_SIGNAL_CLAUDE_MODEL=haiku` now maps to the pinned id instead of leaking the bare alias.** The README documents that override with a friendly name (`=haiku`), but the env path returned the value verbatim — so the live Stop hook exported `ANTHROPIC_MODEL=haiku`, the exact bare-alias leak this module exists to prevent (a `sonnet→Opus` remap could then re-route the background card-extraction onto a flagship and drain the shared quota pool). The env override now normalizes through the same `NAMES` map as the `.signal_model` file (`haiku → claude-haiku-4-5-20251001`); a full `claude-…` id still passes through verbatim; an unrecognized value falls through to the file/default instead of being exported raw. +5 tests.
+- **The translator canary (§3.6) now actually asserts the output is English, as the doctor claims.** The doctor labeled an OK as "changed, **non-Cyrillic English**" and the v5.9.0 note said "Cyrillic-free", but the code only checked non-empty + changed — so a backend that returned a same-script paraphrase (Apple/opusmt echoing Russian) passed as "functional". The canary now **fails when a non-Latin probe's output is still in the source script**; a Latin source (de/fr/…) can't be decided by script, so it isn't gated. The green label now matches what the code verifies. +3 tests.
+- **Doctor §3.5 freshness now covers all indexed source roots, not just `projects/*/memory`.** v5.8.1 killed a false "behind" by scoping the disk count to `projects/*/memory[/signals]` — but that left §3.5 **blind to lag in `agent-memory/`, the memory-system `signals/`, and `skills/*/SKILL.md`** (177 indexed paths it never compared, so a stalled hook in those roots would read Δ0 forever). §3.5 now calls the indexer's own `collect_files()` (zero scope-drift — the same code the indexer walks) and set-compares against the FTS paths: the line now reads `983 / 983 (Δ0)` spanning projects + agent-memory + skills + signals.
+
 ## v5.11.0 (2026-06-21)
 
 - **The Apple pack check + label are language-adaptive too — finishing the "your language, not Russian" generalization.** v5.10.0 made the _functional_ translator probe (§3.6) adapt to the corpus language; now the _availability_ side does too. `backend_status(source=…)` probes the resolved corpus/configured language's pack (`source→en`) instead of a hardcoded `ru→en`, and the doctor labels the line with that language (e.g. `Apple translation pack de→en: installed ✓` for a German user, with `…→ add the 'de' language` guidance). The `apple_translate.swift` helper already accepted `--from <lang>` — only the Python default and the doctor label were hardcoded. +2 tests (138 total).

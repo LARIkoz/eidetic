@@ -187,6 +187,24 @@ class TranslateCanaryTest(unittest.TestCase):
         r = canary.translate_canary(translate_fn=lambda q, t, b: "x", backend="apple", lang=None)
         self.assertEqual(r["status"], "skip")
 
+    def test_fail_when_output_still_cyrillic(self):
+        # B7 honesty gate: a CHANGED-but-still-Russian paraphrase is NOT a translation to
+        # English — the doctor's "non-Cyrillic English" claim must hold, so this fails.
+        r = canary.translate_canary(translate_fn=lambda q, t, b: "Память плывёт во времени", backend="apple", lang="ru")
+        self.assertEqual(r["status"], "fail")
+        self.assertIn("non-English", r["detail"])
+
+    def test_fail_when_output_still_cjk(self):
+        r = canary.translate_canary(translate_fn=lambda q, t, b: "记忆漂移", backend="apple", lang="zh")
+        self.assertEqual(r["status"], "fail")
+        self.assertIn("non-English", r["detail"])
+
+    def test_ok_latin_source_not_script_gated(self):
+        # a Latin source (de) can't be decided by script — a correct English result stays OK,
+        # and the gate must not false-fail it (both probe and output are Latin)
+        r = canary.translate_canary(translate_fn=lambda q, t, b: "Memory drifts with time", backend="apple", lang="de")
+        self.assertEqual(r["status"], "ok")
+
     def test_probe_matches_detected_language(self):
         # German env override picks the German probe, not the Russian one
         r = canary.translate_canary(translate_fn=lambda q, t, b: "Memory drifts with time", backend="apple", lang="de")

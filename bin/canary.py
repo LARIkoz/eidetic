@@ -229,6 +229,13 @@ _SCRIPT_LANGS = [
 ]
 TRANSLATE_PROBE = LANG_PROBES["ru"][0]  # back-compat default
 
+# Cyrillic / Arabic / kana / CJK / Hangul — the non-Latin scripts a real English
+# translation must NOT still contain. Mirrors translate.is_non_english. Makes the
+# doctor's "came back as changed, non-Cyrillic English" claim TRUE: a backend that
+# echoes the input (or a same-script paraphrase) for a non-Latin probe still looks
+# "changed" but is not English.
+_NONLATIN_RE = _re.compile(r"[Ѐ-ԯ؀-ۿ぀-ヿ㐀-鿿가-힯]")
+
 
 def _default_translate(query, target, backend):
     import translate
@@ -307,6 +314,12 @@ def translate_canary(db_path=None, translate_fn=None, backend=None, configured=N
         return {"status": "fail", "backend": backend, "detail": f"translator ({backend}) returned EMPTY for the {langname} probe"}
     if out.strip().lower() == probe.lower():
         return {"status": "fail", "backend": backend, "detail": f"translator ({backend}) returned the {langname} input UNCHANGED"}
+    # Honesty gate: the doctor renders an OK as "came back as English". For a non-Latin
+    # source the output must no longer be in the source script — else the backend
+    # returned a same-script paraphrase that only LOOKS translated (apple/opusmt echoing
+    # Russian). A Latin source (de/fr/…) can't be decided by script, so this is skipped.
+    if _NONLATIN_RE.search(probe) and _NONLATIN_RE.search(out):
+        return {"status": "fail", "backend": backend, "detail": f"translator ({backend}) returned non-English ({langname}-script) output: '{out.strip()[:32]}'"}
     return {"status": "ok", "backend": backend, "detail": f"{langname}->en: '{probe[:24]}' -> '{out.strip()[:32]}' ({backend} functional)"}
 
 

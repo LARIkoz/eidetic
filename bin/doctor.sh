@@ -98,24 +98,32 @@ else
     warn "0 memory files found — nothing to index or turn into a wiki yet" "memories accrue as you work; or check the session-signals Stop hook is capturing"
 fi
 
-# §3.5 (informational) — index freshness: disk memory files the indexer WOULD index
-# vs DISTINCT memory paths actually in the index. The disk count MUST match the
-# indexer's scope (index_impl SCAN_DIRS = projects/*/memory/*.md + memory/signals/*.md,
-# NON-recursive, excluding MEMORY.md/BACKLOG.md). A naive recursive `find */memory/*.md`
-# over-counts MEMORY.md + handoff-subdir files the indexer never indexes → a permanent
-# false "behind". Scope-matched, a fresh index reads Δ0; a real incremental-hook lag shows.
+# §3.5 (informational) — index freshness: of the files the indexer's OWN collect_files()
+# says are in scope, how many are MISSING from the FTS index. Calling collect_files()
+# directly = ZERO scope-drift: it covers ALL roots (projects/*/memory[/signals],
+# agent-memory, memory-system/signals, skills/*/SKILL.md; excl MEMORY.md/BACKLOG.md/.bak).
+# A bash glob reimplementation either over-counts (MEMORY.md/handoff-subdirs → permanent
+# false "behind" — the v5.8.1 bug) or, scoped to projects/memory only, is BLIND to lag in
+# agent-memory/skills/signals (177 paths the old query never saw). Set-compare on the
+# indexer's exact path strings: a fresh index reads Δ0; a real incremental-hook lag shows.
 if [ -f "$DB" ]; then
-    IDX_MEM=$(sqlite3 "$DB" "SELECT COUNT(DISTINCT path) FROM memory_chunks WHERE path LIKE '%/.claude/projects/%/memory/%'" 2>/dev/null || echo "")
-    SCOPE_FILES=$( { find "$HOME"/.claude/projects/*/memory -maxdepth 1 -type f -name '*.md' 2>/dev/null;
-                     find "$HOME"/.claude/projects/*/memory/signals -maxdepth 1 -type f -name '*.md' 2>/dev/null; } \
-                   | grep -vE '/(MEMORY|BACKLOG)\.md$' | sort -u | wc -l | tr -d ' ')
-    if [ -n "$IDX_MEM" ] && [ "${SCOPE_FILES:-0}" -gt 0 ] 2>/dev/null; then
-        LAG=$(( SCOPE_FILES - IDX_MEM ))
+    FRESH=$(python3 -c "
+import sys; sys.path.insert(0,'$SCRIPT_DIR')
+import index_impl, sqlite3, os
+ms = index_impl.memory_system_from_db('$DB') if hasattr(index_impl,'memory_system_from_db') else os.path.expanduser('~/.claude/memory-system')
+disk = index_impl.collect_files(ms)
+conn = sqlite3.connect('file:$DB?mode=ro', uri=True)
+idx = set(r[0] for r in conn.execute('SELECT DISTINCT path FROM memory_chunks'))
+print('{}|{}'.format(len(disk), sum(1 for p in disk if p not in idx)))
+" 2>/dev/null)
+    SCOPE_FILES=${FRESH%%|*}; LAG=${FRESH##*|}
+    if [ -n "$FRESH" ] && [ "${SCOPE_FILES:-0}" -gt 0 ] 2>/dev/null && [ "${LAG:-x}" -ge 0 ] 2>/dev/null; then
+        IDX_MEM=$(( SCOPE_FILES - LAG ))
         THRESH=$(( SCOPE_FILES / 10 )); [ "$THRESH" -lt 20 ] && THRESH=20   # 10% or 20 files, whichever is larger
         if [ "$LAG" -gt "$THRESH" ]; then
-            note "index vs disk: $IDX_MEM indexed / $SCOPE_FILES in-scope memory .md (Δ$LAG behind — incremental index may be lagging). Catch up: bash $MEMORY_SYSTEM/bin/index.sh --incremental"
+            note "index vs disk: $IDX_MEM indexed / $SCOPE_FILES in-scope files (Δ$LAG missing from FTS — incremental index may be lagging). Catch up: bash $MEMORY_SYSTEM/bin/index.sh --incremental"
         else
-            ok "index fresh vs disk: $IDX_MEM / $SCOPE_FILES in-scope memory paths in FTS (Δ$LAG)"
+            ok "index fresh vs disk: $IDX_MEM / $SCOPE_FILES in-scope files in FTS (Δ$LAG; covers projects+agent-memory+skills+signals)"
         fi
     fi
 fi

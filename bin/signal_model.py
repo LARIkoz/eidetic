@@ -3,11 +3,15 @@
 for the Stop hook (session-signals.sh) and the doctor display.
 
 Resolution order (mirrors embed.py's profile resolution):
-  1. EIDETIC_SIGNAL_CLAUDE_MODEL — an explicit full id wins (backward-compatible
-     runtime override).
-  2. <memory-system>/.signal_model — the INSTALL-TIME choice: a friendly name
-     (sonnet | haiku) mapped to a pinned id, or a full "claude-..." id verbatim.
+  1. EIDETIC_SIGNAL_CLAUDE_MODEL — runtime override: a friendly name (sonnet |
+     haiku) mapped to a pinned id, or a full "claude-..." id verbatim.
+  2. <memory-system>/.signal_model — the INSTALL-TIME choice, same normalization.
   3. default: claude-sonnet-4-6 (quality).
+
+Both the env override and the file normalize identically (see _normalize): the env
+path previously returned its value verbatim, so the documented
+EIDETIC_SIGNAL_CLAUDE_MODEL=haiku leaked the bare alias 'haiku' into ANTHROPIC_MODEL
+on the live Stop hook instead of the pinned claude-haiku id.
 
 An EXACT id is always pinned, never the bare 'sonnet' alias: a user's
 ANTHROPIC_DEFAULT_SONNET_MODEL remap (e.g. sonnet -> Opus) would otherwise silently
@@ -39,31 +43,45 @@ def _file_choice(env, root):
         return ""
 
 
-def resolve(env=None, root=None):
-    """The full model id to run signal extraction with."""
-    env = os.environ if env is None else env
-    explicit = (env.get("EIDETIC_SIGNAL_CLAUDE_MODEL") or "").strip()
-    if explicit:
-        return explicit
-    choice = _file_choice(env, root)
+def _normalize(choice):
+    """A config value -> a pinned exact id, or None if unrecognized.
+
+    Friendly name (sonnet|haiku, case-insensitive) -> pinned id; a full "claude-..."
+    id passes through verbatim; anything else (empty, typo, bare alias like a raw
+    'sonnet'-remap target) -> None so the caller falls through to the next source.
+    The env override and the .signal_model file MUST normalize the same way — the
+    env path used to return its value verbatim, so the documented
+    EIDETIC_SIGNAL_CLAUDE_MODEL=haiku leaked the bare alias 'haiku' to ANTHROPIC_MODEL.
+    """
+    if not choice:
+        return None
     if choice.lower() in NAMES:
         return NAMES[choice.lower()]
     if choice.startswith("claude-"):
         return choice
-    return DEFAULT
+    return None
+
+
+def _label(choice):
+    return choice.lower() if choice.lower() in NAMES else choice
+
+
+def resolve(env=None, root=None):
+    """The full model id to run signal extraction with."""
+    env = os.environ if env is None else env
+    explicit = (env.get("EIDETIC_SIGNAL_CLAUDE_MODEL") or "").strip()
+    return _normalize(explicit) or _normalize(_file_choice(env, root)) or DEFAULT
 
 
 def describe(env=None, root=None):
     """Human label for the doctor: '<source>: <friendly?> -> <id>'."""
     env = os.environ if env is None else env
     explicit = (env.get("EIDETIC_SIGNAL_CLAUDE_MODEL") or "").strip()
-    if explicit:
-        return f"env -> {explicit}"
+    if _normalize(explicit):
+        return f"env {_label(explicit)} -> {_normalize(explicit)}"
     choice = _file_choice(env, root)
-    if choice.lower() in NAMES:
-        return f"{choice.lower()} -> {NAMES[choice.lower()]}  (.signal_model)"
-    if choice.startswith("claude-"):
-        return f"{choice}  (.signal_model)"
+    if _normalize(choice):
+        return f"{_label(choice)} -> {_normalize(choice)}  (.signal_model)"
     return f"sonnet -> {DEFAULT}  (default)"
 
 
