@@ -91,5 +91,45 @@ class ArchiveCandidates(unittest.TestCase):
         self.assertEqual(curate.archive_candidates(db2), [])  # no drift_state.db -> []
 
 
+class ArchiveWriter(unittest.TestCase):
+    """_set_status_archived — reversible frontmatter flag; never corrupts body."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+
+    def _w(self, name, text):
+        p = os.path.join(self.d, name)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(text)
+        return p
+
+    def test_replace_existing_status(self):
+        p = self._w("a.md", "---\nname: A\ntype: project\nstatus: current\n---\n\nBody here.\n")
+        self.assertEqual(curate._set_status_archived(p), "archived")
+        txt = open(p, encoding="utf-8").read()
+        self.assertIn("status: archived", txt)
+        self.assertNotIn("status: current", txt)
+        self.assertIn("Body here.", txt)               # body untouched
+
+    def test_insert_when_no_status(self):
+        p = self._w("b.md", "---\nname: B\ntype: project\n---\n\nBody.\n")
+        self.assertEqual(curate._set_status_archived(p), "archived")
+        self.assertIn("status: archived", open(p, encoding="utf-8").read())
+
+    def test_idempotent_already_archived(self):
+        p = self._w("c.md", "---\nname: C\nstatus: archived\n---\n\nB.\n")
+        self.assertEqual(curate._set_status_archived(p), "already")
+
+    def test_state_key_variant(self):
+        p = self._w("d.md", "---\nname: D\nstate: current\n---\n\nB.\n")
+        self.assertEqual(curate._set_status_archived(p), "archived")
+        self.assertIn("state: archived", open(p, encoding="utf-8").read())
+
+    def test_no_frontmatter_skipped(self):
+        p = self._w("e.md", "# Just a heading\n\nNo frontmatter.\n")
+        self.assertEqual(curate._set_status_archived(p), "skip")
+        self.assertNotIn("archived", open(p, encoding="utf-8").read())
+
+
 if __name__ == "__main__":
     unittest.main()

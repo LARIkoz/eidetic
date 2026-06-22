@@ -26,6 +26,7 @@ that drift_check already maintains. Zero-dep: stdlib + sqlite3.
 
 import argparse
 import os
+import re
 import sqlite3
 import sys
 
@@ -108,6 +109,38 @@ def archive_candidates(db_path):
     return out
 
 
+def _set_status_archived(path, value="archived"):
+    """Set top-level frontmatter status (index_impl reads `status:`/`state:`,
+    explicit wins). Atomic temp+rename. Returns 'archived' | 'already' | 'skip'
+    (no frontmatter / unreadable). Reversible: set status back to 'current'."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return "skip"
+    if not text.startswith("---"):
+        return "skip"                      # no frontmatter — don't guess, skip
+    lines = text.split("\n")
+    close = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    if close is None:
+        return "skip"
+    key_re = re.compile(r"^(\s*)(status|state):\s*(.*)$")
+    for i in range(1, close):
+        m = key_re.match(lines[i])
+        if m:
+            if m.group(3).strip().lower() == value:
+                return "already"           # idempotent
+            lines[i] = f"{m.group(1)}{m.group(2)}: {value}"
+            break
+    else:
+        lines.insert(close, f"status: {value}")
+    tmp = path + ".curate-tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    os.replace(tmp, path)
+    return "archived"
+
+
 def _print_promote(rows, top):
     print(f"=== promote candidates ({len(rows)}) — search keeps pulling, not yet feedback (PULL -> PUSH) ===")
     if not rows:
@@ -130,8 +163,8 @@ def _print_archive(rows, top):
     if not rows:
         print("none — every stale card is either still pulled, protected, or none are stale.")
         return
-    print("archive = move the file to MEMORY-ARCHIVE.md (still indexed for PULL,\n"
-          "not auto-loaded). The move is manual + reversible; nothing here writes.\n")
+    print("archive = set frontmatter status:archived (drift_check stops flagging,\n"
+          "search keeps the card). Reversible; --apply does it, plain run only lists.\n")
     print(f"  {'flagged':>7}  {'type':9}  {'stale':16}  path")
     for r in rows[:top]:
         print(f"  {r['times_flagged']:>7}  {r['type']:9}  {r['stale']:16}  "
@@ -149,6 +182,10 @@ def main(argv=None):
     ap.add_argument("--min-hits", type=int, default=2,
                     help="promote: min distinct searches that pulled the card (default 2)")
     ap.add_argument("--top", type=int, default=20)
+    ap.add_argument("--apply", action="store_true",
+                    help="archive: set status:archived (dry-run unless --yes)")
+    ap.add_argument("--yes", action="store_true",
+                    help="archive --apply: actually write (else dry-run)")
     args = ap.parse_args(argv)
 
     db = os.path.expanduser(args.db)
@@ -158,8 +195,28 @@ def main(argv=None):
 
     if args.mode == "promote":
         _print_promote(promote_candidates(db, min_hits=args.min_hits), args.top)
-    else:
-        _print_archive(archive_candidates(db), args.top)
+        return 0
+
+    rows = archive_candidates(db)
+    if not args.apply:
+        _print_archive(rows, args.top)             # plain run = list only
+        return 0
+    if not args.yes:
+        print(f"DRY RUN — would set status:archived on {len(rows)} card(s); search keeps\n"
+              f"them, drift stops flagging. Re-run with --apply --yes to write.\n")
+        _print_archive(rows, args.top)
+        return 0
+    done = already = skipped = 0
+    for r in rows:
+        res = _set_status_archived(r["path"])
+        done += res == "archived"
+        already += res == "already"
+        skipped += res == "skip"
+        print(f"  {res:8} {r['path'].replace(os.path.expanduser('~'), '~')}")
+    print(f"\narchived {done}, already {already}, skipped {skipped} (no frontmatter).")
+    if done:
+        print("re-index so drift skips them:  bash bin/index.sh --incremental")
+        print("undo a card:  set its frontmatter status: back to current")
     return 0
 
 
