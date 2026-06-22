@@ -2,7 +2,26 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.12.2-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
 
-**Long-term memory for AI coding agents that knows when memories go bad.** Claude Code-native (zero-config hooks); works with Codex, Gemini, Cursor, Cline, and any MCP agent.
+# Eidetic
+
+**Long-term memory for AI coding agents — that knows when its memories go bad.**
+
+> [What is it?](#what-is-it) · [Why](#why-eidetic) · [Install](#install) · [How to use it](#how-to-use-it) · [How it works](#how-it-works) · [Features](#features) · [Compare](#comparison)
+
+---
+
+## What is it?
+
+Eidetic gives an AI coding agent **long-term memory** that lives in plain Markdown files and is searched with hybrid FTS5 + vector search. One engine, **two kinds of memory**:
+
+- **Personal memory (PUSH)** — your own decisions, rules, and project context. It **auto-injects** into every Claude Code session (and is recallable on demand from any MCP agent) and **compounds** — updating existing notes instead of piling up duplicates.
+- **Topic bases (PULL)** — an external corpus (API docs, a methodology, a book) you turn into an isolated base and **attach only to the projects that need it**.
+
+What makes it different from every other memory tool: it **detects when memories go stale** and down-ranks them — so more memory doesn't quietly make the agent _worse_ (that's [why](#why-eidetic) it exists). Claude Code-native via zero-config hooks; works with Codex, Gemini, Cursor, Cline, and any MCP agent.
+
+---
+
+## Why Eidetic?
 
 ```
 Session 1:  "Never mock the database in tests"
@@ -23,34 +42,57 @@ Session 50: *validate_key() was renamed to check_auth() two weeks ago*
             *Agent gets WORSE, not better, from its own memory*
 ```
 
-That's the **Day 60 problem** — after 500+ memory files, stale knowledge actively hurts the agent. More memory = worse performance. No existing tool detects this.
+That's the **Day 60 problem** — after 500+ memory files, stale knowledge actively hurts the agent. More memory = worse performance. No existing tool detects this. **Eidetic solves both.**
 
-Eidetic solves both.
+---
+
+## Install
 
 ```bash
 git clone https://github.com/LARIkoz/eidetic.git && cd eidetic && bash install.sh
 ```
 
-One command. The **core** (FTS search, injection, drift, vault export) needs **zero pip installs** and works immediately; semantic / cross-lingual search adds one optional dependency — see [Dependencies](#dependencies).
+One command. `install.sh` prompts (enter = default) for the **three models that define the system** — the **embedder** (`multilingual` / `english`), **cross-lingual translation** (`off` / `auto` / `apple` / `opusmt`), and the **card-extraction model** (`sonnet` / `haiku`). Piped, CI, and agent installs stay non-interactive via env (`EIDETIC_EMBED_PROFILE`, `EIDETIC_QUERY_TRANSLATE`, `EIDETIC_SIGNAL_MODEL`) or just take the defaults.
 
-> **Driving it with an agent?** Hand it one of the three copy-paste prompts in
-> **[docs/prompts.md](docs/prompts.md)** — _install Eidetic_ · _build a topic base from a
-> site / book / API_ · _attach a base to a project_.
+The **core** (FTS5 search, auto-injection, drift, vault export) needs **zero pip installs** and works immediately. Semantic / cross-lingual search adds one optional dependency — `pip install fastembed` (see [Dependencies](#dependencies)).
 
----
-
-## Works with any agent
-
-Eidetic is **agent-agnostic at the memory layer** — one `.md` store + FTS5 + e5 vector index; only the _integration surface_ changes per agent:
-
-- **Claude Code** — zero-config. `install.sh` wires SessionStart/Stop hooks, so memory **auto-injects** at the start of every session and signals **auto-capture** at the end. The deepest, hands-off experience.
-- **Codex · Gemini · Cursor · Cline — any MCP agent** — point the agent at the bundled **MCP server** (`memory_search`, `memory_search_detail`, `export_vault`, …) for on-demand recall + write-back. Session-end signal capture also runs on the `codex` CLI, not just `claude`.
-
-No lock-in to one agent. (Auto-injection is the Claude Code hook path; other agents recall on demand through MCP.)
+**Installing with an agent?** Hand it the repo link + **[AGENTS.md](AGENTS.md)** (or the ready install prompt in **[docs/prompts.md](docs/prompts.md)**). Verify any time with `bash ~/.claude/memory-system/bin/doctor.sh`; roll back with `bash ~/.claude/memory-system/bin/rollback.sh`.
 
 ---
 
-## What It Does
+## How to use it
+
+Eidetic has **two kinds of memory**, used differently.
+
+### Personal memory (PUSH) — your own knowledge
+
+On Claude Code it's **automatic**: the installer wires hooks, so your accumulated rules / decisions / context **auto-inject** at the start of every session and new signals are **captured** at the end. You mostly just work. To act on it explicitly:
+
+- **Recall** — `/memory-recall "<query>"` (or the MCP `memory_search` tool from any agent).
+- **File an answer back** — `echo "<answer>" | python3 ~/.claude/memory-system/bin/remember.py "<title>"` promotes a good synthesized answer into a typed page (re-promoting the same topic appends an `## Update`, never duplicates).
+- **Browse** — `eidetic export-vault` turns your memory into a browsable Obsidian wiki.
+
+### Topic bases (PULL) — an external corpus you attach per project
+
+A **topic base** is an isolated corpus (API docs, a methodology, a book) you query on demand and attach only where needed — never polluting your personal recall. Same engine, separate index, its own git repo.
+
+```bash
+python3 ~/.claude/memory-system/bin/base.py init   acme                  # → ~/eidetic-bases/acme-base/
+python3 ~/.claude/memory-system/bin/base.py index  acme                  # build FTS + e5 vectors
+python3 ~/.claude/memory-system/bin/base.py attach acme --scope project  # attach to a project over MCP
+```
+
+- **Full guide + agent contract:** **[docs/topic-bases.md](docs/topic-bases.md)** — storage model, ingest scenarios, API-doc gotchas.
+- The bundled **`/eidetic-base`** skill builds one for you from a source (scrape → pages → index → verify → attach).
+- A base is a **separate repo** outside the eidetic tree, so your corpora stay private even though eidetic is public.
+
+### Copy-paste agent prompts
+
+Don't memorize commands — hand your agent a ready prompt from **[docs/prompts.md](docs/prompts.md)**: _install Eidetic_ · _build a topic base from a site / book / API_ · _attach a base to a project_.
+
+---
+
+## What it does (at a glance)
 
 | Problem                                               | How Eidetic solves it                                                                                                |
 | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
@@ -70,7 +112,7 @@ No lock-in to one agent. (Auto-injection is the Claude Code hook path; other age
 
 ---
 
-## How It Works
+## How it works
 
 ```
                 SESSION START (~350ms warm)
@@ -108,7 +150,7 @@ No lock-in to one agent. (Auto-injection is the Claude Code hook path; other age
 
 <img width="1074" height="1082" alt="image" src="https://github.com/user-attachments/assets/24e70c71-55a8-4d64-a819-050e9107120e" />
 
-### Compound Ranking
+### Compound ranking
 
 Every result is ranked by:
 
@@ -125,96 +167,7 @@ Keyword hits also carry a match-quality factor. A validated, recent, current, hu
 
 ---
 
-## Install
-
-```bash
-git clone https://github.com/LARIkoz/eidetic.git
-cd eidetic
-bash install.sh
-```
-
-On a terminal, `install.sh` prompts (enter = default) for the **three models that define the system**: the **embedder** (`multilingual` / `english`), **cross-lingual translation** (`off` / `auto` / `apple` / `opusmt`), and the **card-extraction model** (`sonnet` / `haiku`). Piped, CI, and agent installs stay non-interactive — pass them via env (`EIDETIC_EMBED_PROFILE`, `EIDETIC_QUERY_TRANSLATE`, `EIDETIC_SIGNAL_MODEL`) or accept the defaults. Each choice persists to a config file and is shown in `doctor.sh`.
-
-**Installing with an agent?** Hand it the repo link and **[AGENTS.md](AGENTS.md)** — it asks the three choices, runs the install, guides the one GUI-only step (the Apple language pack), and verifies with the doctor.
-
-See [Dependencies](#dependencies) for what each search tier needs. Rollback: `bash ~/.claude/memory-system/bin/rollback.sh`
-
-## Dependencies
-
-Eidetic is **tiered** — the core needs nothing extra; the headline semantic search needs one pip install.
-
-| Tier                                                                              | Requires                                                                                                      | Without it                                                |
-| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| **Core** — FTS5 search, auto-injection, drift, compounding, Obsidian vault export | `bash` + `python3` + `sqlite3` (preinstalled on macOS/Linux)                                                  | — works fully                                             |
-| **Semantic / cross-lingual search** (the e5 hybrid layer)                         | `pip install fastembed` + ~2.2 GB e5-large ONNX model (auto-downloads to `~/.cache/fastembed` on first index) | falls back to FTS keyword-only                            |
-| **Cross-encoder rerank salvage**                                                  | `fastembed` (pulls a small reranker, lazily)                                                                  | cross-lingual matches that share no words stay suppressed |
-| **Code search**                                                                   | `pip install tree-sitter tree-sitter-python tree-sitter-javascript tree-sitter-bash`                          | code functions/classes not indexed                        |
-
-> ⚠️ `install.sh` installs the **core only** — it does **not** pip-install fastembed / tree-sitter. A fresh install is FTS-only until you `pip install fastembed`. The e5 model cache must be **persistent** (`~/.cache/fastembed`); a temp-dir cache gets purged by the OS and silently disables vector search.
-
-**Run the doctor any time** to see which tiers are active and what's missing — including _why_ the wiki/vault isn't being created:
-
-```bash
-bash ~/.claude/memory-system/bin/doctor.sh
-```
-
-It checks deps, index, memory files on disk, vectors + lag, model-cache location, hooks, the wiki/vault, **the op-log + promote/compound deployment state, card-kind distribution, and a failed-embed log (W5)** — with a fix hint for every ⚠️/❌.
-
-Platform: macOS / Linux (uses `fcntl` file locks).
-
-### Updates
-
-Background update check every 6 hours. When available:
-
-```
-Eidetic update available (a1b2c3d). Run: bash ~/.claude/memory-system/bin/update.sh
-```
-
-Updates preserve databases, rules, and hooks — only code files are replaced.
-
-### MCP Server
-
-**Secondary / optional.** Claude Code itself doesn't need MCP — it uses the hooks + rules + recall-skill path above. The MCP server is for _other_ editors that lack Claude Code's hook system (Cursor, Windsurf, Cline, any MCP-compatible agent), exposing the same memory store as on-demand tools:
-
-```json
-{
-  "mcpServers": {
-    "eidetic": {
-      "command": "python3",
-      "args": ["~/.claude/memory-system/mcp_server.py"]
-    }
-  }
-}
-```
-
-7 tools: `memory_search`, `memory_search_detail`, `memory_serendipity`, `memory_health`, `memory_reindex`, `memory_lint`, `export_vault`.
-
----
-
-## Topic bases — attach an external corpus (PULL)
-
-Personal memory is **PUSH** — auto-injected every session from your own work. A **topic base**
-is the other half: a **PULL** knowledge-base. An isolated corpus (scraped API docs, a
-methodology, a book) you **attach only to the projects that need it** and query on demand over
-MCP — never polluting your work-memory recall. Same engine (e5-large + FTS5 + vectors), a
-separate index, its **own git repo**.
-
-```bash
-python3 ~/.claude/memory-system/bin/base.py init   acme                 # → ~/eidetic-bases/acme-base/
-python3 ~/.claude/memory-system/bin/base.py index  acme                 # build FTS + e5 vectors
-python3 ~/.claude/memory-system/bin/base.py attach acme --scope project # wire into a project over MCP
-```
-
-- **Full guide + agent contract:** **[docs/topic-bases.md](docs/topic-bases.md)** — the storage
-  model, ingest scenarios, API-doc gotchas, and a step-by-step contract for building one.
-- **Hand it to an agent:** the bundled **`/eidetic-base`** skill triggers on "build a topic base
-  from `<source>`" and runs the contract (scrape → pages → index → verify → attach).
-- A base is a **separate repo** outside the eidetic tree — your corpora stay private even though
-  eidetic itself is public.
-
----
-
-## Key Features
+## Features
 
 ### Drift Detection (v2.5)
 
@@ -279,6 +232,69 @@ A quality gate filters your memory files down to a validated subset; optional `-
 
 ---
 
+## Works with any agent
+
+Eidetic is **agent-agnostic at the memory layer** — one `.md` store + FTS5 + e5 vector index; only the _integration surface_ changes per agent:
+
+- **Claude Code** — zero-config. `install.sh` wires SessionStart/Stop hooks, so memory **auto-injects** at the start of every session and signals **auto-capture** at the end. The deepest, hands-off experience.
+- **Codex · Gemini · Cursor · Cline — any MCP agent** — point the agent at the bundled **MCP server** (`memory_search`, `memory_search_detail`, `export_vault`, …) for on-demand recall + write-back. Session-end signal capture also runs on the `codex` CLI, not just `claude`.
+
+No lock-in to one agent. (Auto-injection is the Claude Code hook path; other agents recall on demand through MCP.)
+
+---
+
+## Dependencies
+
+Eidetic is **tiered** — the core needs nothing extra; the headline semantic search needs one pip install.
+
+| Tier                                                                              | Requires                                                                                                      | Without it                                                |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| **Core** — FTS5 search, auto-injection, drift, compounding, Obsidian vault export | `bash` + `python3` + `sqlite3` (preinstalled on macOS/Linux)                                                  | — works fully                                             |
+| **Semantic / cross-lingual search** (the e5 hybrid layer)                         | `pip install fastembed` + ~2.2 GB e5-large ONNX model (auto-downloads to `~/.cache/fastembed` on first index) | falls back to FTS keyword-only                            |
+| **Cross-encoder rerank salvage**                                                  | `fastembed` (pulls a small reranker, lazily)                                                                  | cross-lingual matches that share no words stay suppressed |
+| **Code search**                                                                   | `pip install tree-sitter tree-sitter-python tree-sitter-javascript tree-sitter-bash`                          | code functions/classes not indexed                        |
+
+> ⚠️ `install.sh` installs the **core only** — it does **not** pip-install fastembed / tree-sitter. A fresh install is FTS-only until you `pip install fastembed`. The e5 model cache must be **persistent** (`~/.cache/fastembed`); a temp-dir cache gets purged by the OS and silently disables vector search.
+
+**Run the doctor any time** to see which tiers are active and what's missing — including _why_ the wiki/vault isn't being created:
+
+```bash
+bash ~/.claude/memory-system/bin/doctor.sh
+```
+
+It checks deps, index, memory files on disk, vectors + lag, model-cache location, hooks, the wiki/vault, **the op-log + promote/compound deployment state, card-kind distribution, and a failed-embed log (W5)** — with a fix hint for every ⚠️/❌.
+
+Platform: macOS / Linux (uses `fcntl` file locks).
+
+### Updates
+
+Background update check every 6 hours. When available:
+
+```
+Eidetic update available (a1b2c3d). Run: bash ~/.claude/memory-system/bin/update.sh
+```
+
+Updates preserve databases, rules, and hooks — only code files are replaced.
+
+## MCP server
+
+**Secondary / optional.** Claude Code itself doesn't need MCP — it uses the hooks + rules + recall-skill path above. The MCP server is for _other_ editors that lack Claude Code's hook system (Cursor, Windsurf, Cline, any MCP-compatible agent), exposing the same memory store as on-demand tools:
+
+```json
+{
+  "mcpServers": {
+    "eidetic": {
+      "command": "python3",
+      "args": ["~/.claude/memory-system/mcp_server.py"]
+    }
+  }
+}
+```
+
+7 tools: `memory_search`, `memory_search_detail`, `memory_serendipity`, `memory_health`, `memory_reindex`, `memory_lint`, `export_vault`.
+
+---
+
 ## Performance
 
 | Metric                   | Value                                                                                         |
@@ -323,7 +339,7 @@ Based on [40-repo competitive analysis](https://github.com/LARIkoz/eidetic/relea
 
 ---
 
-## Design Philosophy
+## Design philosophy
 
 Inspired by [Luhmann's Zettelkasten](https://en.wikipedia.org/wiki/Zettelkasten), [Tiago Forte's Second Brain](https://www.buildingasecondbrain.com/), and Karpathy's wiki-for-LLMs idea — both his [AI wiki concept](https://gist.github.com/karpathy/1dd0294ef9567971c1e4348a90d69285) and the [**LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) pattern Eidetic now implements end-to-end (compounding pages, an explicit schema, an op-log, typed pages). Per Karpathy, _"humans abandon wikis because maintenance grows faster than value; LLMs don't get bored"_ — so Eidetic's value curve climbs with use instead of decaying.
 
