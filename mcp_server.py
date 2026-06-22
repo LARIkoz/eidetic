@@ -25,7 +25,22 @@ def default_memory_system():
 MEMORY_SYSTEM = os.path.expanduser(
     os.environ.get("EIDETIC_MEMORY_SYSTEM") or default_memory_system()
 )
-BIN = os.path.join(MEMORY_SYSTEM, "bin")
+def _base_name():
+    """Topic-base name if MEMORY_SYSTEM is a base (has .eidetic-base.json), else None.
+    A base holds only docs/notes/db — its engine scripts come from THIS install instead."""
+    try:
+        with open(os.path.join(MEMORY_SYSTEM, ".eidetic-base.json"), encoding="utf-8") as f:
+            m = json.load(f)
+        return m.get("name") if isinstance(m, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+BASE_NAME = _base_name()
+# Personal: scripts live under MEMORY_SYSTEM/bin (unchanged). Base: MEMORY_SYSTEM is the
+# base (no bin/), so run the engine scripts from next to this server (the eidetic install).
+BIN = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin")
+       if BASE_NAME else os.path.join(MEMORY_SYSTEM, "bin"))
 INDEX_DB = os.path.join(MEMORY_SYSTEM, "db", "index.db")
 
 TOOLS = [
@@ -390,6 +405,66 @@ HANDLERS = {
     "memory_lint": handle_lint,
     "export_vault": handle_export_vault,
 }
+
+
+# When MEMORY_SYSTEM is a topic base, REPLACE the tool surface with a prefixed read +
+# curate-write subset (<name>_search / _search_detail / _serendipity / _add) — no
+# personal-memory ops (health/reindex/lint/export). The personal server above is untouched.
+if BASE_NAME:
+    def handle_base_add(params):
+        if not isinstance(params, dict):
+            params = {}
+        text = str(params.get("text", "")).strip()
+        if not text:
+            return mcp_error("text is required")
+        cmd = [sys.executable, os.path.join(BIN, "base.py"), "add", MEMORY_SYSTEM, "--text", text]
+        if params.get("title"):
+            cmd += ["--title", str(params["title"])]
+        if params.get("as") in ("note", "doc"):
+            cmd += ["--as", str(params["as"])]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        except Exception as e:
+            return mcp_error(str(e))
+        out = (r.stdout + r.stderr).strip()
+        return mcp_text(out) if r.returncode == 0 else mcp_error(out or "add failed")
+
+    _P = BASE_NAME
+    TOOLS = [
+        {"name": f"{_P}_search",
+         "description": f"Search the '{_P}' topic knowledge-base (attached to this project). Ranked "
+                        f"chunks with sources + confidence; no_confident_results when nothing matches. "
+                        f"Use {_P}_search_detail for full content.",
+         "inputSchema": {"type": "object", "properties": {
+             "query": {"type": "string", "description": "Natural-language query"},
+             "limit": {"type": "integer", "description": "Max results (default 5)", "default": 5}},
+             "required": ["query"]}},
+        {"name": f"{_P}_search_detail",
+         "description": f"Fetch full content of a '{_P}' base result by detail_id or exact path.",
+         "inputSchema": {"type": "object", "properties": {
+             "selector": {"type": "string", "description": "detail_id from search, or an exact path"},
+             "section": {"type": "string", "description": "Optional section heading"}},
+             "required": ["selector"]}},
+        {"name": f"{_P}_serendipity",
+         "description": f"Find unexpected related material in the '{_P}' base.",
+         "inputSchema": {"type": "object", "properties": {
+             "query": {"type": "string", "description": "Topic to explore"}}, "required": ["query"]}},
+        {"name": f"{_P}_add",
+         "description": f"Curate-write into the '{_P}' base — ONLY when the user explicitly asks to save "
+                        f"something to it. Writes a note (or a doc for long text) and reindexes. Never "
+                        f"call autonomously.",
+         "inputSchema": {"type": "object", "properties": {
+             "text": {"type": "string", "description": "Markdown content to store"},
+             "title": {"type": "string", "description": "Optional title"},
+             "as": {"type": "string", "enum": ["note", "doc"], "description": "Override size auto-routing"}},
+             "required": ["text"]}},
+    ]
+    HANDLERS = {
+        f"{_P}_search": handle_search,
+        f"{_P}_search_detail": handle_search_detail,
+        f"{_P}_serendipity": handle_serendipity,
+        f"{_P}_add": handle_base_add,
+    }
 
 
 def send_response(id, result=None, error=None):

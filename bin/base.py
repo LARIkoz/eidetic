@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""eidetic base — manage attachable topic knowledge-bases (PULL), separate from your
+personal PUSH memory.
+
+A base is its OWN folder/git-repo: `docs/` (ingested) + `notes/` (curated) +
+`.eidetic-base.json` (manifest) + `db/` (gitignored index). It scans ONLY its corpus
+(never `~/.claude`) and is attached to a project on demand over MCP — see
+`docs/topic-bases.md`.
+
+Subcommands:
+  init <name> [--dir DIR]            scaffold <DIR>/<name>-base/ (+ register)
+  index <name|path> [--incremental]  build the base index (default: full = FTS + vectors)
+  add <name|path> (--file F | --text T) [--as note|doc] [--title T]
+                                     curate-write one md into the base, then reindex
+  attach <name|path> [--scope project|user] [--run]
+                                     print (or run) the `claude mcp add …` line
+  list                               list registered bases
+  doctor <name|path>                 functional canary (embed→vector→search) vs the base
+  refresh <name|path>                reindex (host-only: re-run the scrape recipe first)
+
+Zero external deps — python3 stdlib only.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+
+BIN = os.path.dirname(os.path.abspath(__file__))
+EIDETIC_ROOT = os.path.dirname(BIN)
+MCP_SERVER = os.path.join(EIDETIC_ROOT, "mcp_server.py")
+INDEX_SH = os.path.join(BIN, "index.sh")
+REGISTRY = os.path.expanduser(os.environ.get("EIDETIC_BASES_REGISTRY") or "~/.claude/eidetic-bases.json")
+
+MANIFEST = ".eidetic-base.json"
+ADD_SIZE_THRESHOLD = 2000  # chars: smaller → a note card, larger → a doc page
+
+
+# --------------------------------------------------------------------------- registry
+def _load_registry():
+    try:
+        with open(REGISTRY, encoding="utf-8") as f:
+            r = json.load(f)
+        return r if isinstance(r, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _register(name, path):
+    r = _load_registry()
+    r[name] = os.path.abspath(path)
+    os.makedirs(os.path.dirname(REGISTRY), exist_ok=True)
+    tmp = REGISTRY + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(r, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, REGISTRY)
+
+
+def resolve_base(arg):
+    """A base path (dir containing .eidetic-base.json) or a registered name -> abs path."""
+    cand = os.path.abspath(os.path.expanduser(arg))
+    if os.path.exists(os.path.join(cand, MANIFEST)):
+        return cand
+    reg = _load_registry().get(arg)
+    if reg and os.path.exists(os.path.join(reg, MANIFEST)):
+        return reg
+    sys.exit(f"error: no base named or at '{arg}' (no {MANIFEST} found). "
+             f"`eidetic base list` shows registered bases.")
+
+
+def read_manifest(base):
+    with open(os.path.join(base, MANIFEST), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _slug(text, fallback="note"):
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "").strip().lower()).strip("-")
+    return (s[:60] or fallback)
+
+
+# ------------------------------------------------------------------------------- init
+def cmd_init(args):
+    name = args.name
+    parent = os.path.abspath(os.path.expanduser(args.dir or os.getcwd()))
+    base = os.path.join(parent, f"{name}-base")
+    if os.path.exists(os.path.join(base, MANIFEST)):
+        sys.exit(f"error: a base already exists at {base}")
+    for sub in ("docs", "notes", "db"):
+        os.makedirs(os.path.join(base, sub), exist_ok=True)
+    manifest = {"name": name, "corpus_dirs": ["docs", "notes"], "db": "db/index.db"}
+    with open(os.path.join(base, MANIFEST), "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
+    with open(os.path.join(base, ".gitignore"), "w", encoding="utf-8") as f:
+        f.write("db/\n")          # index is a rebuilt artifact — keep the repo source-only
+    with open(os.path.join(base, "docs", "HOME.md"), "w", encoding="utf-8") as f:
+        f.write(f"# {name}\n\nTopic base. Add scraped docs under `docs/`, curated facts "
+                f"under `notes/`. Cross-link with [[wikilinks]].\n")
+    _register(name, base)
+    print(f"created base '{name}' at {base}")
+    print(f"  next: add docs under {base}/docs/, then  eidetic base index {name}")
+    print(f"  attach:  eidetic base attach {name} --scope project")
+    return 0
+
+
+# ------------------------------------------------------------------------------ index
+def _run_index(base, full):
+    env = dict(os.environ, EIDETIC_MEMORY_SYSTEM=base)
+    mode = "--full" if full else "--incremental"
+    return subprocess.run(["bash", INDEX_SH, mode], env=env).returncode
+
+
+def cmd_index(args):
+    base = resolve_base(args.name)
+    # default = full (FTS + vectors) — a base is small, built once; --incremental = FTS only
+    rc = _run_index(base, full=not args.incremental)
+    if rc == 0:
+        print(f"indexed base at {base}")
+    return rc
+
+
+# -------------------------------------------------------------------------------- add
+def cmd_add(args):
+    base = resolve_base(args.name)
+    if args.file:
+        with open(os.path.expanduser(args.file), encoding="utf-8") as f:
+            body = f.read()
+        default_title = os.path.splitext(os.path.basename(args.file))[0]
+    else:
+        body = args.text or ""
+        default_title = (body.strip().splitlines() or ["note"])[0][:60]
+    if not body.strip():
+        sys.exit("error: nothing to add (empty --file/--text)")
+
+    title = args.title or default_title
+    kind = args.as_ or ("doc" if len(body) >= ADD_SIZE_THRESHOLD else "note")
+    subdir, ctype = ("docs", "reference") if kind == "doc" else ("notes", "note")
+
+    # reuse eidetic's frontmatter schema; tag provenance source:user (curated)
+    has_fm = body.lstrip().startswith("---")
+    fm = "" if has_fm else (
+        f"---\nname: {title}\ndescription: {title}\ntype: {ctype}\n"
+        f"metadata:\n  source: user\n---\n\n")
+    dest = os.path.join(base, subdir, f"{_slug(title)}.md")
+    n = 1
+    while os.path.exists(dest):
+        n += 1
+        dest = os.path.join(base, subdir, f"{_slug(title)}-{n}.md")
+    with open(dest, "w", encoding="utf-8") as f:
+        f.write(fm + body.rstrip() + "\n")
+    print(f"added {kind} -> {os.path.relpath(dest, base)}")
+    return _run_index(base, full=False)  # incremental: FTS now; run `index` for vectors
+
+
+# ----------------------------------------------------------------------------- attach
+def cmd_attach(args):
+    base = resolve_base(args.name)
+    name = read_manifest(base).get("name") or os.path.basename(base)
+    cmd = ["claude", "mcp", "add", name, "-s", args.scope,
+           "-e", f"EIDETIC_MEMORY_SYSTEM={base}", "--", "python3", MCP_SERVER]
+    line = " ".join(cmd)
+    if args.run:
+        print(f"$ {line}")
+        return subprocess.run(cmd).returncode
+    print(line)
+    print(f"\n# tools exposed in the project: {name}_search / {name}_search_detail / "
+          f"{name}_add\n# detach:  claude mcp remove {name}")
+    return 0
+
+
+# ------------------------------------------------------------------------------- list
+def cmd_list(args):
+    reg = _load_registry()
+    if not reg:
+        print("no registered bases. create one: eidetic base init <name>")
+        return 0
+    for name, path in sorted(reg.items()):
+        live = os.path.exists(os.path.join(path, MANIFEST))
+        print(f"  {name:<24} {path}{'' if live else '   (MISSING)'}")
+    return 0
+
+
+# ----------------------------------------------------------------------------- doctor
+def cmd_doctor(args):
+    base = resolve_base(args.name)
+    db = os.path.join(base, "db", "index.db")
+    vec = os.path.join(base, "db", "vectors.db")
+    if not os.path.exists(db):
+        sys.exit(f"error: base not indexed yet (no {db}). run: eidetic base index {args.name}")
+    sys.path.insert(0, BIN)
+    import canary
+    emb = canary.embed_canary(db, vec)
+    print(f"embed→vector→search: {emb['status']} — {emb.get('detail','')}")
+    return 0 if emb["status"] in ("ok", "warn", "skip") else 1
+
+
+# ---------------------------------------------------------------------------- refresh
+def cmd_refresh(args):
+    base = resolve_base(args.name)
+    print("host-only: re-run your scrape recipe to update docs/ first (see "
+          "docs/topic-bases.md), then this rebuilds the index.")
+    return _run_index(base, full=True)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="eidetic base", description="manage topic knowledge-bases")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("init"); p.add_argument("name"); p.add_argument("--dir"); p.set_defaults(fn=cmd_init)
+    p = sub.add_parser("index"); p.add_argument("name"); p.add_argument("--incremental", action="store_true"); p.set_defaults(fn=cmd_index)
+    p = sub.add_parser("add"); p.add_argument("name")
+    p.add_argument("--file"); p.add_argument("--text"); p.add_argument("--title")
+    p.add_argument("--as", dest="as_", choices=["note", "doc"]); p.set_defaults(fn=cmd_add)
+    p = sub.add_parser("attach"); p.add_argument("name")
+    p.add_argument("--scope", choices=["project", "user", "local"], default="project")
+    p.add_argument("--run", action="store_true"); p.set_defaults(fn=cmd_attach)
+    p = sub.add_parser("list"); p.set_defaults(fn=cmd_list)
+    p = sub.add_parser("doctor"); p.add_argument("name"); p.set_defaults(fn=cmd_doctor)
+    p = sub.add_parser("refresh"); p.add_argument("name"); p.set_defaults(fn=cmd_refresh)
+
+    args = ap.parse_args(argv)
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

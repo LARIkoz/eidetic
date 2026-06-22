@@ -8,6 +8,7 @@ Zero external deps: python3 stdlib + sqlite3.
 """
 
 import glob
+import json
 import os
 import re
 import sqlite3
@@ -392,8 +393,45 @@ def scan_dirs(memory_system=None):
     return dirs
 
 
+def base_manifest(memory_system):
+    """If `memory_system` is a topic base (has `.eidetic-base.json` at its root), return
+    the parsed manifest dict; else None. A topic base scans ONLY its declared corpus_dirs
+    — never `~/.claude` — so the personal memory is never pulled into a base index, and a
+    base never auto-injects into your sessions (isolation invariant P1)."""
+    if not memory_system:
+        return None
+    try:
+        with open(os.path.join(memory_system, ".eidetic-base.json"), encoding="utf-8") as f:
+            m = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return m if isinstance(m, dict) else None
+
+
+def _collect_base_files(memory_system, manifest):
+    """Topic base: collect .md RECURSIVELY from the manifest's corpus_dirs only
+    (`docs/` nests: `api/`, `library/<book>/`…). corpus_dirs are relative to the base
+    root (portable across clones); absolute is honored too. REPLACES BASE_SCAN_DIRS."""
+    files, seen = [], set()
+    for d in (manifest.get("corpus_dirs") or ["docs", "notes"]):
+        root = d if os.path.isabs(d) else os.path.join(memory_system, d)
+        for dirpath, _subdirs, fnames in os.walk(root):
+            for f in fnames:
+                if not f.endswith(".md") or f in EXCLUDE_FILES or f.endswith(".bak"):
+                    continue
+                fp = os.path.join(dirpath, f)
+                if fp not in seen:
+                    seen.add(fp)
+                    files.append(fp)
+    return files
+
+
 def collect_files(memory_system=None):
-    """Collect all .md files from scan dirs."""
+    """Collect all .md files. A topic base (manifest present) scans ONLY its corpus_dirs,
+    recursively; the personal index keeps its existing non-recursive per-dir scan + skills."""
+    manifest = base_manifest(memory_system)
+    if manifest is not None:
+        return _collect_base_files(memory_system, manifest)
     files = []
     seen = set()
     for pattern in scan_dirs(memory_system):

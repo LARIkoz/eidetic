@@ -2,6 +2,15 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.12.0 (2026-06-22)
+
+- **Topic bases — attachable PULL knowledge-bases, separate from your PUSH memory.** Build a base from any corpus (scraped API docs, a methodology, a book), keep it as its **own git repo**, and **attach it per-project over MCP** — so an agent queries it on demand instead of re-deriving from scratch every time, without polluting your personal memory recall. Personal memory stays PUSH (auto-injected every session); a base is PULL (attached only where needed). Same engine (e5-large + FTS5 + vectors), separate isolated index. Full guide: [`docs/topic-bases.md`](docs/topic-bases.md).
+  - **Isolation (the core change)** — `index_impl` is now manifest-aware: when `EIDETIC_MEMORY_SYSTEM` points at a base (a dir with `.eidetic-base.json`), the indexer scans ONLY the base's `corpus_dirs` (recursively), **never** `~/.claude`. A personal index (no manifest) is byte-identical to before (regression-tested) — so a base can never leak into your session auto-injection, and your work-memory never leaks into a base.
+  - **`bin/base.py` CLI** — `init` (scaffold a base repo: `docs/` + `notes/` + manifest + gitignored `db/`) · `index` · `add` (curate-write one md, auto-routed note-vs-doc by size) · `attach` (prints the `claude mcp add … -e EIDETIC_MEMORY_SYSTEM=<base> …` line) · `list` · `doctor` (the functional canary against the base) · `refresh`.
+  - **Per-base MCP tools** — `mcp_server.py` exposes a base as `<name>_search` / `<name>_search_detail` / `<name>_serendipity` / `<name>_add` (prefixed from the manifest `name`), so several bases attach to one project with no collision. The personal server (generic `memory_*`) is unchanged.
+  - **Curate-write is human-gated** — `<name>_add` (and the CLI) write into `notes/` (frontmatter `source: user`) only on an explicit user instruction; nothing auto-compounds into a base (that stays in core memory). Ingested docs stay raw pages, chunked by section — no lossy auto-distillation (that is the extraction-pipeline's job, kept out).
+  - **Reuse, not reinvent** — the base reuses the same engine, frontmatter schema, search, and MCP server (all already keyed off `EIDETIC_MEMORY_SYSTEM`); the only new isolation gap closed is the indexer scan-scope. +11 tests (157 total).
+
 ## v5.11.1 (2026-06-22)
 
 Three correctness fixes from an adversarial audit of v5.6.0–v5.11.0 (the releases that shipped without a review pass). Each is a case where a green check or a documented usage didn't match the code.
