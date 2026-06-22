@@ -24,8 +24,19 @@ import argparse
 import glob
 import json
 import os
+import re
 import sys
 import time
+
+# Phase 2 (collect-only, UNVERIFIED per audit I1): correction signals in USER turns.
+# Used ONLY for a directional corrections/session trend — never for any automated
+# pruning/compression decision until an LLM classifier confirms precision.
+CORRECTION_RE = re.compile(
+    r"долб[оа]ёб|уже сделано|уже есть|нет,?\s*не так|\bне то\b|я же (?:сказал|просил)|"
+    r"откати|отмени|неверно|ты сломал|это не то|зачем ты|"
+    r"\bwrong\b|that'?s not|\bi said\b|undo that|revert that|you broke|not what i",
+    re.IGNORECASE)
+SYSREM_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
 
 DB_DIR = os.path.expanduser("~/.claude/memory-system/db")
 INJECT_LOG = os.path.join(DB_DIR, "inject_log.jsonl")
@@ -56,7 +67,8 @@ def parse_transcript(path):
     a slug there would be self-reference (a card 'referenced' merely because injected)."""
     sid = None
     cwd = None
-    parts = []
+    parts = []        # the session's OWN work (assistant + tool results) -> referenced_k
+    user_parts = []   # user free-text turns -> corrections (NEVER mixed into work)
     for o in _iter_jsonl(path):
         sid = sid or o.get("sessionId")
         cwd = cwd or o.get("cwd")
@@ -66,8 +78,7 @@ def parse_transcript(path):
         msg = o.get("message") or {}
         content = msg.get("content")
         if isinstance(content, str):
-            if typ == "assistant":
-                parts.append(content)
+            (parts if typ == "assistant" else user_parts).append(content)
             continue
         if not isinstance(content, list):
             continue
@@ -87,8 +98,10 @@ def parse_transcript(path):
                     for cc in c:
                         if isinstance(cc, dict) and cc.get("type") == "text":
                             parts.append(cc.get("text") or "")
+            elif typ == "user" and bt == "text":
+                user_parts.append(b.get("text") or "")
     proj = os.path.basename((cwd or "").rstrip("/")) or None
-    return sid, proj, "\n".join(parts).lower()
+    return sid, proj, "\n".join(parts).lower(), "\n".join(user_parts)
 
 
 def find_inject_row(session_id, project):
@@ -124,7 +137,7 @@ def main():
         path = args.transcript or os.environ.get("CLAUDE_TRANSCRIPT_PATH") or newest_chatlog()
         if not path or not os.path.exists(path):
             return 0
-        sid, proj, work = parse_transcript(path)
+        sid, proj, work, user_text = parse_transcript(path)
         inj = find_inject_row(sid, proj)
         if not inj:
             return 0
@@ -133,6 +146,11 @@ def main():
         # Literal lower-bound match. Require slug length >= 6 to avoid accidental
         # substring hits from short generic tokens.
         referenced = sorted({s for s in slugs if len(s) >= 6 and s.lower() in work})
+        # Phase 2 (UNVERIFIED, directional): correction signals in user turns, with
+        # injected-context stripped. Privacy: store only the count + the generic
+        # trigger words matched, NEVER the raw user text.
+        clean_user = SYSREM_RE.sub("", user_text)
+        triggers = sorted({m.group(0).lower() for m in CORRECTION_RE.finditer(clean_user)})
         row = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "session_id": sid or "",
@@ -141,6 +159,8 @@ def main():
             "referenced_k": len(referenced),
             "utilization": round(len(referenced) / n, 4) if n else 0,
             "referenced_slugs": referenced,
+            "corrections_n": len(CORRECTION_RE.findall(clean_user)),
+            "correction_triggers": triggers,
         }
         fd = os.open(SESSION_VALUE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:

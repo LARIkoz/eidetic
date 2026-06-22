@@ -151,7 +151,9 @@ def main():
         print(f"  referenced / session : avg {avg_ref:.1f} cards   utilization avg {avg_util * 100:.1f}%")
         if cnt:
             print("  most-referenced      : " + ", ".join(f"{s}×{c}" for s, c in cnt.most_common(5)))
-        print("  (LOWER BOUND: literal slug match only — paraphrased use is missed; not causation.)")
+        avg_corr = _avg([r.get("corrections_n", 0) for r in sv])
+        print(f"  corrections / session : avg {avg_corr:.1f}  (UNVERIFIED regex — directional trend, NOT causal)")
+        print("  (referenced_k = LOWER BOUND: literal slug match only — paraphrase missed; not causation.)")
     else:
         print("BENEFIT: no measured sessions yet (session_value.jsonl empty) — fills at SessionEnd.")
     return 0

@@ -7,6 +7,16 @@ set -euo pipefail
 
 MEMORY_SYSTEM="${EIDETIC_MEMORY_SYSTEM:-$HOME/.claude/memory-system}"
 
+# Capture Claude Code's session_id from the hook stdin payload BEFORE the lock
+# re-exec (an exported var survives `exec env ...` and the lock_runner subprocess),
+# so value-telemetry can join this SessionStart inject_log row to the SessionEnd
+# session_value row. First invocation only; the non-tty guard prevents blocking on
+# manual runs; fully fail-open.
+if [ "${EIDETIC_LOCK_HELD:-}" != "1" ] && [ ! -t 0 ]; then
+    _EIDETIC_HOOK_INPUT="$(cat 2>/dev/null || true)"
+    export EIDETIC_SESSION_ID="$(printf '%s' "$_EIDETIC_HOOK_INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
+fi
+
 if [ "${EIDETIC_LOCK_HELD:-}" != "1" ] && [ -f "$MEMORY_SYSTEM/bin/lock_runner.py" ]; then
     exec env EIDETIC_LOCK_HELD=1 python3 "$MEMORY_SYSTEM/bin/lock_runner.py" "$MEMORY_SYSTEM/.memory.lockfile" "$0" "$@"
 fi
