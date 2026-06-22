@@ -529,6 +529,46 @@ def main():
         os.unlink(tmp_path)
         raise
 
+    # --- Value-telemetry Phase 0: append-only per-session COST row. -------------
+    # Records what the passive injection COST this session (tokens by section +
+    # the separately-loaded MEMORY.md size). Benefit proxies (which cards helped)
+    # are Phase 1. FAIL-OPEN — telemetry must never break injection. PRIVACY — no
+    # raw text / headings / card paths, only counts + project basename.
+    try:
+        if os.environ.get("EIDETIC_VALUE_TELEMETRY", "on").strip().lower() != "off":
+            import json as _json
+            mem_md_bytes = 0
+            try:
+                sanitized = cwd.rstrip("/").replace("/", "-").lstrip("-")
+                for cand in (sanitized, "-" + sanitized):
+                    mpath = os.path.expanduser(f"~/.claude/projects/{cand}/memory/MEMORY.md")
+                    if os.path.exists(mpath):
+                        mem_md_bytes = os.path.getsize(mpath)
+                        break
+            except Exception:
+                pass
+            row = {
+                "ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                "session_id": os.environ.get("EIDETIC_SESSION_ID", ""),
+                "project": os.path.basename(cwd.rstrip("/")) or "unknown",
+                "total_tokens": total_tokens,
+                "feedback_tokens": feedback_used // 4,
+                "project_tokens": project_used // 4,
+                "recent_tokens": recent_used // 4,
+                "handoff_tokens": handoff_used // 4,
+                "drift_tokens": drift_used // 4,
+                "n_rules": feedback_total,
+                "memory_md_bytes": mem_md_bytes,
+            }
+            inj_log = os.path.join(os.path.dirname(os.path.abspath(db_path)), "inject_log.jsonl")
+            _fd = os.open(inj_log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(_fd, (_json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8"))
+            finally:
+                os.close(_fd)
+    except Exception:
+        pass
+
     conn.close()
 
     print(f"Memory context updated: {total_tokens} tokens, "

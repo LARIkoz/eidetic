@@ -197,6 +197,11 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     args = ap.parse_args(argv)
 
+    # Benchmark searches must NOT write the prod usage.log — they would poison the
+    # dead-card / top-used value telemetry. Redirect this process's usage log to temp.
+    os.environ.setdefault("EIDETIC_USAGE_LOG_PATH",
+                          os.path.join(os.environ.get("TMPDIR", "/tmp"), "eidetic_recall_usage.log"))
+
     db = os.path.expanduser(args.db)
     if not os.path.exists(db):
         print(f"ERROR: index not found: {db}", file=sys.stderr)
