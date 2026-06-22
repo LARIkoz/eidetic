@@ -33,6 +33,10 @@ git clone https://github.com/LARIkoz/eidetic.git && cd eidetic && bash install.s
 
 One command. The **core** (FTS search, injection, drift, vault export) needs **zero pip installs** and works immediately; semantic / cross-lingual search adds one optional dependency — see [Dependencies](#dependencies).
 
+> **Driving it with an agent?** Hand it one of the three copy-paste prompts in
+> **[docs/prompts.md](docs/prompts.md)** — _install Eidetic_ · _build a topic base from a
+> site / book / API_ · _attach a base to a project_.
+
 ---
 
 ## Works with any agent
