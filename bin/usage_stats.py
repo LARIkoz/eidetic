@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """Report which memory cards Eidetic actually surfaces (usage telemetry).
 
+This measures the PULL channel ONLY — on-demand search recall. It is BLIND to
+the push channel: type:feedback/user cards reach every session by INJECTION
+(memory-context.md), so a feedback rule that "never surfaced" is delivered every
+session, not dead. Read every number here as "via search", never "in total".
+
 Reads usage.log (+ usage_rollup.json) written by usage.py, aggregates per card,
-joins index.db for names/kinds, and answers the question "is this memory useful?":
-  - TOP cards by surfacings (what gets pulled the most)
-  - DEAD cards: indexed but never surfaced (prune candidates)
-  - COVERAGE: % of indexed cards ever surfaced
-  - per card: surfacings, last seen, best/avg rank, distinct queries
+joins index.db for names/kinds/type, and reports honestly:
+  - TOP cards by surfacings (what search pulls the most)
+  - WINDOW: the time span + how many distinct searches the numbers cover
+  - never-pulled cards split into push-delivered (feedback/user — injected, NOT
+    dead) vs pull-cold (long-tail; archive candidate only if also stale+unlinked)
+  - COVERAGE %: distinct/indexed is flow-over-stock — with N searches it is
+    structurally <= surfacings/indexed; meaningless until hundreds of searches.
 
 Usage:
   usage_stats.py [--db PATH] [--top N] [--json]      # full report
@@ -112,6 +119,33 @@ def _index_cards(db_path):
     return out
 
 
+# Cards reached every session by injection (memory-context.md) — they do NOT need
+# to be pulled by search, so "never surfaced" is delivery, not death.
+PUSH_TYPES = {"feedback", "user"}
+
+
+def _types_by_path(db_path):
+    """path -> frontmatter `type` (for the push-delivered vs pull-cold split).
+
+    Defensive: an older or minimal index (e.g. a test fixture) may lack the
+    `type` column — then every card reads as '' and the split degrades to
+    all-pull-cold rather than crashing.
+    """
+    out = {}
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            for path, typ in conn.execute(
+                "SELECT DISTINCT path, COALESCE(type,'') FROM memory_chunks"
+            ):
+                out[path] = typ or ""
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        pass
+    return out
+
+
 def compute(db_path):
     log_path, rollup_path = _paths(db_path)
     agg = aggregate(rollup_path, log_path)
@@ -120,13 +154,42 @@ def compute(db_path):
     live_surfaced = surfaced & set(idx)          # surfaced AND still indexed
     dead = [k for k in idx if k not in surfaced]  # indexed but never surfaced
     total_surfacings = sum(v["count"] for v in agg.values())
+
+    # The real denominator: a "search" logs up to TOP_K rows under ONE query
+    # hash, so distinct qh — NOT surfacings — is how many searches happened.
+    # The window says over what span; both keep coverage% from being read as
+    # "all time" when it is really "the last N searches".
+    all_qh = set()
+    first_ts = last_ts = None
+    for v in agg.values():
+        all_qh |= v["qhashes"]
+        if v["first"] and (first_ts is None or v["first"] < first_ts):
+            first_ts = v["first"]
+        if v["last"] and (last_ts is None or v["last"] > last_ts):
+            last_ts = v["last"]
+
+    # Split never-pulled cards: push-delivered (injected every session, pull N/A)
+    # vs pull-cold (only reachable by search, not yet hit).
+    types = _types_by_path(db_path)
+    push_dead = pull_dead = 0
+    for k in dead:
+        path, _ = _unkey(k)
+        if types.get(path, "") in PUSH_TYPES:
+            push_dead += 1
+        else:
+            pull_dead += 1
+
     return {
         "total_indexed": len(idx),
         "total_surfacings": total_surfacings,
         "distinct_surfaced": len(live_surfaced),
         "coverage_pct": round(len(live_surfaced) / len(idx) * 100, 1) if idx else 0.0,
         "dead_count": len(dead),
-        "agg": agg, "idx": idx, "dead": dead,
+        "n_searches": len(all_qh),
+        "window": (first_ts, last_ts),
+        "push_delivered_dead": push_dead,
+        "pull_cold_dead": pull_dead,
+        "agg": agg, "idx": idx, "dead": dead, "types": types,
     }
 
 
@@ -152,24 +215,46 @@ def report(db_path, top=15, json_out=False):
             "distinct_surfaced": c["distinct_surfaced"],
             "coverage_pct": c["coverage_pct"],
             "dead_count": c["dead_count"],
+            "n_searches": c["n_searches"],
+            "window": c["window"],
+            "push_delivered_dead": c["push_delivered_dead"],
+            "pull_cold_dead": c["pull_cold_dead"],
             "top": [{
                 "name": _name_of(idx, k), "kind": idx.get(k, ("", ""))[1],
                 "surfacings": v["count"], "last": v["last"], "best_rank": v["best_rank"],
                 "avg_rank": round(v["sum_rank"] / v["n_rank"], 1) if v["n_rank"] else None,
                 "distinct_queries": len(v["qhashes"]),
             } for k, v in ranked],
-            "dead_sample": [_name_of(idx, k) for k in c["dead"][:20]],
+            "pull_cold_sample": [_name_of(idx, k) for k in c["dead"]
+                                 if c["types"].get(_unkey(k)[0], "") not in PUSH_TYPES][:20],
         }
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
 
-    print("=== Eidetic usage ===")
-    print(f"indexed cards: {c['total_indexed']}   surfacings: {c['total_surfacings']}   "
-          f"distinct surfaced: {c['distinct_surfaced']} ({c['coverage_pct']}% coverage)   "
-          f"dead (never surfaced): {c['dead_count']}")
+    print("=== Eidetic usage — PULL channel only (on-demand search recall) ===")
     if c["total_surfacings"] == 0:
-        print("\nNo usage logged yet — run some searches (usage.py logs medium+ hits).")
+        print(f"indexed cards: {c['total_indexed']}")
+        print("\nNo searches logged yet — this reports search recall only; "
+              "feedback/user cards still reach every session by injection.")
         return 0
+    w0, w1 = c["window"]
+    cap = (round(min(c["total_surfacings"], c["total_indexed"]) / c["total_indexed"] * 100, 1)
+           if c["total_indexed"] else 0.0)
+    fresh = round(c["distinct_surfaced"] / c["total_surfacings"] * 100) if c["total_surfacings"] else 0
+    print(f"window : {(w0 or '?')[:16]} -> {(w1 or '?')[:16]}   "
+          f"({c['n_searches']} searches, {c['total_surfacings']} surfacings)")
+    print(f"pulled : {c['distinct_surfaced']} distinct cards   "
+          f"({fresh}% of surfacings were a fresh card — diverse, not monopolized)")
+    print("\nnote: search only. type:feedback/user cards reach every session by INJECTION")
+    print(f"      (push) — a 'never pulled' rule is delivered, not dead. coverage "
+          f"{c['coverage_pct']}% = distinct/indexed is")
+    print(f"      flow/stock: at {c['n_searches']} searches it is structurally <= {cap}%; "
+          f"meaningless until hundreds.")
+    print(f"\nnever pulled: {c['dead_count']}")
+    print(f"  +- push-delivered (feedback/user): {c['push_delivered_dead']:>5}   "
+          f"<- injected EVERY session; pull N/A, NOT dead")
+    print(f"  +- pull-only, not yet hit        : {c['pull_cold_dead']:>5}   "
+          f"<- long-tail; archive candidate only if also stale+unlinked")
     print(f"\nTop {len(ranked)} surfaced cards:")
     print(f"  {'#':>3}  {'hits':>4}  {'avg_rk':>6}  {'last':16}  card")
     for i, (k, v) in enumerate(ranked, 1):
@@ -177,9 +262,10 @@ def report(db_path, top=15, json_out=False):
         kind = idx.get(k, ("", ""))[1] or "?"
         print(f"  {i:>3}  {v['count']:>4}  {str(avg):>6}  {(v['last'] or '')[:16]:16}  "
               f"[{kind}] {_name_of(idx, k)[:60]}")
-    if c["dead"]:
-        print(f"\nDead cards (indexed, 0 surfacings) — {c['dead_count']} total, sample:")
-        for k in c["dead"][:10]:
+    pull_cold = [k for k in c["dead"] if c["types"].get(_unkey(k)[0], "") not in PUSH_TYPES]
+    if pull_cold:
+        print(f"\nColdest pull-only cards (never hit by search) — {len(pull_cold)} total, sample:")
+        for k in pull_cold[:10]:
             print(f"    [{idx.get(k, ('', ''))[1] or '?'}] {_name_of(idx, k)[:70]}")
     return 0
 

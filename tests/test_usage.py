@@ -29,8 +29,8 @@ def _res(path, section="", conf="medium"):
 def _make_index(db_path, cards):
     conn = sqlite3.connect(db_path)
     conn.execute("CREATE TABLE memory_chunks "
-                 "(path TEXT, section_heading TEXT, name TEXT, card_kind TEXT)")
-    conn.executemany("INSERT INTO memory_chunks VALUES (?,?,?,?)", cards)
+                 "(path TEXT, section_heading TEXT, name TEXT, card_kind TEXT, type TEXT)")
+    conn.executemany("INSERT INTO memory_chunks VALUES (?,?,?,?,?)", cards)
     conn.commit()
     conn.close()
 
@@ -89,10 +89,10 @@ class AggregateAndDead(unittest.TestCase):
         self.d = tempfile.mkdtemp()
         self.db = os.path.join(self.d, "index.db")
         _make_index(self.db, [
-            ("a.md", "S1", "Card A", "finding"),
-            ("a.md", "S2", "Card A", "finding"),
-            ("b.md", "", "Card B", "rule"),
-            ("c.md", "", "Card C", "code"),
+            ("a.md", "S1", "Card A", "finding", "project"),
+            ("a.md", "S2", "Card A", "finding", "project"),
+            ("b.md", "", "Card B", "rule", "feedback"),
+            ("c.md", "", "Card C", "code", "reference"),
         ])
         usage.log_surfaced([_res("a.md", "S1"), _res("b.md")], "q1", self.db, "high")
         usage.log_surfaced([_res("a.md", "S1")], "q2", self.db, "high")
@@ -111,13 +111,20 @@ class AggregateAndDead(unittest.TestCase):
         self.assertEqual(c["distinct_surfaced"], 2)    # a§S1, b
         self.assertEqual(c["dead_count"], 2)           # a§S2, c never surfaced
         self.assertEqual(c["coverage_pct"], 50.0)
+        # honest-framing fields
+        self.assertEqual(c["n_searches"], 2)           # q1, q2 distinct query hashes
+        self.assertEqual(c["push_delivered_dead"], 0)  # neither dead card is feedback/user
+        self.assertEqual(c["pull_cold_dead"], 2)       # a§S2 (project) + c (reference)
+        self.assertEqual(c["push_delivered_dead"] + c["pull_cold_dead"], c["dead_count"])
+        self.assertEqual(len(c["window"]), 2)          # (first_ts, last_ts)
 
 
 class Rollup(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.db = os.path.join(self.d, "index.db")
-        _make_index(self.db, [("a.md", "", "A", "finding"), ("b.md", "", "B", "rule")])
+        _make_index(self.db, [("a.md", "", "A", "finding", "project"),
+                              ("b.md", "", "B", "rule", "feedback")])
         usage.log_surfaced([_res("a.md"), _res("b.md")], "q1", self.db, "high")
         usage.log_surfaced([_res("a.md")], "q2", self.db, "high")
 
@@ -132,6 +139,44 @@ class Rollup(unittest.TestCase):
         # a second rollup is idempotent on counts
         usage_stats.rollup(self.db)
         self.assertEqual(usage_stats.compute(self.db)["total_surfacings"], before)
+
+
+class PushPullSplit(unittest.TestCase):
+    """A never-pulled feedback/user card is PUSH-delivered (injected every session),
+    not a 'dead' prune target. The split must not count it as pull-cold."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.db = os.path.join(self.d, "index.db")
+        _make_index(self.db, [
+            ("hit.md", "", "Hit", "finding", "project"),    # surfaced below
+            ("rule.md", "", "Rule", "rule", "feedback"),    # dead but injected
+            ("usr.md", "", "User", "profile", "user"),      # dead but injected
+            ("cold.md", "", "Cold", "finding", "project"),  # dead, pull-only
+        ])
+        usage.log_surfaced([_res("hit.md")], "q", self.db, "high")
+
+    def test_feedback_user_dead_are_push_delivered_not_pruned(self):
+        c = usage_stats.compute(self.db)
+        self.assertEqual(c["dead_count"], 3)            # rule, usr, cold
+        self.assertEqual(c["push_delivered_dead"], 2)   # rule(feedback) + usr(user)
+        self.assertEqual(c["pull_cold_dead"], 1)        # cold(project) only
+
+    def test_missing_type_column_degrades_to_pull_cold(self):
+        # an older/minimal index without a `type` column must not crash; every
+        # dead card then reads as pull-cold rather than raising.
+        db2 = os.path.join(self.d, "legacy.db")
+        conn = sqlite3.connect(db2)
+        conn.execute("CREATE TABLE memory_chunks "
+                     "(path TEXT, section_heading TEXT, name TEXT, card_kind TEXT)")
+        conn.executemany("INSERT INTO memory_chunks VALUES (?,?,?,?)",
+                         [("x.md", "", "X", "finding"), ("y.md", "", "Y", "rule")])
+        conn.commit()
+        conn.close()
+        c = usage_stats.compute(db2)
+        self.assertEqual(c["dead_count"], 2)
+        self.assertEqual(c["push_delivered_dead"], 0)   # type unknown -> not push
+        self.assertEqual(c["pull_cold_dead"], 2)
 
 
 if __name__ == "__main__":
