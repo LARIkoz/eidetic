@@ -72,6 +72,25 @@ FASTEMBED_CACHE = os.environ.get("FASTEMBED_CACHE_PATH") or os.path.expanduser("
 # reindex) instead of silently dropping every vector on a hash mismatch.
 HASH_SCHEME = "trunc500-v2"
 
+# The exact fastembed release the vectors were built with. A fastembed bump can
+# silently change a model's pooling (e5 switched CLS->mean in 0.6+), producing a
+# DIFFERENT embedding geometry under the SAME model/dim — so model+dim+hash_scheme
+# cannot detect it and cosines across the two builds are meaningless. Stamped by
+# run_full; the search-time guard degrades LOUDLY to FTS (suggest --full) when the
+# live fastembed differs from the stamped one, instead of silently corrupting
+# every cosine. Keep FASTEMBED_PIN in sync with install.sh + doctor.sh.
+FASTEMBED_PIN = "0.8.0"
+
+
+def _fastembed_version():
+    """Live fastembed version, or None if fastembed is absent/unimportable."""
+    try:
+        import fastembed
+        return getattr(fastembed, "__version__", None)
+    except Exception:
+        return None
+
+
 _model = None
 
 
@@ -145,6 +164,17 @@ def _vector_meta_ok(vec_conn):
         mismatch.append(
             f"hash_scheme {stored_scheme or 'none'} != expected {HASH_SCHEME} "
             "(content_hash formula changed — run index.sh --full)"
+        )
+    # fastembed pooling/geometry drift: same model+dim can embed differently after
+    # a fastembed bump (e5 CLS->mean). Only flag when BOTH versions are known and
+    # differ — an absent stamp is a pre-stamp db (backward-compatible), and no live
+    # fastembed means vector search is unavailable anyway.
+    stored_fev = meta.get("fastembed_version")
+    live_fev = _fastembed_version()
+    if stored_model and stored_fev and live_fev and stored_fev != live_fev:
+        mismatch.append(
+            f"fastembed {stored_fev} != live {live_fev} "
+            "(embedder pooling/geometry may differ — run index.sh --full)"
         )
     if mismatch:
         print(
@@ -235,6 +265,10 @@ def run_full(index_db_path, vector_db_path):
         vec_conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('model',?)", (MODEL_NAME,))
         vec_conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('dim',?)", (str(VECTOR_DIM),))
         vec_conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('hash_scheme',?)", (HASH_SCHEME,))
+        # Stamp the fastembed release too: a full rebuild embeds every chunk under
+        # the CURRENT fastembed, so this records the geometry of the whole db. The
+        # search-time guard degrades to FTS the moment the live fastembed differs.
+        vec_conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('fastembed_version',?)", (_fastembed_version(),))
         vec_conn.commit()
         success = True
     except Exception as e:

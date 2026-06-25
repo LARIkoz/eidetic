@@ -84,7 +84,7 @@ if command -v sqlite3 >/dev/null; then ok "sqlite3"; else bad "sqlite3 missing" 
 if python3 -c "import fastembed" 2>/dev/null; then
     ok "fastembed ($(python3 -c 'import fastembed; print(fastembed.__version__)' 2>/dev/null)) — vector search available"
 else
-    warn "fastembed not importable — vector/semantic search OFF (FTS keyword-only)" "pip3 install fastembed"
+    warn "fastembed not importable — vector/semantic search OFF (FTS keyword-only)" "pip3 install 'fastembed==0.8.0'"
 fi
 
 # ------------------------------------------------------------------- FTS INDEX
@@ -149,6 +149,15 @@ if [ -f "$VDB" ]; then
     VCOUNT=$(sqlite3 "$VDB" "SELECT COUNT(*) FROM vectors" 2>/dev/null || echo "?")
     VMODEL=$(sqlite3 "$VDB" "SELECT value FROM meta WHERE key='model'" 2>/dev/null || echo "")
     [ -n "$VMODEL" ] && ok "vectors.db: $VCOUNT vectors, model=$VMODEL" || warn "vectors.db: $VCOUNT vectors, NO model stamp" "rebuild: bash $MEMORY_SYSTEM/bin/index.sh --full"
+    # fastembed geometry drift: a fastembed bump can change a model's pooling (e5
+    # CLS->mean) under the SAME model/dim, silently corrupting cosines. The stamp
+    # vs live comparison is what the search guard (_vector_meta_ok) enforces; mirror
+    # it here so doctor surfaces the drift before search degrades to FTS.
+    VFEV=$(sqlite3 "$VDB" "SELECT value FROM meta WHERE key='fastembed_version'" 2>/dev/null || echo "")
+    LFEV=$(python3 -c 'import fastembed; print(fastembed.__version__)' 2>/dev/null || echo "")
+    if [ -n "$VFEV" ] && [ -n "$LFEV" ] && [ "$VFEV" != "$LFEV" ]; then
+        warn "vectors built by fastembed $VFEV but live is $LFEV — embedder pooling/geometry may differ; semantic search degrades to FTS until rebuilt" "bash $MEMORY_SYSTEM/bin/index.sh --full"
+    fi
     # Vector REAL coverage = chunks whose vector the search guard would ACCEPT
     # (join by chunk_id + path/heading/content_hash all match). The old
     # (CHUNKS-VCOUNT)/CHUNKS lag counted dead orphan-vectors as coverage and
