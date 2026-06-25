@@ -20,8 +20,14 @@ INDEX="$MEMORY_SYSTEM/bin/index.sh"
 SIGNAL_CLAUDE_MODEL="$(python3 "$MEMORY_SYSTEM/bin/signal_model.py" 2>/dev/null || true)"
 [ -z "$SIGNAL_CLAUDE_MODEL" ] && SIGNAL_CLAUDE_MODEL="claude-sonnet-4-6"
 SIGNAL_CLAUDE_TIMEOUT="${EIDETIC_SIGNAL_CLAUDE_TIMEOUT:-30}"
-SIGNAL_CODEX_MODEL="${EIDETIC_SIGNAL_CODEX_MODEL:-gpt-5.4-mini}"
-SIGNAL_CODEX_REASONING="${EIDETIC_SIGNAL_CODEX_REASONING:-low}"
+# gpt-5.5 (not the cheaper gpt-5.4-mini) at medium reasoning: the mini model on
+# low reasoning confabulated DETAILS — grafting plausible-but-false specifics onto
+# real events when summarizing from a thin excerpt (e.g. a real "posted a build
+# comment" became a fabricated cross-reference to an unrelated ticket/commit). A
+# stronger model + more reasoning + the fatter excerpt below cut confabulation.
+# Override with EIDETIC_SIGNAL_CODEX_MODEL.
+SIGNAL_CODEX_MODEL="${EIDETIC_SIGNAL_CODEX_MODEL:-gpt-5.5}"
+SIGNAL_CODEX_REASONING="${EIDETIC_SIGNAL_CODEX_REASONING:-medium}"
 SIGNAL_CODEX_TIMEOUT="${EIDETIC_SIGNAL_CODEX_TIMEOUT:-120}"
 
 acquire_memory_lock() {
@@ -206,7 +212,13 @@ import os
 import sys
 
 path = sys.argv[1]
-max_bytes = 8000
+# Read a LARGE tail (was 8000) and keep only the last 20 user/assistant turns.
+# In a tool-heavy session a single tool-result JSONL line can be tens of KB, so a
+# small byte window is consumed entirely by ONE tool result and yields ~zero real
+# dialogue — starving the extractor into confabulating. 2 MB reliably spans past
+# tool noise to the actual conversation (empirically 1 turn @24KB -> 73 turns
+# @2MB on a tool-heavy session); the prompt stays bounded by the last-20 [:1500] cap.
+max_bytes = 2000000
 try:
     with open(path, 'rb') as f:
         f.seek(0, os.SEEK_END)
@@ -251,7 +263,7 @@ for line in data.decode('utf-8', 'replace').splitlines():
         role = message.get('role', '')
         content = content_text(message.get('content', ''))
         if role in ('user','assistant') and content:
-            lines.append(f'{role}: {content[:500]}')
+            lines.append(f'{role}: {content[:1500]}')
     except Exception:
         pass
 print('\n'.join(lines[-20:]))
