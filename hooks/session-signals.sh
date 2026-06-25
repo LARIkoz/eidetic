@@ -316,6 +316,13 @@ if is_empty_result "$RESULT"; then
     exit 0
 fi
 
+# Optional session-scoped emit: a caller (e.g. the handoff eidetic-status report)
+# sets EIDETIC_SIGNAL_OUT to capture THIS run's signals without tailing the shared
+# signals/<day>.md (which mixes parallel sessions). Written before compound.
+if [ -n "${EIDETIC_SIGNAL_OUT:-}" ]; then
+    printf '%s\n' "$RESULT" > "$EIDETIC_SIGNAL_OUT" 2>/dev/null || true
+fi
+
 LOCK_RUNNER="$MEMORY_SYSTEM/bin/lock_runner.py"
 if [ -f "$LOCK_RUNNER" ]; then
     printf '%s\n' "$RESULT" | python3 "$LOCK_RUNNER" "$MEMORY_SYSTEM/.memory.lockfile" bash -c '
