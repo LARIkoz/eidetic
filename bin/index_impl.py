@@ -77,7 +77,6 @@ BASE_SCAN_DIRS = [
 SCAN_DIRS = list(BASE_SCAN_DIRS)
 
 EXCLUDE_FILES = {"MEMORY.md", "BACKLOG.md"}
-STATUS_INFERENCE_EXEMPT_TYPES = {"feedback", "user"}
 DERIVED_COLUMNS = {
     "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
     "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
@@ -294,28 +293,21 @@ def infer_card_kind(meta, filepath):
 
 
 def infer_status(meta, filepath):
-    """Infer lifecycle status. Explicit frontmatter wins."""
+    """Infer lifecycle status. Explicit frontmatter is the ONLY demotion signal.
+
+    Name/description keyword inference was removed (2026-06-25): it silently mis-demoted
+    CURRENT cards whose title or description merely MENTIONED a lifecycle word. A finding
+    ABOUT a fix ("...Fixed 2026-06-25") ranked as `resolved` (0.75x); any card with the
+    word "archive" in its name/description ranked as `archived` (0.25x) — _slug_text folds
+    in the description, so prose collided. Real archival is now set EXPLICITLY via
+    frontmatter `status:` (curate archive --apply) + `superseded_by`, so the keyword
+    fallback is legacy and net-harmful. A card is `current` unless it declares otherwise.
+    """
     explicit = (meta.get("status") or "").strip().lower()
     if explicit:
         return explicit
     if (meta.get("superseded_by") or "").strip():
         return "superseded"
-    if (meta.get("type") or "").strip().lower() in STATUS_INFERENCE_EXEMPT_TYPES:
-        return "current"
-
-    name = meta.get("name") or os.path.basename(filepath).replace(".md", "")
-    text = _slug_text(name, meta.get("description"))
-
-    if _has_term(text, "superseded"):
-        return "superseded"
-    if _has_term(text, "deprecated"):
-        return "deprecated"
-    if _has_term(text, "obsolete"):
-        return "obsolete"
-    if _has_term(text, "archive", "archived"):
-        return "archived"
-    if _has_term(text, "resolved", "fixed", "closed"):
-        return "resolved"
     return "current"
 
 
