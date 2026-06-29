@@ -131,6 +131,36 @@ claude mcp add <name> -s project \
 
 You keep several bases and plug whichever a project needs, like a USB stick.
 
+## Routing — how the agent knows _when_ to reach for a base
+
+Attaching exposes the tools (`<name>_search` …); it does **not** tell the agent _when_ to
+call them. An MCP tool the model never thinks to reach for is dead weight. The
+route-directive is a tiny **per-project skill** whose one-line `description` Claude Code
+loads into the session — and that line _is_ the routing:
+
+```
+<project>/.claude/skills/base-<name>/SKILL.md
+---
+name: base-<name>
+description: <name> base covers <the domain it answers>. Query `<name>_search` (then `<name>_search_detail`) before answering from training on this topic.
+---
+```
+
+- **The `description` IS the routing** — the one line the model reads each session. Name the
+  base's domain in the consuming project's own terms, and the model reaches for
+  `<name>_search` at the right moment instead of answering from stale training.
+- **Scope = file location.** A skill under `<project>/.claude/skills/` routes that project;
+  under `~/.claude/skills/` it routes everywhere — keep it on the same scope as the `attach`
+  (`-s project` vs `-s user`), so "where the tools exist" and "where they're routed" match.
+- **On/off = file presence.** No settings toggle: the skill file exists → the base is routed;
+  delete it → it isn't. Pair writing it with `attach`; delete it on `detach`.
+- **Map loud, content never.** The skill carries only the _map_ (when to query). The base's
+  _content_ stays PULL — fetched through `<name>_search` on demand, **never** auto-injected
+  like personal memory. Only the one-line route-directive is always-on; the corpus is not.
+
+> Attach = the tools exist. The skill = the agent knows to use them. You need both — a base
+> with no route-directive is reachable but rarely reached.
+
 ## Granularity — one base, or several?
 
 A base is a **coherent knowledge domain you attach as a unit**.

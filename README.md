@@ -84,7 +84,7 @@ python3 ~/.claude/memory-system/bin/base.py index  acme                  # build
 python3 ~/.claude/memory-system/bin/base.py attach acme --scope project  # attach to a project over MCP
 ```
 
-- **Full guide + agent contract:** **[docs/topic-bases.md](docs/topic-bases.md)** — storage model, ingest scenarios, API-doc gotchas.
+- **Full guide + agent contract:** **[docs/topic-bases.md](docs/topic-bases.md)** — storage model, ingest scenarios, **routing (how the agent knows when to reach for a base)**, API-doc gotchas.
 - The bundled **`/eidetic-base`** skill builds one for you from a source (scrape → pages → index → verify → attach).
 - A base is a **separate repo** outside the eidetic tree, so your corpora stay private even though eidetic is public.
 
