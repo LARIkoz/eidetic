@@ -2,6 +2,10 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.12.6 (2026-06-30)
+
+- **The Claude extraction route is now harnessed with a strict extractor system prompt — fixes silent signal loss on conversational sessions.** `run_claude_extraction` (both `claude-batch` and the plain `claude --print` fallback) inherited the full agentic Claude-Code system prompt, so on a session whose transcript _tail_ was conversational (e.g. ended on a question to the user) the model **continued the dialogue** instead of extracting — emitting a chat reply with zero `Decision:/Rule:/Worked:/Failed:/Knowledge:` lines, which `filter_signal_lines` then dropped to `EMPTY`. (The codex route was already immune — `codex exec` is task-framed.) The Claude route now passes `--system-prompt` (replace, not append — so its behaviour is hermetic and independent of the evolving default prompt) framing the model as a line-oriented extractor. Verified end-to-end on a real conversational-tail transcript through the actual hook: bare = 0 signal lines, harnessed = 7 clean signals. Override / translate via `EIDETIC_SIGNAL_CLAUDE_SYSTEM`.
+
 ## v5.12.5 (2026-06-29)
 
 - **`session-signals.sh` codex fallback passes `--skip-git-repo-check` — fixes silent signal loss in the codex-only route.** When the Claude route is forced off (`EIDETIC_SIGNAL_SKIP_CLAUDE=1`) or unavailable, extraction falls to `codex exec`. codex ≥0.142 **refuses to run in a non-trusted / non-`git` working directory** (exit 1, empty `out.md`), so a Stop-hook fired from such a directory dropped its signals **silently** — there is no Claude fallback on that path, so nothing was extracted and nothing warned. Both `codex exec` invocations in `run_codex_cli_extraction` (with and without `EIDETIC_SIGNAL_CODEX_CLI_MODEL`) now pass `--skip-git-repo-check`, consistent with the `-s read-only` sandbox they already run under.

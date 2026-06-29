@@ -20,6 +20,15 @@ INDEX="$MEMORY_SYSTEM/bin/index.sh"
 SIGNAL_CLAUDE_MODEL="$(python3 "$MEMORY_SYSTEM/bin/signal_model.py" 2>/dev/null || true)"
 [ -z "$SIGNAL_CLAUDE_MODEL" ] && SIGNAL_CLAUDE_MODEL="claude-sonnet-4-6"
 SIGNAL_CLAUDE_TIMEOUT="${EIDETIC_SIGNAL_CLAUDE_TIMEOUT:-30}"
+# The Claude route (claude-batch / `claude --print`) inherits the full agentic Claude-Code
+# system prompt by default. On a session whose transcript TAIL is conversational (e.g. ends on
+# a question to the user), that framing makes the model CONTINUE the dialogue instead of
+# extracting — it emits a chat reply with ZERO prefixed signal lines, which filter_signal_lines
+# drops to EMPTY: silent signal loss. (codex `exec` is immune — it is task-framed.) REPLACE the
+# system prompt (not append) with a strict extractor frame so the Claude route is hermetic — its
+# behaviour no longer depends on the evolving default prompt. Verified on a real conversational-
+# tail transcript: bare = 0 prefixed lines; with this = clean signals. Override to tune/translate.
+SIGNAL_CLAUDE_SYSTEM="${EIDETIC_SIGNAL_CLAUDE_SYSTEM:-You are a session-signal EXTRACTOR invoked by a script. Read the transcript in the user message and output ONLY signal lines, each starting with exactly one prefix of Decision:/Rule:/Worked:/Failed:/Knowledge:. If nothing notable, output the single token EMPTY. NEVER greet, converse, ask questions, continue the dialogue, summarize conversationally, or use headings, bullets, bold, or any markdown. Your entire output is parsed line-by-line by a program.}"
 # gpt-5.5 (not the cheaper gpt-5.4-mini) at medium reasoning: the mini model on
 # low reasoning confabulated DETAILS — grafting plausible-but-false specifics onto
 # real events when summarizing from a thin excerpt (e.g. a real "posted a build
@@ -109,7 +118,7 @@ run_claude_extraction() {
     # whose CLI guard blocks a direct `claude --print` (interactive_session_auth_conflict).
     claude_batch_bin=$(find_claude_batch || true)
     if [ -n "$claude_batch_bin" ]; then
-        CLAUDE_BATCH_JOB_TIMEOUT="$SIGNAL_CLAUDE_TIMEOUT" "$claude_batch_bin" --prompt-file "$prompt_file" --model "$SIGNAL_CLAUDE_MODEL"
+        CLAUDE_BATCH_JOB_TIMEOUT="$SIGNAL_CLAUDE_TIMEOUT" "$claude_batch_bin" --prompt-file "$prompt_file" --model "$SIGNAL_CLAUDE_MODEL" --system-prompt "$SIGNAL_CLAUDE_SYSTEM"
         return $?
     fi
     # Public fallback: a plain `claude --print` one-shot for anyone without claude-batch.
@@ -118,9 +127,9 @@ run_claude_extraction() {
     claude_bin=$(command -v claude 2>/dev/null || true)
     [ -n "$claude_bin" ] || return 1
     if command -v timeout >/dev/null 2>&1; then
-        timeout "$SIGNAL_CLAUDE_TIMEOUT" "$claude_bin" --print --model "$SIGNAL_CLAUDE_MODEL" < "$prompt_file"
+        timeout "$SIGNAL_CLAUDE_TIMEOUT" "$claude_bin" --print --model "$SIGNAL_CLAUDE_MODEL" --system-prompt "$SIGNAL_CLAUDE_SYSTEM" < "$prompt_file"
     else
-        "$claude_bin" --print --model "$SIGNAL_CLAUDE_MODEL" < "$prompt_file"
+        "$claude_bin" --print --model "$SIGNAL_CLAUDE_MODEL" --system-prompt "$SIGNAL_CLAUDE_SYSTEM" < "$prompt_file"
     fi
 }
 
