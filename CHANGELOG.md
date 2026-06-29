@@ -2,6 +2,10 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.12.5 (2026-06-29)
+
+- **`session-signals.sh` codex fallback passes `--skip-git-repo-check` — fixes silent signal loss in the codex-only route.** When the Claude route is forced off (`EIDETIC_SIGNAL_SKIP_CLAUDE=1`) or unavailable, extraction falls to `codex exec`. codex ≥0.142 **refuses to run in a non-trusted / non-`git` working directory** (exit 1, empty `out.md`), so a Stop-hook fired from such a directory dropped its signals **silently** — there is no Claude fallback on that path, so nothing was extracted and nothing warned. Both `codex exec` invocations in `run_codex_cli_extraction` (with and without `EIDETIC_SIGNAL_CODEX_CLI_MODEL`) now pass `--skip-git-repo-check`, consistent with the `-s read-only` sandbox they already run under.
+
 ## v5.12.4 (2026-06-25)
 
 - **`infer_status` no longer mis-demotes a current card for merely _mentioning_ a lifecycle word.** Status was inferred from the card's **name + description** keywords (`_slug_text` folds in the description), so a finding _about_ a fix (`"…Fixed 2026-06-25"`) was ranked `resolved` (0.75×) and any card with the word "archive" in its title/description was ranked `archived` (0.25×) — a silent search-recall penalty on perfectly current memory. Real archival is set **explicitly** via frontmatter `status:` (`curate archive --apply`) and `superseded_by`, so the keyword fallback was legacy and net-harmful and is **removed**: a card is `current` unless it declares otherwise. (`tests/test_infer_status.py`, 10 cases; the explicit `status:` → `0.25×` chain is now pinned in-tree by `tests/test_curate_demote_e2e.py`.) _Apply to an existing index with a full reindex (`index.sh --full`)._

@@ -137,10 +137,10 @@ run_codex_cli_extraction() {
     chmod 700 "$out_dir" 2>/dev/null || true
     status=0
     if [ -n "${EIDETIC_SIGNAL_CODEX_CLI_MODEL:-}" ]; then
-        "$codex_bin" exec --model "$EIDETIC_SIGNAL_CODEX_CLI_MODEL" -s read-only --color never \
+        "$codex_bin" exec --model "$EIDETIC_SIGNAL_CODEX_CLI_MODEL" -s read-only --skip-git-repo-check --color never \
             -o "$out_dir/out.md" - < "$prompt_file" >/dev/null 2>&1 || status=$?
     else
-        "$codex_bin" exec -s read-only --color never \
+        "$codex_bin" exec -s read-only --skip-git-repo-check --color never \
             -o "$out_dir/out.md" - < "$prompt_file" >/dev/null 2>&1 || status=$?
     fi
     if [ "$status" -eq 0 ] && [ -s "$out_dir/out.md" ]; then
