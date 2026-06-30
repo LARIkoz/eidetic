@@ -14,7 +14,7 @@
 
 Eidetic gives an AI coding agent **long-term memory** that lives in plain Markdown files and is searched with hybrid FTS5 + vector search. One engine, **two kinds of memory**:
 
-- **Personal memory (PUSH)** — your own decisions, rules, and project context. It **auto-injects** into every Claude Code session (and is recallable on demand from any MCP agent) and **compounds** — updating existing notes instead of piling up duplicates.
+- **Personal memory (PUSH)** — your own decisions, rules, and project context. **The agent writes its own memory:** at every session end a small LLM pulls the decisions, rules, and lessons out of the transcript and files them as cards (`agent-extracted`, 0.5× weight) — your memory grows from just working. It **auto-injects** into every Claude Code session (recallable on demand from any MCP agent too) and **compounds** — updating existing notes instead of piling up duplicates.
 - **Topic bases (PULL)** — an external corpus (API docs, a methodology, a book) you turn into an isolated base and **attach only to the projects that need it**.
 
 What makes it different from every other memory tool: it **detects when memories go stale** and down-ranks them — so more memory doesn't quietly make the agent _worse_ (that's [why](#why-eidetic) it exists). Claude Code-native via zero-config hooks; works with Codex, Gemini, Cursor, Cline, and any MCP agent.
@@ -239,7 +239,20 @@ A quality gate filters your memory files down to a validated subset; optional `-
 Eidetic is **agent-agnostic at the memory layer** — one `.md` store + FTS5 + e5 vector index; only the _integration surface_ changes per agent:
 
 - **Claude Code** — zero-config. `install.sh` wires SessionStart/Stop hooks, so memory **auto-injects** at the start of every session and signals **auto-capture** at the end. The deepest, hands-off experience.
-- **Codex · Gemini · Cursor · Cline — any MCP agent** — point the agent at the bundled **MCP server** (`memory_search`, `memory_search_detail`, `export_vault`, …) for on-demand recall + write-back. Session-end signal capture also runs on the `codex` CLI, not just `claude`.
+- **Codex · Gemini · Cursor · Cline — any MCP agent** — point the agent at the bundled **MCP server** for on-demand recall + write-back (session-end signal capture also runs on the `codex` CLI, not just `claude`). Add it to your agent's MCP config:
+
+```json
+{
+  "mcpServers": {
+    "eidetic": {
+      "command": "python3",
+      "args": ["~/.claude/memory-system/mcp_server.py"]
+    }
+  }
+}
+```
+
+7 tools: `memory_search`, `memory_search_detail`, `memory_serendipity`, `memory_health`, `memory_reindex`, `memory_lint`, `export_vault`. Claude Code doesn't need this — it uses the zero-config hook path above.
 
 No lock-in to one agent. (Auto-injection is the Claude Code hook path; other agents recall on demand through MCP.)
 
@@ -278,39 +291,18 @@ Eidetic update available (a1b2c3d). Run: bash ~/.claude/memory-system/bin/update
 
 Updates preserve databases, rules, and hooks — only code files are replaced.
 
-## MCP server
-
-**Secondary / optional.** Claude Code itself doesn't need MCP — it uses the hooks + rules + recall-skill path above. The MCP server is for _other_ editors that lack Claude Code's hook system (Cursor, Windsurf, Cline, any MCP-compatible agent), exposing the same memory store as on-demand tools:
-
-```json
-{
-  "mcpServers": {
-    "eidetic": {
-      "command": "python3",
-      "args": ["~/.claude/memory-system/mcp_server.py"]
-    }
-  }
-}
-```
-
-7 tools: `memory_search`, `memory_search_detail`, `memory_serendipity`, `memory_health`, `memory_reindex`, `memory_lint`, `export_vault`.
-
 ---
 
 ## Performance
 
-| Metric                   | Value                                                                                         |
-| ------------------------ | --------------------------------------------------------------------------------------------- |
-| Background / idle        | **none** — event-driven, no daemon (0 CPU between sessions)                                   |
-| Session start (warm)     | **~350ms**                                                                                    |
-| Session start (cold)     | ~15s (e5-large ONNX load)                                                                     |
-| FTS reindex (1083 files) | ~0.3s                                                                                         |
-| Full vector embed (7.8K) | ~1h one-time (e5 CPU); incremental = seconds                                                  |
-| FTS5 search              | ~50ms                                                                                         |
-| Vector query (e5)        | ~32ms                                                                                         |
-| Signal extraction        | 1 Sonnet call/session (Claude subscription; `EIDETIC_SIGNAL_CLAUDE_MODEL=haiku` to economize) |
-| Index size               | 31MB (FTS5) + 35MB (vectors, 1024-dim)                                                        |
-| External dependencies    | **zero for core** (e5 model optional)                                                         |
+| Metric               | Value                                                   |
+| -------------------- | ------------------------------------------------------- |
+| Background / idle    | **0 CPU** — event-driven, no daemon                     |
+| Session start (warm) | **~350ms**                                              |
+| FTS5 search          | **~50ms**                                               |
+| Core dependencies    | **zero** — no Docker, npm, or pip (e5 vectors optional) |
+
+<sub>Cold start ~15s (one-time e5 load) · vector query ~32ms · FTS reindex ~0.3s · full embed ~1h one-time, incremental in seconds · index ~66MB · signal extraction = 1 LLM call/session.</sub>
 
 ---
 
@@ -329,15 +321,7 @@ Based on [40-repo competitive analysis](https://github.com/LARIkoz/eidetic/relea
 | **Code search**               | "Where is the rate-limit handler?" actually works         |
 | **Zero-dep core**             | No Docker, no npm, no pip for basic usage                 |
 
-### When to use what
-
-| Your situation                                          | Best choice                                                                    |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Want Claude Code to remember AND detect stale knowledge | **Eidetic**                                                                    |
-| Want largest community, web UI, multi-agent             | claude-mem (large community project)                                           |
-| Need shared memory across Cursor + Claude + Copilot     | [engram](https://github.com/Gentleman-Programming/engram)                      |
-| Already using Obsidian, want simple integration         | [lucasrosati's setup](https://github.com/lucasrosati/claude-code-memory-setup) |
-| Need heavy multilingual semantic search                 | [memsearch](https://github.com/zilliztech/memsearch)                           |
+_Not your use-case? The [40-repo competitive analysis](https://github.com/LARIkoz/eidetic/releases/tag/v2.2.0) covers the alternatives (claude-mem, engram, memsearch, …)._
 
 ---
 
@@ -369,19 +353,7 @@ Core principles:
 
 ## Roadmap
 
-**Shipped**
-
-- **v5.6.0** — usage telemetry: records which cards searches actually surface → `usage_stats.py` shows top-used cards, **dead cards** (never surfaced → prune candidates), and coverage %. Append-only, fail-open, query-hash-only (privacy-safe); doctor "Usage" section. Opt out with `EIDETIC_USAGE_LOG=off`.
-- **v5.5.0** — cross-lingual query translation (opt-in): a non-English query is auto-translated and dual-queried (native + translated, min-rank fused) — **5/8 → 7/8 recall@3**. Pluggable, fail-open backends: Apple Translation NMT (on-device, macOS 26) · Opus-MT / CTranslate2 (portable, offline) · codex CLI. Off by default.
-- **v5.4.0** — doctor's real vector-alignment check (kills the gross-lag lie that hid a 99.94% misalignment outage) · model-by-language profiles (e5-large / bge-small-en) · doctor "who does what" model-routing display · `recall_lab` cross-lingual recall harness · Russian README
-- **v5.3.1** — `imported` low-trust source tier (`0.3`, readies the Wave-1 importer) · `EIDETIC_SIGNAL_SKIP_CLAUDE` kickout-safe extraction route
-- **v5.3** — **promote** (file answers back as typed pages — Karpathy's LLM Wiki) · greppable **op-log** · typed `card_kind` (synthesis/concept/entity) · **loud embed self-heal** (no silent outages) · explicit [memory schema](docs/MEMORY-SCHEMA.md) · `doctor` covers it all
-- **v5.2** — cross-encoder rerank salvage · persistent model cache · embed/export concurrency locks · fenced-code-safe vault export · `doctor` self-check
-- **v5.1** — e5-large embedder + two-signal precision gate + model-drift guard (cross-lingual recall@3 25% → 67%)
-- **v5.0** — progressive search (+ v5.0.1 lifecycle Phase B)
-- **v4.0–4.3** — Obsidian vault export + LLM polish · lifecycle signals
-- **v2.x** — hybrid search (v2.0) · code search via tree-sitter (v2.2) · drift detection (v2.5)
-- **v1.x** — FTS5 + signals + compounding (v1.0) · token compression 2.17× (v1.3)
+**Shipped** — v1.0 → v5.6: FTS5 + signals + compounding, hybrid e5 search, code search, drift detection, promote / op-log / typed pages, cross-lingual translation, usage telemetry, functional doctor. Full per-version detail in [CHANGELOG.md](CHANGELOG.md).
 
 **Next** — distribution: pip package, docs polish.
 
