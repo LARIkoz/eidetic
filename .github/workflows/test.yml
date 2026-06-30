@@ -1415,7 +1415,7 @@ jobs:
           PY
           python3 bin/index_impl.py --incremental "$HOME/.claude/memory-system/db/index.db"
           sqlite3 "$HOME/.claude/memory-system/db/index.db" "SELECT card_kind, status FROM memory_chunks WHERE name = 'old-bug-memory' LIMIT 1" \
-            | grep -q '^bug|resolved$'
+            | grep -q '^bug|current$'
           [ "$(sqlite3 "$HOME/.claude/memory-system/db/index.db" "SELECT COUNT(*) FROM memory_chunks WHERE name = 'deleted-memory'")" = "0" ]
 
       - name: Test incremental clears emptied memory files
@@ -1598,7 +1598,7 @@ jobs:
                   "INSERT INTO memory_chunks (path, name, description, content, evidence, source, status, type) VALUES (?, ?, ?, ?, 'observed', 'user-explicit', 'current', 'feedback')",
                   (f"/tmp/rule-{i}.md", f"feedback-rule-{i}", "Long feedback description " * 5, "body"),
               )
-          text, _, total = assemble_context.fetch_feedback(conn, 120)
+          text, _, total, _ = assemble_context.fetch_feedback(conn, 120)
           assert total == 20
           assert "...and" not in text
           for i in range(20):
@@ -1635,7 +1635,7 @@ jobs:
           """)
           old_ns = 946684800000000000
           conn.execute("INSERT INTO memory_chunks VALUES (1, '/tmp/old.md', 'old', '', '', 'old body', 'observed', 'user-explicit', '', 'project', 'old-project', 'finding', 'current', '', ?)", (old_ns,))
-          text, used = assemble_context.fetch_recent(conn, 10000)
+          text, used, _ = assemble_context.fetch_recent(conn, 10000)
           assert "old body" not in text
           assert used == 0
           PY
