@@ -3,16 +3,26 @@ output/
 __pycache__/
 *.pyc
 .DS_Store
+.pytest_cache/
+
 # maintainer-local docs (leak internal workspace paths — keep out of the public repo)
 /PROJECT_MAP.md
 /TODO.md
+
+# install-time config (machine-local)
 .translate_backend
 .embed_profile
 .signal_model
-usage.log
-usage.log.*
-usage_rollup.json
-usage_rollup.json.tmp
+
+# === Runtime / generated data — NEVER commit ===
+# A built index / vector store embeds your memory CONTENT verbatim, which can contain
+# secrets (API keys jotted in notes, paths, hostnames). It must never reach a public repo.
 db/
 *.db
-usage.log
+*.npy
+vectors*
+embed-last.log
+*.log
+usage.log*
+usage_rollup.json*
+.cache/
