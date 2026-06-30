@@ -1049,7 +1049,7 @@ jobs:
           filler = "x" * 1200
           leak = "SECRET_TOOL_RESULT_TAIL_LEAK" + ("x" * 9000)
           with open(sys.argv[1], "w", encoding="utf-8") as f:
-              f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "Earlier human request should be outside tail. " + filler}}) + "\n")
+              f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "Earlier human request (real conversation turn). " + filler}}) + "\n")
               f.write(json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": leak}]}}) + "\n")
           PY
           printf '{"transcript_path":"%s"}\n' "$tmp/transcript.jsonl" \
@@ -1058,7 +1058,9 @@ jobs:
           import os
           from pathlib import Path
 
-          assert not Path(os.environ["CLAUDE_RAN"]).exists()
+          # The 2 MB extraction window (v5.12.4) legitimately spans the real human turn,
+          # so the extractor may run on it; what must NEVER happen is a raw-tail fallback
+          # that leaks the oversized tool_result into compound.
           assert not Path(os.environ["COMPOUND_LOG"]).exists()
           PY
 
