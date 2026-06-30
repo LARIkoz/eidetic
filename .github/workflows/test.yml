@@ -1273,8 +1273,8 @@ jobs:
               assert pos + 1 < len(args), args
               assert args[pos + 1] == value, args
 
-          assert_pair("--model", "gpt-5.4-mini")
-          assert_pair("--reasoning", "low")
+          assert_pair("--model", "gpt-5.5")
+          assert_pair("--reasoning", "medium")
           assert_pair("--validate", "nonempty")
           assert "--quiet" in args, args
           assert "--skip-route-preflight" not in args, args
