@@ -213,7 +213,12 @@ fi
 # vanishing into /dev/null (that swallow hid the 16-day outage). A non-empty log
 # means the LAST incremental embed failed — surface it loudly.
 EMBED_LOG="$MEMORY_SYSTEM/embed-last.log"
-if [ -s "$EMBED_LOG" ]; then
+EMBED_VECTORS_DB="$MEMORY_SYSTEM/db/vectors.db"
+# A non-empty log means the LAST embed crashed — UNLESS vectors were written since
+# (vectors.db newer than the log), which means a later embed succeeded and the logged
+# failure is now STALE. Only cry wolf for a still-current failure (avoids the doctor
+# reporting a since-fixed crash, e.g. a missing-numpy run, forever).
+if [ -s "$EMBED_LOG" ] && ! { [ -f "$EMBED_VECTORS_DB" ] && [ "$EMBED_VECTORS_DB" -nt "$EMBED_LOG" ]; }; then
     warn "last session embed FAILED: $(tail -n1 "$EMBED_LOG" 2>/dev/null | cut -c1-120)" "see $EMBED_LOG, then: bash $MEMORY_SYSTEM/bin/index.sh --full"
 else
     ok "no embed errors logged (W5 self-heal clean)"
