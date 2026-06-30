@@ -1,6 +1,6 @@
 🇬🇧 **English** · [🇷🇺 Русский](README.ru.md)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.12.6-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.12.7-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
 
 # Eidetic
 
@@ -54,11 +54,9 @@ That's the **Day 60 problem** — after 500+ memory files, stale knowledge activ
 git clone https://github.com/LARIkoz/eidetic.git && cd eidetic && bash install.sh
 ```
 
-One command. `install.sh` prompts (enter = default) for the **three models that define the system** — the **embedder** (`multilingual` / `english`), **cross-lingual translation** (`off` / `auto` / `apple` / `opusmt`), and the **card-extraction model** (`sonnet` / `haiku`). Piped, CI, and agent installs stay non-interactive via env (`EIDETIC_EMBED_PROFILE`, `EIDETIC_QUERY_TRANSLATE`, `EIDETIC_SIGNAL_MODEL`) or just take the defaults.
+One command. `install.sh` asks 3 quick questions (Enter = sensible default) and wires the Claude Code hooks. The **core** (FTS5 search, auto-injection, drift, vault) needs **zero pip installs** and works immediately; semantic search adds one — `pip install fastembed` (see [Dependencies](#dependencies)). Piped / CI / agent installs stay non-interactive via env or the defaults.
 
-The **core** (FTS5 search, auto-injection, drift, vault export) needs **zero pip installs** and works immediately. Semantic / cross-lingual search adds one optional dependency — `pip install fastembed` (see [Dependencies](#dependencies)).
-
-**Installing with an agent?** Hand it the repo link + **[AGENTS.md](AGENTS.md)** (or the ready install prompt in **[docs/prompts.md](docs/prompts.md)**). Verify any time with `bash ~/.claude/memory-system/bin/doctor.sh`; roll back with `bash ~/.claude/memory-system/bin/rollback.sh`.
+**Prefer your agent install it?** Hand it the repo link + **[AGENTS.md](AGENTS.md)** (or a ready prompt in **[docs/prompts.md](docs/prompts.md)**) — it runs the whole thing end-to-end. Verify any time with `bash ~/.claude/memory-system/bin/doctor.sh`; roll back with `bash ~/.claude/memory-system/bin/rollback.sh`.
 
 ---
 
@@ -211,9 +209,14 @@ This is Eidetic implementing [Karpathy's **LLM Wiki**](https://gist.github.com/k
 
 ### Session-End Auto-Capture (configurable)
 
-At session end a small LLM pulls `Decision:/Rule:/Worked:/Failed:/Knowledge:` signals from the transcript and compounds them (`source: agent-extracted`, 0.5× weight). The model defaults to **Sonnet** for quality, and the runner degrades across whatever CLI is installed — `claude-batch → claude --print → codex-batch → codex exec` — so **any install with the `claude` _or_ `codex` CLI captures signals**, not just one setup.
+At session end a small LLM pulls `Decision:/Rule:/Worked:/Failed:/Knowledge:` signals from the transcript and compounds them (`source: agent-extracted`, 0.5× weight). It runs on **whichever CLI you have** — Claude or Codex — degrading `claude-batch → claude --print → codex-batch → codex exec`, so any install with the `claude` _or_ `codex` CLI captures signals. Pick the capture model to match your CLI:
 
-Tune via env: `EIDETIC_SIGNAL_CLAUDE_MODEL` (default `sonnet`; set `=haiku` to economize) and `EIDETIC_SIGNAL_CODEX_CLI_MODEL` (otherwise Codex's own default model). For deliberate, full-quality capture, use **Promote** (above).
+| Your CLI   | Capture model (default → cheaper/safer)               | Override env                                      |
+| ---------- | ----------------------------------------------------- | ------------------------------------------------- |
+| **Claude** | `sonnet` → `haiku`                                    | `EIDETIC_SIGNAL_CLAUDE_MODEL`                     |
+| **Codex**  | `gpt-5.5` → `gpt-5.3-codex-spark` (subscription-safe) | `EIDETIC_SIGNAL_CODEX_MODEL` / `_CODEX_CLI_MODEL` |
+
+Gemini / Grok agents recall via MCP but don't run extraction yet. For deliberate, full-quality capture, use **Promote** (above).
 
 ### Obsidian Vault Export (v4.0)
 

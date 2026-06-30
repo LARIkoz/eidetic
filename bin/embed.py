@@ -94,11 +94,34 @@ def _fastembed_version():
 _model = None
 
 
+def _embed_providers():
+    """ONNX execution providers for fastembed. On Apple Silicon, CoreML (GPU/ANE)
+    embeds e5-large ~5-10x faster than the CPU default — the difference between a
+    slow Mac taking ~45 min and ~1 min for a full re-embed. Env-overridable
+    (EIDETIC_EMBED_PROVIDERS, comma-separated); returns None elsewhere (CPU default)."""
+    env = os.environ.get("EIDETIC_EMBED_PROVIDERS")
+    if env is not None:
+        return [p.strip() for p in env.split(",") if p.strip()] or None
+    try:
+        if sys.platform == "darwin" and os.uname().machine == "arm64":
+            return ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    except Exception:
+        pass
+    return None
+
+
 def get_model():
     global _model
     if _model is None:
         from fastembed import TextEmbedding
-        _model = TextEmbedding(MODEL_NAME, cache_dir=FASTEMBED_CACHE)
+        providers = _embed_providers()
+        try:
+            _model = (TextEmbedding(MODEL_NAME, cache_dir=FASTEMBED_CACHE, providers=providers)
+                      if providers else TextEmbedding(MODEL_NAME, cache_dir=FASTEMBED_CACHE))
+        except Exception:
+            # A provider (e.g. CoreML) failed to init or this fastembed lacks the
+            # providers arg → fall back to the pure-CPU default; never block embedding.
+            _model = TextEmbedding(MODEL_NAME, cache_dir=FASTEMBED_CACHE)
     return _model
 
 

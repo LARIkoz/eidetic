@@ -13,3 +13,6 @@ usage.log
 usage.log.*
 usage_rollup.json
 usage_rollup.json.tmp
+db/
+*.db
+usage.log

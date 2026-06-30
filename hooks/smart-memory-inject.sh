@@ -130,8 +130,12 @@ import os, sqlite3, subprocess, sys
 script, db_path, vectors_db, log_path = sys.argv[1:5]
 failed, reason = False, ""
 try:
+    # Default 30s; a slow machine or a large unembedded backlog can need more to
+    # converge — raise via EIDETIC_EMBED_TIMEOUT so every session makes progress
+    # instead of timing out short forever.
+    embed_timeout = int(os.environ.get("EIDETIC_EMBED_TIMEOUT", "30") or "30")
     r = subprocess.run([sys.executable, script, db_path, vectors_db],
-                       timeout=30, capture_output=True, text=True)
+                       timeout=embed_timeout, capture_output=True, text=True)
     if r.returncode != 0:
         failed = True
         tail = (r.stderr or r.stdout or "nonzero exit").strip().splitlines()
@@ -144,7 +148,14 @@ try:
         # "degraded" forever (alarm fatigue that erodes trust in the new gate).
         open(log_path, "w").close()
 except subprocess.TimeoutExpired:
-    pass  # a long reindex keeps embedding; next session resumes — not a failure
+    # A long reindex keeps embedding; next session resumes — not a failure.
+    # Reaching a timeout means the embedder STARTED (its deps, incl. numpy,
+    # imported OK), so a since-resolved earlier crash recorded in the log is now
+    # stale — clear it so the doctor stops reporting a fixed problem forever.
+    try:
+        open(log_path, "w").close()
+    except OSError:
+        pass
 except Exception as e:
     failed = True
     reason = f"{type(e).__name__}: {e}"[:160]
