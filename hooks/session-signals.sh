@@ -365,14 +365,51 @@ if [ -n "${EIDETIC_SIGNAL_OUT:-}" ]; then
 fi
 
 LOCK_RUNNER="$MEMORY_SYSTEM/bin/lock_runner.py"
+SPOOL_DIR="$MEMORY_SYSTEM/signals-spool"
+
+spool_signals() {
+    # The runtime lock is busy: the signals are ALREADY extracted (LLM spend
+    # done) — never drop them silently. Spool to disk; the next session-end
+    # drains the spool under the lock before compounding its own signals.
+    mkdir -p "$SPOOL_DIR" 2>/dev/null || return 1
+    chmod 700 "$SPOOL_DIR" 2>/dev/null || true
+    printf '%s\n' "$RESULT" > "$SPOOL_DIR/$(date +%s)-$$.txt" 2>/dev/null || return 1
+}
+
 if [ -f "$LOCK_RUNNER" ]; then
-    printf '%s\n' "$RESULT" | python3 "$LOCK_RUNNER" "$MEMORY_SYSTEM/.memory.lockfile" bash -c '
+    LOCK_RC=0
+    printf '%s\n' "$RESULT" | python3 "$LOCK_RUNNER" --busy-exit 75 "$MEMORY_SYSTEM/.memory.lockfile" bash -c '
         "$1" --incremental >/dev/null 2>&1 || true
+        spool_dir="$4"
+        spooled=""
+        if [ -d "$spool_dir" ]; then
+            spooled=$(find "$spool_dir" -maxdepth 1 -type f -name "*.txt" 2>/dev/null | sort)
+        fi
+        if [ -n "$spooled" ]; then
+            count=$(printf "%s\n" "$spooled" | wc -l | tr -d "[:space:]")
+            if [ "$count" -gt 20 ]; then
+                printf "%s\n" "$spooled" | head -n $((count - 20)) | while IFS= read -r f; do rm -f "$f"; done
+                echo "session-signals: spool cap — dropped $((count - 20)) oldest of $count spooled signal files" >&2
+                spooled=$(printf "%s\n" "$spooled" | tail -n 20)
+            fi
+            # One stream: spooled signals (oldest first) + this session on stdin.
+            # Spool files are removed ONLY after compound ran under the lock.
+            if { printf "%s\n" "$spooled" | while IFS= read -r f; do cat "$f"; done; cat; } | python3 "$2" "$3" 2>/dev/null; then
+                printf "%s\n" "$spooled" | while IFS= read -r f; do rm -f "$f"; done
+            fi
+            exit 0
+        fi
         python3 "$2" "$3" 2>/dev/null || exit 0
-    ' _ "$INDEX" "$COMPOUND" "$(pwd)"
+    ' _ "$INDEX" "$COMPOUND" "$(pwd)" "$SPOOL_DIR" || LOCK_RC=$?
+    if [ "$LOCK_RC" -eq 75 ]; then
+        spool_signals || true
+    fi
 else
     # Acquire lock (shared with SessionStart hook).
-    acquire_memory_lock || exit 0
+    if ! acquire_memory_lock; then
+        spool_signals || true
+        exit 0
+    fi
 
     # Reindex FIRST so compound.py searches fresh FTS5 (H3: stale index = duplicates)
     "$INDEX" --incremental >/dev/null 2>&1 || true
