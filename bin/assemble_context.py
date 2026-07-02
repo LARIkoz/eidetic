@@ -36,30 +36,38 @@ STATUS_WEIGHTS = {
 }
 FRESHNESS_DAYS = 30
 
-RULE_CLUSTERS = [
-    {
-        "id": "consilium-review",
-        "label": "Consilium/Review Pipeline",
-        "patterns": [r"consilium", r"consreview", r"synthesis[\s._-]audit", r"synth[\s._-]hallucin",
-                     r"voice[\s._-]fail", r"voices[\s._-]fail", r"voices[\s._-]degrad", r"pipeline[\s._-]timings",
-                     r"pipeline[\s._-]premature", r"redteam", r"red[\s._-]team", r"audit[\s._-]verdict",
-                     r"synthesis[\s._-]invents", r"review[\s._-]agent[\s._-]rules"],
-        "summary": ("Re-synth mandatory when AUDIT says ISSUES. Red-team mandatory for "
-                     "design decisions. 4-tier post-processing (BLOCKER/IMPORTANT/VERIFY/NOISE). "
-                     "Wait for .pipeline_complete sentinel. Synth invents convergences — "
-                     "verify raw voices. Full concept+data+flagship models required."),
-    },
-    {
-        "id": "model-routing",
-        "label": "Model & CLI Routing",
-        "patterns": [r"model[\s._-]routing", r"model[\s._-]split", r"model[\s._-]benchmark", r"model[\s._-]freshness",
-                     r"model[\s._-]selection", r"codex[\s._-]cli", r"codex[\s._-]model", r"gemini[\s._-]cli",
-                     r"grok.+subscription", r"grok.+not\s+api"],
-        "summary": ("Opus 4.6[1m] orchestrator, 4.7 sub-agent only. Anthropic via subscription "
-                     "(never OpenRouter). Gemini Acc2 only (lari0305). Grok subscription only. "
-                     "Codex 4-layer customization. Sonnet via claude-batch."),
-    },
-]
+# Rule clustering compresses a group of same-topic feedback cards into ONE block in
+# the injected context. This ships EMPTY on purpose. LESSON (privacy): never hardcode
+# the maintainer's — or any user's — personal operating rules, account names, or
+# model-routing here. assemble_context writes ~/.claude/rules/memory-context.md, so any
+# string baked into a cluster "summary" is injected verbatim into EVERY install's
+# context as an "ALWAYS APPLY" rule the moment >=3 of that user's feedback cards match
+# the patterns. Personal clusters belong in a LOCAL, git-ignored config loaded at
+# runtime, never in this public source file.
+def _load_rule_clusters():
+    """Optional per-user rule clusters; ships EMPTY (no personal content in-repo).
+
+    Loaded from $EIDETIC_RULE_CLUSTERS, else <memory-system>/rule_clusters.json (a
+    local, git-ignored file). Each entry needs id, label, patterns (list of regex), and
+    summary. Absent or malformed -> [] so every feedback card is listed individually via
+    the tiered path in fetch_feedback (nothing is ever hidden — P3 never-invisible).
+    """
+    path = os.environ.get("EIDETIC_RULE_CLUSTERS") or os.path.join(
+        os.environ.get("EIDETIC_MEMORY_SYSTEM") or os.path.expanduser("~/.claude/memory-system"),
+        "rule_clusters.json")
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [c for c in data
+            if isinstance(c, dict) and c.get("id") and c.get("label")
+            and isinstance(c.get("patterns"), list) and c.get("summary")]
+
+
+RULE_CLUSTERS = _load_rule_clusters()
 
 
 # Single source of truth: bin/constants.py. Literal fallback only for when the

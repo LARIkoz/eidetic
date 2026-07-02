@@ -13,6 +13,8 @@ __pycache__/
 .translate_backend
 .embed_profile
 .signal_model
+# per-user rule clusters — may hold private operating rules / account names; local only
+rule_clusters.json
 
 # === Runtime / generated data — NEVER commit ===
 # A built index / vector store embeds your memory CONTENT verbatim, which can contain

@@ -2,6 +2,10 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.12.8 (2026-07-02)
+
+- **Privacy: context assembly no longer ships hardcoded personal rule clusters.** `assemble_context.py`'s `RULE_CLUSTERS` was a two-entry literal whose `summary` strings were injected verbatim into `~/.claude/rules/memory-context.md` as "ALWAYS APPLY" behavioral rules the moment ≥3 of a user's feedback cards matched the patterns — and those summaries carried the maintainer's private operating rules and account names, so every public install could surface another person's rules. `RULE_CLUSTERS` now **ships empty** and is loaded at runtime from an optional, git-ignored local config (`$EIDETIC_RULE_CLUSTERS`, else `<memory-system>/rule_clusters.json`). Absent or malformed → `[]`, so every feedback card is listed individually via the existing tiered path (P3 never-invisible is unchanged). Added `rule_clusters.json` to `.gitignore`.
+
 ## v5.12.7 (2026-06-30)
 
 - **CoreML (GPU/ANE) embedding on Apple Silicon — ~5–10× faster than the CPU default.** `embed.py` now passes `["CoreMLExecutionProvider", "CPUExecutionProvider"]` to fastembed on macOS `arm64` (override via `EIDETIC_EMBED_PROVIDERS`; fail-safe to pure CPU if a provider can't init or the fastembed lacks the `providers` arg). On a slow M1 a full re-embed drops from tens of minutes to ~1 minute. The CPU fallback stays in the provider list, and mixed CPU/GPU vectors remain cosine-equivalent (same model + pooling; float-precision only).
