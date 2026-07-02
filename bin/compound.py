@@ -31,27 +31,40 @@ TODAY = datetime.now().strftime("%Y-%m-%d")
 
 
 def search_fts5(conn, query, limit=3):
-    """Search FTS5 for existing memory on same topic."""
+    """Search FTS5 for existing memory on same topic.
+
+    Staged match: the strict phrase of up to 6 keywords first (cheap, precise),
+    then ONE retry as an implicit AND of the top 4 keywords. Extracted keywords
+    are almost never contiguous in a real document, so the phrase-only query
+    matched ~nothing and every signal became a new card instead of compounding.
+    Deliberately NO loose OR stage — false-compounding a signal into an
+    unrelated card is worse than creating a new card.
+    """
     sanitized = re.sub(r'[*()\[\]{}^~:+\-]', ' ', query)
     sanitized = sanitized.replace('"', '""')
     words = [w for w in sanitized.split() if len(w) > 2 and w.upper() not in ("AND", "OR", "NOT", "NEAR")]
     if not words:
         return []
-    fts_query = '"' + " ".join(words[:6]) + '"'
 
-    try:
-        rows = conn.execute("""
-            SELECT c.path, c.name, c.section_heading, c.content,
-                   memory_fts.rank AS fts_rank
-            FROM memory_fts
-            JOIN memory_chunks c ON memory_fts.rowid = c.id
-            WHERE memory_fts MATCH ?
-            ORDER BY memory_fts.rank
-            LIMIT ?
-        """, (fts_query, limit)).fetchall()
+    def run_match(fts_query):
+        try:
+            return conn.execute("""
+                SELECT c.path, c.name, c.section_heading, c.content,
+                       memory_fts.rank AS fts_rank
+                FROM memory_fts
+                JOIN memory_chunks c ON memory_fts.rowid = c.id
+                WHERE memory_fts MATCH ?
+                ORDER BY memory_fts.rank
+                LIMIT ?
+            """, (fts_query, limit)).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+    rows = run_match('"' + " ".join(words[:6]) + '"')
+    if rows:
         return rows
-    except sqlite3.OperationalError:
-        return []
+    # FTS5 space-separated terms = implicit AND; input is sanitized above.
+    return run_match(" ".join(words[:4]))
 
 
 def extract_keywords(signal_text):
