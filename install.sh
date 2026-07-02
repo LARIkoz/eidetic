@@ -201,7 +201,7 @@ inject_hook = {
     "hooks": [{
         "type": "command",
         "command": hook_prefix + "~/.claude/hooks/smart-memory-inject.sh",
-        "timeout": 5000
+        "timeout": 60  # seconds (Claude Code hook timeouts are seconds, not ms)
     }]
 }
 inject_updated = False
@@ -223,7 +223,7 @@ stop = hooks.setdefault("Stop", [])
 signal_entry = {
     "type": "command",
     "command": hook_prefix + "~/.claude/hooks/session-signals.sh",
-    "timeout": 180000,
+    "timeout": 300,  # seconds (Claude Code hook timeouts are seconds, not ms)
     "async": True
 }
 signal_updated = False
