@@ -133,6 +133,38 @@ run_claude_extraction() {
     fi
 }
 
+run_with_codex_timeout() {
+    # Bound a plain `codex exec` call to $SIGNAL_CODEX_TIMEOUT seconds. Without a
+    # bound, one network hang turns the Stop hook into an immortal background
+    # process (this route has no wrapper-side timeout, unlike codex-batch).
+    # macOS ships no coreutils `timeout`, so fall back to a pure-bash watchdog:
+    # the command runs in its own process group (set -m) so the kill reaches
+    # codex's children too, and the watchdog polls in 1s steps and exits on its
+    # own once the command is gone — no sleep process outlives this function.
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$SIGNAL_CODEX_TIMEOUT" "$@"
+        return $?
+    fi
+    local cmd_pid watchdog_pid rc=0
+    set -m
+    "$@" &
+    cmd_pid=$!
+    set +m
+    (
+        waited=0
+        while [ "$waited" -lt "$SIGNAL_CODEX_TIMEOUT" ]; do
+            sleep 1
+            kill -0 "$cmd_pid" 2>/dev/null || exit 0
+            waited=$((waited + 1))
+        done
+        kill -TERM -- "-$cmd_pid" 2>/dev/null || kill -TERM "$cmd_pid" 2>/dev/null
+    ) &
+    watchdog_pid=$!
+    wait "$cmd_pid" || rc=$?   # killed-on-timeout => 128+SIGTERM, i.e. nonzero
+    wait "$watchdog_pid" 2>/dev/null || true
+    return "$rc"
+}
+
 run_codex_cli_extraction() {
     # Public fallback: the plain `codex` CLI (codex exec) for anyone with Codex but
     # without the private codex-batch wrapper. Read-only sandbox, prompt on stdin,
@@ -146,10 +178,10 @@ run_codex_cli_extraction() {
     chmod 700 "$out_dir" 2>/dev/null || true
     status=0
     if [ -n "${EIDETIC_SIGNAL_CODEX_CLI_MODEL:-}" ]; then
-        "$codex_bin" exec --model "$EIDETIC_SIGNAL_CODEX_CLI_MODEL" -s read-only --skip-git-repo-check --color never \
+        run_with_codex_timeout "$codex_bin" exec --model "$EIDETIC_SIGNAL_CODEX_CLI_MODEL" -s read-only --skip-git-repo-check --color never \
             -o "$out_dir/out.md" - < "$prompt_file" >/dev/null 2>&1 || status=$?
     else
-        "$codex_bin" exec -s read-only --skip-git-repo-check --color never \
+        run_with_codex_timeout "$codex_bin" exec -s read-only --skip-git-repo-check --color never \
             -o "$out_dir/out.md" - < "$prompt_file" >/dev/null 2>&1 || status=$?
     fi
     if [ "$status" -eq 0 ] && [ -s "$out_dir/out.md" ]; then
