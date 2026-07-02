@@ -37,13 +37,16 @@ else
 fi
 
 echo "Fetching latest from GitHub..."
-git clone --depth 1 "$REPO" "$TMP_DIR/eidetic" 2>/dev/null
+# Full-history clone (no --depth 1; the repo is small): the fast-forward guard
+# below needs the installed sha reachable in history to detect upstream rewrites.
+git clone "$REPO" "$TMP_DIR/eidetic" 2>/dev/null
 
 NEW_VER=$(sed -n 's/.*version-\([0-9][0-9.]*\)-.*/\1/p' "$TMP_DIR/eidetic/README.md" | head -1)
 [ -z "$NEW_VER" ] && NEW_VER="unknown"
 NEW_SHA=$(git -C "$TMP_DIR/eidetic" rev-parse HEAD 2>/dev/null || echo "unknown")
 echo "Latest:  v$NEW_VER ($NEW_SHA)"
 
+LOCAL_SHA=""
 if [ -f "$META" ]; then
     LOCAL_SHA=$(
 python3 - "$META" 2>/dev/null << 'PYEOF' || echo ""
@@ -58,6 +61,27 @@ PYEOF
         echo "Already up to date."
         rm -f "$MEMORY_SYSTEM/.update-available"
         exit 0
+    fi
+fi
+
+# Integrity guard: this script installs the fetched HEAD into auto-executed
+# hooks. If we know the installed sha, require the update to be a fast-forward
+# of it — a non-ancestor HEAD means upstream history was rewritten (force-push
+# or repo takeover) and must not be installed silently.
+if [ -n "$LOCAL_SHA" ] && [ "$LOCAL_SHA" != "unknown" ]; then
+    if git -C "$TMP_DIR/eidetic" cat-file -e "$LOCAL_SHA^{commit}" 2>/dev/null; then
+        if git -C "$TMP_DIR/eidetic" merge-base --is-ancestor "$LOCAL_SHA" "$NEW_SHA" 2>/dev/null; then
+            : # fast-forward — proceed
+        elif [ "${EIDETIC_UPDATE_FORCE:-}" = "1" ]; then
+            echo "WARNING: non-fast-forward update accepted because EIDETIC_UPDATE_FORCE=1."
+        else
+            echo "ERROR: refusing non-fast-forward update (history rewritten upstream)." >&2
+            echo "Installed sha $LOCAL_SHA is not an ancestor of fetched $NEW_SHA." >&2
+            echo "Inspect upstream, then rerun with EIDETIC_UPDATE_FORCE=1 to accept." >&2
+            exit 3
+        fi
+    else
+        echo "Notice: installed sha $LOCAL_SHA not found in upstream history (old shallow install?) — proceeding as first tracked update."
     fi
 fi
 
@@ -233,6 +257,10 @@ with os.fdopen(fd, "w", encoding="utf-8") as f:
     json.dump(meta, f, indent=2)
 os.replace(tmp, meta_path)
 PYEOF
+
+# Record the update on the greppable op-log (best-effort — never fail the update).
+EIDETIC_MEMORY_SYSTEM="$MEMORY_SYSTEM" python3 "$MEMORY_SYSTEM/bin/oplog.py" \
+    update "v$OLD_VER(${LOCAL_SHA:-unknown}) -> v$NEW_VER($NEW_SHA)" 2>/dev/null || true
 
 rm -f "$MEMORY_SYSTEM/.update-available"
 
