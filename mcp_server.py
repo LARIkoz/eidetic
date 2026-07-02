@@ -29,6 +29,15 @@ MEMORY_SYSTEM = os.path.expanduser(
 _BASE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,40}$")
 
 
+def server_version():
+    """The installed Eidetic version for serverInfo (was a stale hardcoded literal)."""
+    try:
+        with open(os.path.join(MEMORY_SYSTEM, ".installed.json"), encoding="utf-8") as f:
+            return str(json.load(f).get("version") or "unknown")
+    except (OSError, ValueError):
+        return "unknown"
+
+
 def _base_name():
     """Topic-base name if MEMORY_SYSTEM is a base (has .eidetic-base.json), else None.
     A base holds only docs/notes/db — its engine scripts come from THIS install instead.
@@ -502,7 +511,7 @@ def handle_request(request):
             "capabilities": {"tools": {}},
             "serverInfo": {
                 "name": "eidetic",
-                "version": "5.0.1"
+                "version": server_version()
             }
         })
 

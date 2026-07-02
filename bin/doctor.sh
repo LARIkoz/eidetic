@@ -84,7 +84,13 @@ if command -v sqlite3 >/dev/null; then ok "sqlite3"; else bad "sqlite3 missing" 
 if python3 -c "import fastembed" 2>/dev/null; then
     ok "fastembed ($(python3 -c 'import fastembed; print(fastembed.__version__)' 2>/dev/null)) — vector search available"
 else
-    warn "fastembed not importable — vector/semantic search OFF (FTS keyword-only)" "pip3 install 'fastembed==0.8.0'"
+    # The pin has no wheel for old pythons — prescribing it there is an impossible fix.
+    PYMINOR=$(python3 -c 'import sys; print(sys.version_info.minor)' 2>/dev/null || echo 0)
+    if [ "${PYMINOR:-0}" -lt 10 ]; then
+        warn "fastembed not importable — vector/semantic search OFF (FTS keyword-only)" "fastembed==0.8.0 has no wheel for python3.$PYMINOR — install Python >=3.10 first (e.g. brew install python@3.12), then: python3.12 -m pip install 'fastembed==0.8.0' && bash $MEMORY_SYSTEM/bin/index.sh --full"
+    else
+        warn "fastembed not importable — vector/semantic search OFF (FTS keyword-only)" "pip3 install 'fastembed==0.8.0'"
+    fi
 fi
 
 # ------------------------------------------------------------------- FTS INDEX
@@ -271,6 +277,17 @@ else
 SIGNAL_DESC=$(EIDETIC_MEMORY_SYSTEM="$MEMORY_SYSTEM" python3 "$SCRIPT_DIR/signal_model.py" --describe 2>/dev/null)
 [ -z "$SIGNAL_DESC" ] && SIGNAL_DESC="${EIDETIC_SIGNAL_CLAUDE_MODEL:-sonnet (default)}"
 note "Card extraction (session-end signals): $SIGNAL_DESC  (install choice .signal_model; runtime override EIDETIC_SIGNAL_CLAUDE_MODEL; codex fallback EIDETIC_SIGNAL_CODEX_MODEL)"
+# codex-only override: the Stop hook skips the Claude route entirely when
+# EIDETIC_SIGNAL_SKIP_CLAUDE is set. It usually lives in settings.json env (applied
+# by Claude Code sessions, not this shell), so check there too — otherwise the doctor
+# claims extraction runs on Claude while every real run uses codex.
+SKIP_CLAUDE="${EIDETIC_SIGNAL_SKIP_CLAUDE:-}"
+[ -z "$SKIP_CLAUDE" ] && SKIP_CLAUDE=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.claude/settings.json"))).get("env",{}).get("EIDETIC_SIGNAL_SKIP_CLAUDE",""))' 2>/dev/null || echo "")
+if [ -n "$SKIP_CLAUDE" ] && [ "$SKIP_CLAUDE" != "0" ]; then
+    CODEX_PIN="${EIDETIC_SIGNAL_CODEX_CLI_MODEL:-${EIDETIC_SIGNAL_CODEX_MODEL:-}}"
+    [ -z "$CODEX_PIN" ] && CODEX_PIN=$(python3 -c 'import json,os;e=json.load(open(os.path.expanduser("~/.claude/settings.json"))).get("env",{});print(e.get("EIDETIC_SIGNAL_CODEX_CLI_MODEL") or e.get("EIDETIC_SIGNAL_CODEX_MODEL") or "")' 2>/dev/null || echo "")
+    note "Card extraction OVERRIDE: codex-ONLY (EIDETIC_SIGNAL_SKIP_CLAUDE=$SKIP_CLAUDE — the Claude route above is disabled); codex model: ${CODEX_PIN:-codex default}"
+fi
 fi
 # Cross-lingual query translation: WIRED (opt-in, OFF by default). Show the
 # configured backend, which concrete backend resolves, and per-backend availability.
@@ -350,10 +367,12 @@ if [ -d "$VAULT" ]; then
         [ -f "$VAULT/HOME.md" ] && ok "HOME.md hub present" || warn "vault has no HOME.md hub" "re-run export-vault"
         echo "     → view in Obsidian: 'Open folder as vault' → $VAULT  (start at HOME.md)"
     else
-        bad "vault dir exists but is EMPTY ($VAULT)" "bash $EXPORT_SH"
+        warn "vault dir exists but is EMPTY ($VAULT)" "bash $EXPORT_SH"
     fi
 else
-    bad "NO vault/wiki at $VAULT — never generated" "bash $EXPORT_SH   (after you have memories)"
+    # The vault is an OPTIONAL human-facing projection — a fresh install has never
+    # generated one, and that must not flip the whole verdict to "broken".
+    note "no vault/wiki yet at $VAULT (optional Obsidian projection; recall does not need it) — generate with: bash $EXPORT_SH   (after you have memories)"
 fi
 
 # explicit "why no wiki?" diagnosis (the friend's exact symptom)

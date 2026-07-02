@@ -9,6 +9,7 @@ operator corpus changes.
 import argparse
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -55,6 +56,28 @@ CASES = [
 
 def confidence_at_least(actual, expected):
     return CONFIDENCE_ORDER.get(actual, 0) >= CONFIDENCE_ORDER[expected]
+
+
+def has_code_chunks(db_path):
+    """True when Eidetic's OWN code is present in the optional code index.
+
+    The generic positive cases all probe `--type code` against Eidetic's own
+    modules (drift_check.py, search_impl.py, ...). Without tree-sitter — or when
+    code_index ran over some other project but never over the memory system —
+    those chunks don't exist and the cases can only FAIL, which reads as "recall
+    is broken" when the real cause is a missing optional index. Gate on the
+    probes' own target files, not on "any code chunks somewhere".
+    """
+    try:
+        conn = sqlite3.connect(str(db_path))
+        count = conn.execute(
+            "SELECT COUNT(*) FROM memory_chunks WHERE type='code' AND "
+            "(path LIKE '%/drift_check.py' OR path LIKE '%/search_impl.py')"
+        ).fetchone()[0]
+        conn.close()
+        return count > 0
+    except sqlite3.Error:
+        return False
 
 
 def run_search(script_dir, db_path, case):
@@ -154,8 +177,19 @@ def main():
     script_dir = Path(__file__).resolve().parent
     cases = [case for case in CASES if not args.case or case["name"] == args.case]
 
+    code_indexed = has_code_chunks(db_path)
+    if not code_indexed:
+        print("note: Eidetic's own code is not in the code index — positive "
+              "`type: code` cases SKIP (optional: pip install tree-sitter "
+              "tree-sitter-python tree-sitter-javascript tree-sitter-bash, "
+              "then index.sh --full)")
+
     failed = 0
     for case in cases:
+        if (case.get("type") == "code" and not case.get("expect_no_confident")
+                and not code_indexed):
+            print(f"SKIP {case['name']}: code index absent (optional tree-sitter dep)")
+            continue
         try:
             results = run_search(script_dir, db_path, case)
             ok, detail = evaluate(case, results)

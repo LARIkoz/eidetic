@@ -91,7 +91,8 @@ fi
 if ls "$HOME/.claude/hooks/"*.bak >/dev/null 2>&1; then
     echo "✅ Hook backups present"
 else
-    echo "❌ No hook backups"
+    # A fresh install has no pre-existing hooks to back up — not a failure.
+    echo "⬜ No hook backups (none existed before install — OK on a fresh install)"
 fi
 
 if [ -f "$HOME/.claude/settings.json.pre-memory-system" ]; then
