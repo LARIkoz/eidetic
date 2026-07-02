@@ -2,6 +2,25 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.13.0 (2026-07-02)
+
+Reliability + honest-diagnostics release: everything found by a full self-audit of a clean install. No behavior changes to search/ranking.
+
+**Runtime defects fixed:**
+
+- **Hook timeouts were registered in milliseconds but Claude Code reads seconds.** `install.sh`/`update.sh` wrote `5000`/`180000` → effective ~83 min (SessionStart, session-blocking) / ~50 h (Stop) caps. Now `60`/`300` seconds; existing installs migrate automatically on their next update (both scripts update the hook entries in place).
+- **The plain `codex exec` extraction route had no timeout** — on a codex-only install (`EIDETIC_SIGNAL_SKIP_CLAUDE=1`) one network hang made the Stop hook immortal. Both invocations are now bounded by `EIDETIC_SIGNAL_CODEX_TIMEOUT` (default 120 s): coreutils `timeout` when present, else a pure-bash process-group watchdog (macOS ships no `timeout`). Live-verified: a hanging codex is killed at exactly the bound, no orphaned processes.
+- **Extracted signals were silently discarded when the runtime lock was busy** (two sessions ending together → one session's memories vanished after the LLM spend). `lock_runner.py` gains an opt-in `--busy-exit N`; the Stop hook now spools signals to `signals-spool/` on contention and drains the spool (oldest-first, cap 20, removed only after a successful compound) under the lock on the next session end.
+- **Compounding was effectively dead:** the dedup query was a strict FTS5 _phrase_ of up to 6 extracted keywords — non-contiguous in any real document, so it matched ~nothing and every signal became a new card. Now staged: phrase first (precise), then one implicit-AND retry of the top 4 keywords; deliberately no loose OR stage (false-compounding is worse than a new card). Covered by new `tests/test_compound_dedup.py`.
+- **`update.sh` installed unpinned GitHub HEAD into auto-executed hooks with no integrity check.** Now a full-history clone with a fast-forward-only guard (`merge-base --is-ancestor`): rewritten upstream history aborts loudly (override: `EIDETIC_UPDATE_FORCE=1`); updates are recorded on the op-log.
+
+**Honest diagnostics on stock installs (a fresh healthy install no longer looks broken):**
+
+- doctor: a never-generated Obsidian vault (an optional projection) no longer flips the verdict to "❌ broken"; the fastembed hint is Python-version-aware (the 0.8.0 pin has no wheel for `python3 <3.10` — the old hint prescribed an impossible `pip install`); the Models section now surfaces the codex-only extraction override (`EIDETIC_SIGNAL_SKIP_CLAUDE`, read from env or settings.json) instead of claiming Claude runs extraction.
+- health: "No hook backups" is expected on a fresh install — no longer an error.
+- recall_smoke: the generic `type: code` cases SKIP with the reason when Eidetic's own code is absent from the (optional tree-sitter) code index, instead of failing 3/4 and reading as broken recall.
+- MCP server: `serverInfo.version` now reports the installed version (was hardcoded `5.0.1`).
+
 ## v5.12.8 (2026-07-02)
 
 - **Privacy: context assembly no longer ships hardcoded personal rule clusters.** `assemble_context.py`'s `RULE_CLUSTERS` was a two-entry literal whose `summary` strings were injected verbatim into `~/.claude/rules/memory-context.md` as "ALWAYS APPLY" behavioral rules the moment ≥3 of a user's feedback cards matched the patterns — and those summaries carried the maintainer's private operating rules and account names, so every public install could surface another person's rules. `RULE_CLUSTERS` now **ships empty** and is loaded at runtime from an optional, git-ignored local config (`$EIDETIC_RULE_CLUSTERS`, else `<memory-system>/rule_clusters.json`). Absent or malformed → `[]`, so every feedback card is listed individually via the existing tiered path (P3 never-invisible is unchanged). Added `rule_clusters.json` to `.gitignore`.
