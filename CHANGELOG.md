@@ -2,6 +2,18 @@
 
 All notable changes to Eidetic are documented here.
 
+## vNEXT (unreleased — version assigned at the release gate)
+
+Public **Engine API v1.0** (`bin/engine.py`, `ENGINE_API 1.0`): the embedding /
+vector / search core behind memory and topic bases is now a versioned public
+seam. In-repo consumers (search, canary, coverage) migrated onto the door
+(dogfood); the first external reference consumer is a task-tracker search skill
+running on its own index. Reads degrade softly (search returns no hits with one
+reason when the model is absent), builds fail loudly (`EngineUnavailable`), and
+an embedder-drift guard voids stale cosines. Additive — no behavior or schema
+changes; `embed.py`/`rerank.py`/`index.sh`/storage are byte-identical and
+existing indexes stay valid.
+
 ## v5.13.1 (2026-07-03)
 
 Ranking-integrity release: causal fixes to drift-penalty ranking, the declared truth-maintenance slice, and the compounding write-path, from two adversarial audits (2026-07-02/03). The anti-goals were ranking POISON and SILENT duplication; every fix below closes one such path and is guarded by a regression test that fails on the reverted code.

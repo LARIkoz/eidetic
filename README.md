@@ -114,6 +114,27 @@ Don't memorize commands — hand your agent a ready prompt from **[docs/prompts.
 
 ---
 
+## Built on a reusable engine
+
+Eidetic's embedding / vector / search core is a versioned public seam — the
+**Engine API v1** (`bin/engine.py`). Memory, topic bases, and your own consumers
+build on the same door instead of the private internals.
+
+```
+  Personal memory   Topic bases   Your consumer      ← products
+          \______________ | ______________/
+                     bin/engine.py                   ← Engine API v1 (the door)
+                          |
+                   embed.py · rerank.py              ← private core
+```
+
+Reads degrade (search returns `[]` + one reason if the model is missing), builds
+shout (`EngineUnavailable`), and the contract is versioned (`ENGINE_API 1.0`).
+See [docs/engine.md](docs/engine.md) — quickstart, contract table, and the first
+external consumer (a task-tracker search skill on its own index).
+
+---
+
 ## How it works
 
 ```
