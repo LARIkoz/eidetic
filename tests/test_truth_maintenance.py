@@ -226,6 +226,42 @@ class TruthMaintenanceTest(unittest.TestCase):
         self.assertEqual(rows[files[1]], "",
                          "path-qualified target nuked a same-suffix card in another project")
 
+    def _status(self, conn, name):
+        return conn.execute(
+            "SELECT status FROM memory_chunks WHERE name = ?", (name,)
+        ).fetchone()[0]
+
+    def test_propagated_supersession_recomputes_derived_status_each_incremental(self):
+        # KEEP #4: DERIVED state (not just the relation columns) must recompute
+        # from CURRENT declarations on EVERY incremental reindex. A card
+        # superseded by ANOTHER card's `supersedes:` must have its derived
+        # `status` become 'superseded' incrementally, and revert to 'current'
+        # when the declaration is removed — clear-when-removed for derived state.
+        b = self._write("b-card.md", _card("b-card"))
+        a = self._write("a-card.md", _card("a-card", "supersedes: b-card"))
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, [a, b])
+        self.assertEqual(self._status(conn, "b-card"), "superseded",
+                         "propagated supersession did not update the derived status")
+
+        self._write("a-card.md", _card("a-card"))
+        bump = os.stat(a).st_mtime_ns + 10**9  # deterministic mtime change
+        os.utime(a, ns=(bump, bump))
+        index_impl.run_incremental(conn, [a, b])
+        self.assertEqual(self._status(conn, "b-card"), "current",
+                         "derived status stayed 'superseded' after the declaration was removed")
+        conn.close()
+
+    def test_propagation_never_overrides_explicit_status(self):
+        # An explicit `status:` must survive propagated supersession — derived
+        # recompute must respect the (project-authored) explicit value.
+        b = self._write("b-card.md", _card("b-card", "status: archived"))
+        a = self._write("a-card.md", _card("a-card", "supersedes: b-card"))
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, [a, b])
+        self.assertEqual(self._status(conn, "b-card"), "archived")
+        conn.close()
+
     def test_low_trust_declarer_cannot_downrank_user_explicit_target(self):
         # Authority gate: an agent-extracted card contradicting a NEWER-tier
         # user-explicit card must not apply the 0.4x penalty — the claim is
