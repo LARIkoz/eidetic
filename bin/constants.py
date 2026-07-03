@@ -57,9 +57,17 @@ MEMORY_CHUNK_MIGRATIONS = {
     # when the declarer disappears.
     "superseded_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN superseded_by_explicit TEXT DEFAULT ''",
     "contradicted_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by_explicit TEXT DEFAULT ''",
+    # The card's OWN frontmatter `status:` (lower-cased/stripped, '' if none).
+    # The `status` column is DERIVED — 'superseded' whenever the effective
+    # superseded_by (own OR propagated from another card's `supersedes:`) is set,
+    # else the explicit status, else 'current'. Storing the explicit value lets
+    # propagation recompute the derived status each reindex WITHOUT clobbering a
+    # project-authored status (archived/deprecated/…).
+    "status_explicit": "ALTER TABLE memory_chunks ADD COLUMN status_explicit TEXT DEFAULT ''",
 }
 
 # Columns whose ADDITION requires re-reading every file (the writer path only):
 # pre-upgrade rows cannot distinguish own-frontmatter values from previously
-# propagated ones, so the effective columns must be recomputed from source.
+# propagated ones, so the source values must be reloaded from the files.
 RELATION_EXPLICIT_COLUMNS = {"superseded_by_explicit", "contradicted_by_explicit"}
+FORCED_REREAD_ON_ADD = RELATION_EXPLICIT_COLUMNS | {"status_explicit"}

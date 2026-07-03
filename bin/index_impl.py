@@ -20,7 +20,7 @@ import time
 try:
     from constants import (
         EVIDENCE_WEIGHTS, SOURCE_WEIGHTS,
-        MEMORY_CHUNK_MIGRATIONS, RELATION_EXPLICIT_COLUMNS,
+        MEMORY_CHUNK_MIGRATIONS, RELATION_EXPLICIT_COLUMNS, FORCED_REREAD_ON_ADD,
     )
 except ImportError:
     EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
@@ -36,8 +36,10 @@ except ImportError:
         "contradicted_by": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by TEXT DEFAULT ''",
         "superseded_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN superseded_by_explicit TEXT DEFAULT ''",
         "contradicted_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by_explicit TEXT DEFAULT ''",
+        "status_explicit": "ALTER TABLE memory_chunks ADD COLUMN status_explicit TEXT DEFAULT ''",
     }
     RELATION_EXPLICIT_COLUMNS = {"superseded_by_explicit", "contradicted_by_explicit"}
+    FORCED_REREAD_ON_ADD = RELATION_EXPLICIT_COLUMNS | {"status_explicit"}
 
 DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory_chunks (
@@ -59,6 +61,7 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
     contradicted_by TEXT DEFAULT '',
     superseded_by_explicit TEXT DEFAULT '',
     contradicted_by_explicit TEXT DEFAULT '',
+    status_explicit TEXT DEFAULT '',
     section_heading TEXT,
     content TEXT NOT NULL,
     description TEXT,
@@ -356,7 +359,7 @@ def migrate_schema(conn):
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
-    if added & RELATION_EXPLICIT_COLUMNS:
+    if added & FORCED_REREAD_ON_ADD:
         # One-time forced re-read: invalidate stored mtimes (keep the rows so
         # deleted-file cleanup still works) so the next incremental run reloads
         # every file and fills the *_explicit columns from real frontmatter.
@@ -570,16 +573,17 @@ def index_file(conn, filepath, meta, body):
                (path, project, name, type, evidence, source, confidence,
                 last_verified, card_kind, status, area, supersedes,
                 superseded_by, contradicts, contradicted_by,
-                superseded_by_explicit, contradicted_by_explicit,
+                superseded_by_explicit, contradicted_by_explicit, status_explicit,
                 section_heading, content, description, mtime)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 filepath, project, meta["name"], meta["type"],
                 meta["evidence"], meta["source"], meta["confidence"],
                 meta["last_verified"], card_kind, status, area,
                 meta["supersedes"], meta["superseded_by"],
                 meta["contradicts"], meta["contradicted_by"],
-                meta["superseded_by"], meta["contradicted_by"], heading,
+                meta["superseded_by"], meta["contradicted_by"],
+                (meta.get("status") or "").strip().lower(), heading,
                 content, meta["description"], mtime,
             ),
         )
@@ -670,14 +674,14 @@ def compute_relation_state(conn):
     rows = conn.execute("""
         SELECT DISTINCT path, project, name, source, evidence, mtime,
                supersedes, contradicts,
-               superseded_by_explicit, contradicted_by_explicit
+               superseded_by_explicit, contradicted_by_explicit, status_explicit
         FROM memory_chunks
     """).fetchall()
 
     cards = {}
     by_key = {}
     for (path, project, name, source, evidence, mtime,
-         supersedes, contradicts, sup_explicit, con_explicit) in rows:
+         supersedes, contradicts, sup_explicit, con_explicit, status_explicit) in rows:
         cards[path] = {
             "project": project or "",
             "name": name or "",
@@ -688,6 +692,7 @@ def compute_relation_state(conn):
             "contradicts": contradicts or "",
             "superseded_by_explicit": (sup_explicit or "").strip(),
             "contradicted_by_explicit": (con_explicit or "").strip(),
+            "status_explicit": (status_explicit or "").strip().lower(),
         }
         stem = os.path.basename(_path_sans_md(path))
         by_key.setdefault((project or "", stem.casefold()), set()).add(path)
@@ -742,6 +747,17 @@ def compute_relation_state(conn):
         for column in ("superseded_by", "contradicted_by"):
             explicit = card[column + "_explicit"]
             updates[(path, column)] = explicit or ", ".join(sorted(desired[path][column]))
+        # DERIVED status recompute (clear-when-removed): a card whose EFFECTIVE
+        # superseded_by (own OR another card's propagated `supersedes:`) is set
+        # is 'superseded'; else its explicit frontmatter status; else 'current'.
+        # Mirrors infer_status but folds in the PROPAGATED supersession the
+        # index-time pass could not see, and reverts to 'current' the moment the
+        # declaration is removed. An explicit status always wins (never clobbered).
+        effective_superseded_by = updates[(path, "superseded_by")]
+        updates[(path, "status")] = (
+            card["status_explicit"]
+            or ("superseded" if effective_superseded_by else "current")
+        )
     return updates, unresolved, gated
 
 
