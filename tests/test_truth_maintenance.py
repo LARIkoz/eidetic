@@ -300,6 +300,69 @@ class TruthMaintenanceTest(unittest.TestCase):
         self.assertEqual(row[1], "superseded",
                          "explicit 'status: current' wrongly defeated the propagated supersession")
 
+    def test_propagated_relations_do_not_reindex_every_incremental(self):
+        # audit NEW-1: a store using PROPAGATED supersedes:/contradicts: (no
+        # explicit frontmatter relation values) must NOT re-index every
+        # incremental. The old self-heal keyed on "explicit empty while the
+        # effective column is set" — the LEGITIMATE steady state for propagation
+        # — so it forced a full re-read every run and churned ALL chunk rowids
+        # (vector-alignment thrash). Each incremental re-inits, like a fresh
+        # process / SessionStart hook.
+        # Targets first, declarers last, so the declarers are NEWER (mtime) and
+        # the authority gate lets the supersession/contradiction propagate.
+        b = self._write("b-card.md", _card("b-card"))
+        d = self._write("d-card.md", _card("d-card"))
+        a = self._write("a-card.md", _card("a-card", "supersedes: b-card"))
+        c = self._write("c-card.md", _card("c-card", "contradicts: d-card"))
+        files = [a, b, c, d]
+
+        def incr():
+            conn = index_impl.init_db(self.db)
+            indexed, skipped, _removed = index_impl.run_incremental(conn, files)
+            ids = dict(conn.execute("SELECT path, id FROM memory_chunks").fetchall())
+            prop = conn.execute(
+                "SELECT superseded_by, superseded_by_explicit "
+                "FROM memory_chunks WHERE name='b-card'"
+            ).fetchone()
+            conn.close()
+            return indexed, skipped, ids, prop
+
+        _i1, _s1, ids1, _ = incr()
+        i2, s2, ids2, prop = incr()
+
+        # b-card is superseded BY PROPAGATION with an empty explicit value — the
+        # exact condition the old heuristic mis-read as "back-fill incomplete".
+        self.assertEqual(tuple(prop), ("a-card", ""))
+        # The second incremental must skip everything, not re-index.
+        self.assertEqual(i2, 0,
+                         "propagated relations forced a full re-index every incremental (NEW-1)")
+        self.assertEqual(s2, len(files))
+        # Chunk rowids must be STABLE across the no-op incremental — a re-index
+        # is DELETE+INSERT, which moves ids and misaligns vectors.db.
+        self.assertEqual(ids1, ids2, "chunk rowids churned across a no-op incremental (NEW-1)")
+
+    def test_derived_status_priority_demotion_over_supersession_over_promotion(self):
+        # audit NEW-2: authoritative-demotion > propagated-supersession >
+        # explicit-promotion/custom > default.
+        files = [
+            # explicit promotion + supersession → supersession wins.
+            self._write("t-validated.md", _card("t-validated", "status: validated")),
+            self._write("sup-validated.md", _card("sup-validated", "supersedes: t-validated")),
+            # explicit demotion + supersession → demotion stays.
+            self._write("t-archived.md", _card("t-archived", "status: archived")),
+            self._write("sup-archived.md", _card("sup-archived", "supersedes: t-archived")),
+            # explicit custom, no supersession → custom kept.
+            self._write("t-wip.md", _card("t-wip", "status: wip")),
+        ]
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, files)
+        self.assertEqual(self._status(conn, "t-validated"), "superseded",
+                         "explicit promotion masked a propagated supersession (NEW-2)")
+        self.assertEqual(self._status(conn, "t-archived"), "archived",
+                         "propagated supersession wrongly overrode a stronger explicit demotion")
+        self.assertEqual(self._status(conn, "t-wip"), "wip")
+        conn.close()
+
     def test_propagation_never_overrides_explicit_status(self):
         # An explicit `status:` must survive propagated supersession — derived
         # recompute must respect the (project-authored) explicit value.

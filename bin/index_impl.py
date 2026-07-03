@@ -97,7 +97,29 @@ CREATE TABLE IF NOT EXISTS index_meta (
     path TEXT PRIMARY KEY,
     mtime INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 """
+
+# Durable stamp (NEW-1): written once the writer-back-fill file re-read has run,
+# so the one-time *_explicit/status_explicit back-fill fires EXACTLY once and
+# never again. The old content heuristic keyed on "back-fill column empty while
+# the effective column is set" — but that is the LEGITIMATE steady state for a
+# card superseded/contradicted BY PROPAGATION (own *_explicit empty), so it
+# re-indexed every file on every incremental (rowid churn / vector thrash).
+BACKFILL_STAMP_KEY = "backfill_v6"
+
+# Explicit statuses that demote AT LEAST as hard as a propagated supersession
+# (status weight <= superseded's 0.35). Only these override a propagated
+# supersession in the derived `status` column — so an explicit `archived` stays
+# archived, but an explicit PROMOTION/custom (validated / active / wip / …) or
+# the default (current/'') yields to the supersession (NEW-2). Ordering:
+# authoritative-demotion > propagated-supersession > explicit-promotion/custom
+# > default 'current'.
+DEMOTION_STATUSES_GE_SUPERSEDED = {"superseded", "deprecated", "obsolete", "archived"}
 
 BASE_SCAN_DIRS = [
     os.path.expanduser("~/.claude/projects/*/memory/"),
@@ -372,66 +394,61 @@ def infer_area(meta, filepath, project):
     return project or ""
 
 
-def _backfill_incomplete(conn):
-    """Self-healing detector (audit F1(b)): a writer-back-fill column exists but
-    was never populated from frontmatter, yet its source signal is present.
+def _ensure_schema_meta(conn):
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT)"
+    )
 
-    Back-fill normally fires when the WRITER adds the column (added &
-    FORCED_REREAD_ON_ADD). But if some other path already created the column with
-    DEFAULT '' (e.g. an older build, an interrupted migration), add-detection
-    misses it and propagation would recompute derived state as if the frontmatter
-    were empty — erasing deliberate demotions. So ALSO force a re-read when a
-    back-fill column is empty on EVERY row while its source is non-empty
-    somewhere. Idempotent: the `status: archived`/`superseded` signals below
-    back-fill to a non-empty value on the re-read, so this never loops.
+
+def backfill_stamp_present(conn):
+    """True once the writer-back-fill file re-read has completed (durable stamp).
+
+    This is the ONLY signal that gates the one-time *_explicit/status_explicit
+    back-fill (NEW-1). It must never be inferred from column contents: a card
+    superseded/contradicted BY PROPAGATION legitimately has an empty *_explicit
+    while its effective column is set, so a content heuristic would fire forever.
     """
     try:
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
+        row = conn.execute(
+            "SELECT value FROM schema_meta WHERE key = ?", (BACKFILL_STAMP_KEY,)
+        ).fetchone()
     except sqlite3.OperationalError:
         return False
-    # (back-fill column, predicate for "this row had an authoritative source"):
-    # status_explicit is loop-safe on statuses that CANNOT be derived — only an
-    # explicit frontmatter status yields anything other than ''/current/superseded.
-    checks = [
-        ("status_explicit", "IFNULL(status,'') NOT IN ('', 'current', 'superseded')"),
-        ("superseded_by_explicit", "IFNULL(superseded_by,'') != ''"),
-        ("contradicted_by_explicit", "IFNULL(contradicted_by,'') != ''"),
-    ]
-    for backfill_col, source_pred in checks:
-        if backfill_col not in cols:
-            continue
-        try:
-            filled, sourced = conn.execute(
-                f"SELECT "
-                f"  SUM(CASE WHEN IFNULL({backfill_col},'') != '' THEN 1 ELSE 0 END), "
-                f"  SUM(CASE WHEN {source_pred} THEN 1 ELSE 0 END) "
-                f"FROM memory_chunks"
-            ).fetchone()
-        except sqlite3.OperationalError:
-            continue
-        if (filled or 0) == 0 and (sourced or 0) > 0:
-            return True
-    return False
+    return bool(row and row[0] == "done")
+
+
+def set_backfill_stamp(conn):
+    """Record that the back-fill re-read ran, so it never fires again. Called at
+    the END of a writer run (run_incremental / run_full), after every file has
+    been read and *_explicit/status_explicit populated from frontmatter."""
+    try:
+        _ensure_schema_meta(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta(key, value) VALUES(?, 'done')",
+            (BACKFILL_STAMP_KEY,),
+        )
+    except sqlite3.OperationalError:
+        pass
 
 
 def migrate_schema(conn):
     """Add v2.6 columns to existing derived DBs."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
-    added = set()
     for column, statement in DERIVED_COLUMNS.items():
         if column not in existing:
             try:
                 conn.execute(statement)
-                added.add(column)
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
-    # Force a one-time file re-read when a back-fill column was just added by the
-    # writer, OR (self-healing, F1(b)) when a pre-existing back-fill column was
-    # never populated. Either way, invalidate stored mtimes (keep the rows so
-    # deleted-file cleanup still works) so the next incremental reloads every
-    # file and fills *_explicit/status_explicit from real frontmatter.
-    if (added & FORCED_REREAD_ON_ADD) or _backfill_incomplete(conn):
+    _ensure_schema_meta(conn)
+    # One-time forced re-read to back-fill *_explicit/status_explicit from real
+    # frontmatter (a legacy or reader-upgraded DB has them empty). Gated SOLELY
+    # by the durable stamp (NEW-1): when it is absent we invalidate stored mtimes
+    # so the next incremental reloads every file; set_backfill_stamp() then marks
+    # it done at the end of that writer run, so it fires exactly once — never on
+    # a store whose *_explicit are correctly empty because relations propagate.
+    if not backfill_stamp_present(conn):
         try:
             conn.execute("UPDATE index_meta SET mtime = -1")
         except sqlite3.OperationalError:
@@ -819,22 +836,28 @@ def compute_relation_state(conn):
         for column in ("superseded_by", "contradicted_by"):
             explicit = card[column + "_explicit"]
             updates[(path, column)] = explicit or ", ".join(sorted(desired[path][column]))
-        # DERIVED status recompute (clear-when-removed): a card whose EFFECTIVE
-        # superseded_by (own OR another card's propagated `supersedes:`) is set
-        # is 'superseded'; else its AUTHORITATIVE explicit frontmatter status;
-        # else 'current'. Folds in the PROPAGATED supersession the index-time
-        # pass could not see, and reverts to 'current' when the declaration is
-        # removed. Audit F4: literal `status: current` (and empty) is the
-        # NON-authoritative default and must NOT block a propagated supersession
-        # — only an explicit demotion/promotion (superseded/archived/deprecated/
-        # resolved/validated/…) overrides the derived value.
+        # DERIVED status recompute (clear-when-removed), with a strict priority
+        # order (audit F4 + NEW-2):
+        #   1. an explicit AUTHORITATIVE DEMOTION (archived/deprecated/obsolete/
+        #      superseded — weight <= superseded's) wins: archived stays archived;
+        #   2. else a set EFFECTIVE superseded_by (own OR propagated from another
+        #      card's `supersedes:`) → 'superseded' — so `status: current`
+        #      (F4) AND an explicit PROMOTION/custom (validated/active/wip, NEW-2)
+        #      no longer mask a real supersession in the derived column;
+        #   3. else an explicit non-default status (promotion/custom) is kept;
+        #   4. else 'current'. Reverts to (3)/'current' when the declaration is
+        #      removed.
         explicit_status = card["status_explicit"]
-        authoritative_status = explicit_status if explicit_status not in ("", "current") else ""
         effective_superseded_by = updates[(path, "superseded_by")]
-        updates[(path, "status")] = (
-            authoritative_status
-            or ("superseded" if effective_superseded_by else "current")
-        )
+        if explicit_status in DEMOTION_STATUSES_GE_SUPERSEDED:
+            derived_status = explicit_status
+        elif effective_superseded_by:
+            derived_status = "superseded"
+        elif explicit_status and explicit_status != "current":
+            derived_status = explicit_status
+        else:
+            derived_status = "current"
+        updates[(path, "status")] = derived_status
     return updates, unresolved, gated
 
 
@@ -911,6 +934,10 @@ def run_full(conn, files):
                 print(f"WARN: skip {filepath}: {e}", file=sys.stderr)
         tmp_conn.commit()
         propagate_declared_relations(tmp_conn)
+        # --full honestly re-read every file, so *_explicit/status_explicit are
+        # correct — stamp the back-fill as done so incrementals never re-heal.
+        set_backfill_stamp(tmp_conn)
+        tmp_conn.commit()
         tmp_conn.close()
 
         conn.close()
@@ -968,6 +995,12 @@ def run_incremental(conn, files):
 
     conn.commit()
     propagate_declared_relations(conn)
+    # The back-fill re-read (if migrate_schema forced one) has now run for every
+    # file, so *_explicit/status_explicit are populated — stamp it done so the
+    # next migrate_schema does NOT force a re-read again (NEW-1: no perpetual
+    # re-index on stores that use propagated relations).
+    set_backfill_stamp(conn)
+    conn.commit()
     if force_backfill:
         print("Lifecycle metadata backfill: reindexed existing memory files")
     return indexed, skipped, removed
