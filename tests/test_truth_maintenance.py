@@ -160,6 +160,17 @@ class TruthMaintenanceTest(unittest.TestCase):
         conn.close()
         self.assertEqual(row[0], "hand-set")
 
+    def test_unknown_source_defaults_to_conservative_half_weight(self):
+        # audit F7: an unknown/misspelled source: must rank at 0.5 (like the
+        # authority gate), not full 1.0. Two identical cards differing only in
+        # source → the typo'd one ranks at exactly half.
+        self._index([
+            ("known.md", _card("known", source="user-explicit")),
+            ("typo.md", _card("typo", source="bogus-typo-source")),
+        ])
+        scores = self._scores()
+        self.assertAlmostEqual(scores["typo"], scores["known"] * 0.5, places=3)
+
     def test_split_relation_targets(self):
         self.assertEqual(
             index_impl._split_relation_targets('[[a-card]], "b-card" , c'),

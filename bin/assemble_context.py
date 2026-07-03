@@ -169,7 +169,9 @@ def status_weight(status, superseded_by=""):
 
 def compound_weight(evidence, source, last_verified, drift_penalty=None, status="current", superseded_by=""):
     ev = EVIDENCE_WEIGHTS.get(evidence, 0.7)
-    src = SOURCE_WEIGHTS.get(source, 1.0)
+    # Unknown source → conservative 0.5, consistent with search ranking + the
+    # authority gate (audit F7); 1.0 wrongly trusted a typo'd source as full.
+    src = SOURCE_WEIGHTS.get(source, 0.5)
     st = status_weight(status, superseded_by)
     fr = 0.7
     if last_verified:

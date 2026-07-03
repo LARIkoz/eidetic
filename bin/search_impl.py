@@ -799,7 +799,11 @@ def _run_query(db_path, query, limit, type_filter, warn=False):
         results = []
         for row, strategy, match_quality in rows:
             ev_w = EVIDENCE_WEIGHTS.get(row["evidence"], 0.7)
-            src_w = SOURCE_WEIGHTS.get(row["source"], 1.0)
+            # Unknown/misspelled source → conservative 0.5, CONSISTENT with the
+            # authority gate (index_impl._declarer_outranks) and the vector path
+            # below. Defaulting to 1.0 let a typo'd source rank as user-explicit
+            # while the gate treated it as mid-tier (audit F7).
+            src_w = SOURCE_WEIGHTS.get(row["source"], 0.5)
             status_w = compute_status_weight(row["status"], row["superseded_by"])
             drift_info = drift_data.get(row["path"], {})
             dp = drift_info.get("penalty")
