@@ -93,13 +93,15 @@ class EvidenceApiTest(unittest.TestCase):
 
     def test_append_refused_under_lock(self):
         import fcntl
-        lock = open(self.card + ".evlock", "w")
+        # Hold the SAME persistent lock file append_event uses (NEW-1: it lives in
+        # the shared temp lock dir, keyed by the card's path — not next to it).
+        lock_path = evidence._lock_path_for(self.card)
+        lock = open(lock_path, "a")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
             self.assertFalse(evidence.observed(self.card), "must not write while another holds the lock")
         finally:
-            lock.close()
-            os.unlink(self.card + ".evlock")
+            lock.close()  # release; the persistent lock file is intentionally left
 
 
 class ObservedWiringTest(unittest.TestCase):

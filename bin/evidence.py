@@ -18,12 +18,32 @@ Nothing here is public API; it is an internal v6 rail.
 """
 
 import fcntl
+import hashlib
 import os
 import re
 import sys
 import tempfile
 import time
 from datetime import datetime
+
+# A shared lock dir in the system temp — the per-card lock file lives HERE, not
+# next to the card, so it is never corpus litter and is never indexed.
+_LOCK_DIR = os.path.join(tempfile.gettempdir(), "eidetic-evlocks")
+
+
+def _lock_path_for(card_path):
+    """A STABLE, PERSISTENT lock-file path for a card (audit NEW-1), keyed by its
+    absolute path. Never unlinked: unlinking recreated the inode per open() and
+    let a post-unlink opener flock a FRESH inode concurrently with a holder of
+    the old one → a lost update under contention. A persistent path = one inode
+    = true mutual exclusion; flock still auto-releases on close/process death, so
+    a killed writer never leaves a stale lock (recoverable, no deadlock)."""
+    try:
+        os.makedirs(_LOCK_DIR, exist_ok=True)
+        key = hashlib.sha1(os.path.abspath(card_path).encode("utf-8")).hexdigest()
+        return os.path.join(_LOCK_DIR, key + ".lock")
+    except OSError:  # pragma: no cover — temp unavailable; still flock-correct
+        return card_path + ".evlock"
 
 # Bounded retry/backoff so contended appends are LOSSLESS (audit F1b) rather than
 # busy-exit-dropped: a handful of concurrent session-end / drift writers all
@@ -150,14 +170,15 @@ def append_event(card_path, event_type, actor=None, session_id=None, note="",
     ts = ts or datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     line = format_line(event_type, actor, ts, session_id=session_id, delta=delta, note=note)
 
-    lock_path = card_path + ".evlock"
+    lock_path = _lock_path_for(card_path)
     lock_fd = None
-    acquired = False
     try:
-        lock_fd = open(lock_path, "w")
-        acquired = _acquire_under_retry(lock_fd)
-        if not acquired:
-            return False  # a stuck holder — lossless within the retry budget
+        # PERSISTENT lock file (never unlinked) at a stable path → one inode →
+        # TRUE mutual exclusion (audit NEW-1). "a" doesn't truncate a concurrent
+        # holder's file. flock still auto-releases on close/process death.
+        lock_fd = open(lock_path, "a")
+        if not _acquire_under_retry(lock_fd):
+            return False  # a stuck holder — bounded wait, no lost line under it
         with open(card_path, "r", encoding="utf-8") as f:
             content = f.read()
         new_content = _insert_into_evidence(content, line)
@@ -173,14 +194,7 @@ def append_event(card_path, event_type, actor=None, session_id=None, note="",
         return False
     finally:
         if lock_fd is not None:
-            lock_fd.close()
-        # Only remove the lock file if WE held it — never delete a lock another
-        # writer currently owns (that would break mutual exclusion under contention).
-        if acquired:
-            try:
-                os.unlink(lock_path)
-            except OSError:
-                pass
+            lock_fd.close()  # release the flock; the lock FILE persists (NEW-1)
 
 
 # --- typed emitters (deterministic tier + Δ; the writer-path entry points) ----
