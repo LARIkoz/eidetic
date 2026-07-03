@@ -15,11 +15,13 @@ import unittest
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bin"))
+sys.path.insert(0, os.path.dirname(__file__))  # so the sibling helper imports under any runner
 
 import assemble_context as ac  # noqa: E402
 import confidence as C  # noqa: E402
 import index_impl  # noqa: E402
 import search_impl as si  # noqa: E402
+from test_ci_both_modes import both_modes  # noqa: E402  (§9.1 mode-sensitivity tag)
 
 FRESH = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
 BODY = "The flarnpuzzle rotation policy requires daily rotation of keys."
@@ -42,6 +44,7 @@ metadata:
 {ev}"""
 
 
+@both_modes
 class ConfidenceRankingTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="eidetic-1bd-")
