@@ -30,19 +30,72 @@ DB_PATH = os.path.join(MEMORY_SYSTEM, "db", "index.db")
 TODAY = datetime.now().strftime("%Y-%m-%d")
 
 
+# Threshold fallback (stage 3): >= COMPOUND overlapping salient keywords on
+# one card → compound into it; exactly FLAG → too ambiguous to auto-compound,
+# but too close to silently duplicate — log "possible duplicate of <card>"
+# and still create the new file. Below FLAG → genuinely new topic.
+OVERLAP_COMPOUND_MIN = 3
+OVERLAP_FLAG_MIN = 2
+VECTOR_GATE_MIN_SIM = 0.60
+
+
+def _sanitize_words(query):
+    if not isinstance(query, str):
+        query = " ".join(query)
+    sanitized = re.sub(r'[*()\[\]{}^~:+\-]', ' ', query)
+    sanitized = sanitized.replace('"', '""')
+    return [w for w in sanitized.split() if len(w) > 2 and w.upper() not in ("AND", "OR", "NOT", "NEAR")]
+
+
+def _keyword_paths(conn, word, limit=200):
+    """Distinct card paths matching ONE keyword (FTS porter stemming applies,
+    so `performing` finds a card that says `performs`)."""
+    try:
+        rows = conn.execute("""
+            SELECT DISTINCT c.path
+            FROM memory_fts
+            JOIN memory_chunks c ON memory_fts.rowid = c.id
+            WHERE memory_fts MATCH ?
+            LIMIT ?
+        """, ('"' + word + '"', limit)).fetchall()
+    except sqlite3.OperationalError:
+        return set()
+    return {r[0] for r in rows}
+
+
+def _salient_words(conn, words):
+    """Order keywords by salience: rarest-in-corpus first (document frequency
+    via the porter-stemmed FTS index), longer word on ties, signal order last.
+
+    v5.13.0 used the FIRST 4 keywords in signal order, so a paraphrase that
+    swapped one early word silently duplicated (audit probe E2C). Keywords the
+    corpus has never seen (df=0) are dropped — they carry no matching power
+    and would sabotage every AND query.
+
+    Returns [(word, matching_paths), ...] most-salient first.
+    """
+    scored = []
+    for position, word in enumerate(words):
+        paths = _keyword_paths(conn, word)
+        if not paths:
+            continue
+        scored.append((len(paths), -len(word), position, word, paths))
+    scored.sort(key=lambda t: (t[0], t[1], t[2]))
+    return [(word, paths) for _df, _neglen, _pos, word, paths in scored]
+
+
 def search_fts5(conn, query, limit=3):
     """Search FTS5 for existing memory on same topic.
 
     Staged match: the strict phrase of up to 6 keywords first (cheap, precise),
-    then ONE retry as an implicit AND of the top 4 keywords. Extracted keywords
-    are almost never contiguous in a real document, so the phrase-only query
-    matched ~nothing and every signal became a new card instead of compounding.
+    then ONE retry as an implicit AND of the top 4 SALIENT keywords (rarest in
+    corpus first — not first-in-signal-order, which was paraphrase-fragile).
     Deliberately NO loose OR stage — false-compounding a signal into an
-    unrelated card is worse than creating a new card.
+    unrelated card is worse than creating a new card; partial overlap is
+    handled by find_overlap_candidate(), which compounds only above a strict
+    threshold and otherwise merely FLAGS.
     """
-    sanitized = re.sub(r'[*()\[\]{}^~:+\-]', ' ', query)
-    sanitized = sanitized.replace('"', '""')
-    words = [w for w in sanitized.split() if len(w) > 2 and w.upper() not in ("AND", "OR", "NOT", "NEAR")]
+    words = _sanitize_words(query)
     if not words:
         return []
 
@@ -63,22 +116,118 @@ def search_fts5(conn, query, limit=3):
     rows = run_match('"' + " ".join(words[:6]) + '"')
     if rows:
         return rows
+    salient = _salient_words(conn, words)
+    if len(salient) < 4:
+        # An AND of fewer than 4 terms is too weak a topic signature to
+        # auto-compound on; leave it to the thresholded fallback.
+        return []
     # FTS5 space-separated terms = implicit AND; input is sanitized above.
-    return run_match(" ".join(words[:4]))
+    return run_match(" ".join(w for w, _paths in salient[:4]))
+
+
+def _vector_gate(signal_text, candidate_text):
+    """Optional semantic guard for the threshold fallback.
+
+    True/False = vectors judged the pair; None = vectors unavailable (no
+    vectors.db / no fastembed — the FTS-only default), caller proceeds on
+    the lexical threshold alone. Never raises.
+    """
+    vector_db = DB_PATH.replace("index.db", "vectors.db")
+    if not os.path.exists(vector_db):
+        return None
+    try:
+        import struct
+
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import embed
+        blobs = embed.embed_texts([signal_text[:2000], candidate_text[:2000]])
+        if not blobs or len(blobs) < 2:
+            return None
+        vecs = [struct.unpack(f"{len(b) // 4}f", b) for b in blobs]
+        dot = sum(x * y for x, y in zip(vecs[0], vecs[1]))
+        norms = [sum(x * x for x in v) ** 0.5 for v in vecs]
+        if not all(norms):
+            return None
+        return (dot / (norms[0] * norms[1])) >= VECTOR_GATE_MIN_SIM
+    except Exception:
+        return None
+
+
+def find_overlap_candidate(conn, query, signal_text):
+    """Stage-3 thresholded fallback after phrase + AND both missed.
+
+    Counts how many of the top-6 salient keywords individually hit the same
+    card (porter stemming absorbs inflection: performs/performing). Returns:
+      ("compound", rows)  — >= OVERLAP_COMPOUND_MIN keywords converge on one
+                            card (and the vector gate, when available, agrees);
+      ("flag", path)      — OVERLAP_FLAG_MIN keywords: possible duplicate,
+                            surface it instead of silently creating a file;
+      (None, None)        — genuinely new topic.
+    """
+    words = _sanitize_words(query)
+    salient = _salient_words(conn, words)[:6]
+    if not salient:
+        return None, None
+
+    counts = {}
+    for _word, paths in salient:
+        for path in paths:
+            if is_compound_candidate(path):
+                counts[path] = counts.get(path, 0) + 1
+    if not counts:
+        return None, None
+
+    best_path, best_count = max(counts.items(), key=lambda kv: (kv[1], kv[0]))
+    if best_count < OVERLAP_FLAG_MIN:
+        return None, None
+
+    if best_count >= OVERLAP_COMPOUND_MIN:
+        rows = conn.execute("""
+            SELECT path, name, section_heading, content, 0 AS fts_rank
+            FROM memory_chunks WHERE path = ? LIMIT 1
+        """, (best_path,)).fetchall()
+        if rows:
+            gate = _vector_gate(signal_text, rows[0][3] or "")
+            if gate is not False:
+                return "compound", rows
+        return "flag", best_path
+
+    return "flag", best_path
 
 
 def extract_keywords(signal_text):
-    """Extract meaningful keywords from a signal for FTS5 search."""
+    """Extract meaningful keywords from a signal for FTS5 search.
+
+    Returns the stopword-filtered keywords in signal order (the phrase stage
+    needs original order); when over the cap, the LONGEST words are kept
+    (local salience). Corpus-rarity ordering happens in _salient_words, where
+    the index is available.
+    """
     words = re.findall(r'\b[a-zA-Z_-]{4,}\b', signal_text)
     stopwords = {
         "that", "this", "with", "from", "have", "been", "were", "will",
         "would", "could", "should", "about", "their", "which", "when",
         "what", "more", "than", "very", "also", "just", "into", "only",
         "other", "some", "such", "because", "before", "after", "made",
+        "then", "them", "they", "there", "these", "those", "where",
+        "while", "during", "using", "does", "each", "both", "same",
+        "being", "much", "many", "most", "must", "over", "under",
+        "between", "through", "against", "without", "within", "instead",
+        "every", "several", "always", "never", "still",
         "decision", "rule", "worked", "failed", "knowledge",
     }
-    keywords = [w for w in words if w.lower() not in stopwords]
-    return " ".join(keywords[:10])
+    keywords = []
+    seen = set()
+    for w in words:
+        lw = w.lower()
+        if lw in stopwords or lw in seen:
+            continue
+        seen.add(lw)
+        keywords.append(w)
+    if len(keywords) > 10:
+        keep = set(sorted(keywords, key=len, reverse=True)[:10])
+        keywords = [w for w in keywords if w in keep]
+    return " ".join(keywords)
 
 
 PROTECTED_TYPES = {"feedback", "user"}
@@ -270,6 +419,7 @@ def main():
 
     compounded = 0
     new_signals = []
+    flagged = []
 
     for signal in signals:
         keywords = extract_keywords(signal)
@@ -277,6 +427,12 @@ def main():
 
         if conn and keywords:
             results = search_fts5(conn, keywords, limit=3)
+            if not results:
+                action, payload = find_overlap_candidate(conn, keywords, signal)
+                if action == "compound":
+                    results = payload
+                elif action == "flag":
+                    flagged.append((payload, signal))
             for path, name, heading, content, rank in results:
                 if is_compound_candidate(path):
                     file_type = _get_file_type(path)
@@ -298,7 +454,12 @@ def main():
 
     total = compounded + len(new_signals)
     if total > 0:
-        print(f"Signals: {compounded} compounded, {len(new_signals)} new", file=sys.stderr)
+        summary = f"{compounded} compounded, {len(new_signals)} new"
+        if flagged:
+            summary += f", {len(flagged)} flagged"
+        print(f"Signals: {summary}", file=sys.stderr)
+        for dup_path, dup_signal in flagged:
+            print(f"possible duplicate of {dup_path}: {dup_signal[:80]}", file=sys.stderr)
         # Mirror onto the greppable op-log. Best-effort: never break the live
         # Stop-hook if oplog is missing or the log dir is unwritable.
         try:
@@ -306,9 +467,15 @@ def main():
             import oplog
             oplog.append_op(
                 "compound",
-                f"{compounded} compounded, {len(new_signals)} new",
+                summary,
                 project=cwd, count=total,
             )
+            for dup_path, dup_signal in flagged:
+                oplog.append_op(
+                    "compound-flag",
+                    f"possible duplicate of {dup_path}",
+                    project=cwd, detail=dup_signal[:200], count=1,
+                )
         except Exception:
             pass
 

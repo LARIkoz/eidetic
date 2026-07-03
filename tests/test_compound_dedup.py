@@ -4,8 +4,12 @@
 keywords. Keywords are non-contiguous in any real document, so the phrase
 almost never matched and every signal became a new card ("0 compounded, N new").
 Covers the staged match: phrase first (still wins when a contiguous phrase
-exists), then ONE retry as an implicit AND of the top 4 keywords; a clearly
-unrelated signal must still create a new card (no loose OR stage).
+exists), then ONE retry as an implicit AND of the top 4 SALIENT keywords
+(rarest-in-corpus, not first-in-signal-order); a clearly unrelated signal must
+still create a new card (no loose OR stage). The thresholded overlap fallback
+(find_overlap_candidate) covers the 2026-07-02 audit's E2C refutation: a
+paraphrase of an existing card must compound or be FLAGGED as a possible
+duplicate — never silently duplicate.
 unittest so it runs under `python3 -m unittest discover` + pytest.
 """
 
@@ -43,7 +47,8 @@ CREATE TABLE memory_chunks (
 CREATE VIRTUAL TABLE memory_fts USING fts5(
     name, description, section_heading, content,
     content='memory_chunks',
-    content_rowid='id'
+    content_rowid='id',
+    tokenize='porter unicode61'
 );
 CREATE TRIGGER memory_chunks_ai AFTER INSERT ON memory_chunks BEGIN
     INSERT INTO memory_fts(rowid, name, description, section_heading, content)
@@ -120,6 +125,71 @@ class CompoundDedupTest(unittest.TestCase):
         paths = [r[0] for r in rows]
         self.assertEqual(paths, [PHRASE_CARD[0]],
                          "a contiguous phrase match must return ONLY the phrase-stage rows")
+
+    def test_salient_and_stage_survives_an_early_word_swap(self):
+        # v5.13.0 took the FIRST 4 keywords in signal order; a swapped early
+        # content word broke the AND. Salience ordering (rarest-in-corpus)
+        # must still converge on the card.
+        rows = self._search(
+            "Decision: gradual approach kept the indexer on incremental rebuild "
+            "after switched vacuum schedule for sqlite"
+        )
+        self.assertTrue(rows)
+        self.assertEqual(rows[0][0], SCATTERED_CARD[0])
+
+
+class OverlapFallbackTest(unittest.TestCase):
+    """Stage 3 — audit E2C: paraphrases must compound or FLAG, never silently dup."""
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.executescript(SCHEMA)
+        path, name, content = SCATTERED_CARD
+        self.conn.execute(
+            "INSERT INTO memory_chunks (path, project, name, type, section_heading, content, description) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (path, "eidetic-test", name, "project", name, content, name),
+        )
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _fallback(self, signal):
+        keywords = compound.extract_keywords(signal)
+        self.assertEqual(compound.search_fts5(self.conn, keywords, limit=3), [],
+                         "fallback tests must exercise signals the AND stage misses")
+        return compound.find_overlap_candidate(self.conn, keywords, signal)
+
+    def test_audit_e2c_paraphrase_is_flagged_not_silent(self):
+        # The exact refutation probe from the 2026-07-02 audit: same topic,
+        # different words. Porter absorbs performing/performs; overlap = 2
+        # (perform, rebuild) → below the compound threshold, so it must be
+        # FLAGGED as a possible duplicate instead of silently duplicated.
+        action, payload = self._fallback(
+            "Knowledge: the reindex job now runs gradually instead of "
+            "performing a complete rebuild, avoiding database locks"
+        )
+        self.assertEqual(action, "flag")
+        self.assertEqual(payload, SCATTERED_CARD[0])
+
+    def test_close_paraphrase_compounds_via_threshold(self):
+        # 3 salient keywords (indexer, performs→perform, rebuilds→rebuild)
+        # converge on the card → >= OVERLAP_COMPOUND_MIN → compound.
+        action, payload = self._fallback(
+            "Knowledge: the indexer performs rebuilds gradually now, "
+            "avoiding database locks entirely"
+        )
+        self.assertEqual(action, "compound")
+        self.assertEqual(payload[0][0], SCATTERED_CARD[0])
+
+    def test_unrelated_signal_neither_compounds_nor_flags(self):
+        action, payload = self._fallback(
+            "Failed: kubernetes ingress certificate renewal timed out waiting "
+            "for the letsencrypt responder"
+        )
+        self.assertIsNone(action)
+        self.assertIsNone(payload)
 
 
 if __name__ == "__main__":
