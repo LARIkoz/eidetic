@@ -167,7 +167,30 @@ def status_weight(status, superseded_by=""):
     return STATUS_WEIGHTS.get(normalized, 1.0)
 
 
-def compound_weight(evidence, source, last_verified, drift_penalty=None, status="current", superseded_by=""):
+# STEP 1B confidence lifecycle (pure algebra; import-safe, Phase-A dark).
+try:
+    import confidence as _conf_mod
+except ImportError:  # pragma: no cover
+    _conf_mod = None
+
+
+def _confidence_ranking_on():
+    """Phase-A flag (§10): DARK by default ⇒ conf_w ≡ 1.0 (identity), so injected
+    context is byte-identical to pre-1B until EIDETIC_CONFIDENCE_RANKING is on."""
+    return os.environ.get("EIDETIC_CONFIDENCE_RANKING", "").strip().lower() in (
+        "1", "on", "true", "yes")
+
+
+def _inject_conf_w(type_, source, card_kind, confidence):
+    if _conf_mod is None or not _confidence_ranking_on():
+        return 1.0
+    managed = _conf_mod.is_managed(type_, source, card_kind)
+    c = confidence if confidence is not None else 0.7
+    return _conf_mod.conf_weight(c, managed)
+
+
+def compound_weight(evidence, source, last_verified, drift_penalty=None, status="current",
+                    superseded_by="", type_=None, card_kind=None, confidence=None):
     ev = EVIDENCE_WEIGHTS.get(evidence, 0.7)
     # Unknown source → conservative 0.5, consistent with search ranking + the
     # authority gate (audit F7); 1.0 wrongly trusted a typo'd source as full.
@@ -185,7 +208,8 @@ def compound_weight(evidence, source, last_verified, drift_penalty=None, status=
         # Multiply, never replace — replacing let a mild penalty (0.8) overwrite
         # stale freshness (0.5) and up-rank rot. See search_impl.combine_freshness.
         fr *= drift_penalty
-    return ev * src * fr * st
+    # conf_w ≡ 1.0 (identity) unless the Phase-A flag is on (§5.2) — dark by default.
+    return ev * src * fr * st * _inject_conf_w(type_, source, card_kind, confidence)
 
 
 def fetch_drift_diagnostics(db_path, limit=8):
@@ -291,7 +315,7 @@ def fetch_feedback(conn, budget_chars, current_slug=""):
     rows = conn.execute("""
         SELECT c.path, c.name, c.description, c.content,
                c.evidence, c.source, c.last_verified, c.status, c.superseded_by,
-               c.project,
+               c.project, c.type, c.card_kind, c.confidence,
                MIN(c.id) as first_id
         FROM memory_chunks c
         WHERE c.type = 'feedback'
@@ -303,8 +327,11 @@ def fetch_feedback(conn, budget_chars, current_slug=""):
     individual = []  # (weight, name, desc)
 
     for row in rows:
-        path, name, desc, content, evidence, source, lv, status, superseded_by, project, _ = row
-        w = compound_weight(evidence, source, lv, status=status, superseded_by=superseded_by)
+        path, name, desc, content, evidence, source, lv, status, superseded_by, project, \
+            ctype, card_kind, confidence, _ = row
+        # conf_w is identity when the Phase-A flag is off ⇒ byte-identical to pre-1B.
+        w = compound_weight(evidence, source, lv, status=status, superseded_by=superseded_by,
+                            type_=ctype, card_kind=card_kind, confidence=confidence)
         if current_slug and project and current_slug not in (project or ""):
             w *= 0.3
         display_name = name or os.path.basename(path).replace(".md", "")

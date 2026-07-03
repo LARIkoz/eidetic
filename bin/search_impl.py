@@ -100,6 +100,33 @@ except ImportError:
 # the floor keeps a many-problem card retrievable at all (verify-then-fix).
 DRIFT_PENALTY_FLOOR = 0.1
 
+# STEP 1B confidence lifecycle (pure algebra; import-safe). Optional so search
+# still runs if the module is ever unavailable.
+try:
+    import confidence as _conf_mod
+except ImportError:  # pragma: no cover
+    _conf_mod = None
+
+
+def _confidence_ranking_on():
+    """Phase-A rollout flag (§10). DARK by default: OFF ⇒ conf_w ≡ 1.0 and the
+    injection gate is inactive, so ranking + injected context are byte-identical
+    to pre-1B. Flip EIDETIC_CONFIDENCE_RANKING on to let confidence enter the
+    formula (Phase B)."""
+    return os.environ.get("EIDETIC_CONFIDENCE_RANKING", "").strip().lower() in (
+        "1", "on", "true", "yes")
+
+
+def conf_w_for(type_, source, card_kind, confidence):
+    """§5.2 conf_w for a row — EXACTLY 1.0 when the flag is off (identity in the
+    compound product ⇒ zero ranking diff) or the card is exempt; else
+    0.35 + 0.65·confidence (≤ 1, so it can only lower or hold a card's rank)."""
+    if _conf_mod is None or not _confidence_ranking_on():
+        return 1.0
+    managed = _conf_mod.is_managed(type_, source, card_kind)
+    c = confidence if confidence is not None else 0.7
+    return _conf_mod.conf_weight(c, managed)
+
 
 def ensure_agent_columns(conn):
     """Add READER-SAFE derived columns when searching an older index.db.
@@ -808,8 +835,9 @@ def _run_query(db_path, query, limit, type_filter, warn=False):
             drift_info = drift_data.get(row["path"], {})
             dp = drift_info.get("penalty")
             fr_w = combine_freshness(compute_freshness(row["last_verified"]), dp)
+            conf_w = conf_w_for(row["type"], row["source"], row["card_kind"], row["confidence"])
             raw_rank = abs(row["fts_rank"])
-            compound = raw_rank * ev_w * src_w * fr_w * status_w * max(0.1, match_quality)
+            compound = raw_rank * ev_w * src_w * fr_w * status_w * conf_w * max(0.1, match_quality)
 
             result = _base_result(
                 row,
@@ -1089,13 +1117,13 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=
             SELECT path, type, evidence, source, last_verified, content, section_heading,
                    description,
                    project, card_kind, status, area, supersedes, superseded_by,
-                   contradicted_by
+                   contradicted_by, confidence
             FROM memory_chunks WHERE id = ?
         """, (chunk_id,)).fetchone()
         if not row:
             continue
         (row_path, typ, evidence, source, lv, content, heading, desc, project, card_kind,
-         status, area, supersedes, superseded_by, contradicted_by) = row
+         status, area, supersedes, superseded_by, contradicted_by, confidence) = row
         if row_path != path or (heading or "") != vector_heading:
             continue
         if not vector_hash:
@@ -1112,7 +1140,8 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=
         drift_info = (drift_data or {}).get(path, {})
         dp = drift_info.get("penalty")
         fr_w = combine_freshness(compute_freshness(lv), dp)
-        compound = sim * ev_w * src_w * fr_w * status_w
+        conf_w = conf_w_for(typ, source, card_kind, confidence)
+        compound = sim * ev_w * src_w * fr_w * status_w * conf_w
 
         row_dict = {
             "path": path,
