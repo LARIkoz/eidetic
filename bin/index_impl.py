@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
     area TEXT DEFAULT '',
     supersedes TEXT DEFAULT '',
     superseded_by TEXT DEFAULT '',
+    contradicts TEXT DEFAULT '',
+    contradicted_by TEXT DEFAULT '',
     section_heading TEXT,
     content TEXT NOT NULL,
     description TEXT,
@@ -83,6 +85,8 @@ DERIVED_COLUMNS = {
     "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
     "supersedes": "ALTER TABLE memory_chunks ADD COLUMN supersedes TEXT DEFAULT ''",
     "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
+    "contradicts": "ALTER TABLE memory_chunks ADD COLUMN contradicts TEXT DEFAULT ''",
+    "contradicted_by": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by TEXT DEFAULT ''",
 }
 
 
@@ -496,13 +500,15 @@ def index_file(conn, filepath, meta, body):
             """INSERT INTO memory_chunks
                (path, project, name, type, evidence, source, confidence,
                 last_verified, card_kind, status, area, supersedes,
-                superseded_by, section_heading, content, description, mtime)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                superseded_by, contradicts, contradicted_by,
+                section_heading, content, description, mtime)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 filepath, project, meta["name"], meta["type"],
                 meta["evidence"], meta["source"], meta["confidence"],
                 meta["last_verified"], card_kind, status, area,
-                meta["supersedes"], meta["superseded_by"], heading,
+                meta["supersedes"], meta["superseded_by"],
+                meta["contradicts"], meta["contradicted_by"], heading,
                 content, meta["description"], mtime,
             ),
         )
@@ -520,6 +526,69 @@ def clear_indexed_file(conn, filepath, mtime):
         "INSERT OR REPLACE INTO index_meta (path, mtime) VALUES (?, ?)",
         (filepath, mtime),
     )
+
+
+def _split_relation_targets(value):
+    """`supersedes:`/`contradicts:` values → clean target slugs.
+
+    Accepts comma-separated lists, optional [[wikilink]] brackets and quotes.
+    """
+    targets = []
+    for raw in (value or "").split(","):
+        target = raw.strip().strip("[]").strip('"').strip("'").strip()
+        if target:
+            targets.append(target)
+    return targets
+
+
+def propagate_declared_relations(conn):
+    """Truth-maintenance slice: push declared `supersedes:`/`contradicts:`
+    onto their TARGET cards (the target's file usually doesn't know).
+
+    A card declaring `supersedes: X` marks every card named/slugged X as
+    `superseded_by` it (→ existing 0.35 status weight at search time); a card
+    declaring `contradicts: X` marks X `contradicted_by` it (→ drift finding +
+    0.4 ranking penalty). Only fills EMPTY columns — a target's own explicit
+    frontmatter wins. Runs as a whole-DB post-pass on every index run, so
+    incremental runs propagate relations onto unchanged targets too.
+    Resolution is by declared name / file stem; semantic matching is v6.
+    """
+    try:
+        rows = conn.execute("SELECT DISTINCT path, name FROM memory_chunks").fetchall()
+    except sqlite3.OperationalError:
+        return
+    by_key = {}
+    for path, name in rows:
+        stem = os.path.basename(path)
+        if stem.endswith(".md"):
+            stem = stem[:-3]
+        by_key.setdefault(stem, set()).add(path)
+        if name:
+            by_key.setdefault(name, set()).add(path)
+
+    try:
+        declared = conn.execute("""
+            SELECT DISTINCT path, name, supersedes, contradicts
+            FROM memory_chunks
+            WHERE IFNULL(supersedes, '') != '' OR IFNULL(contradicts, '') != ''
+        """).fetchall()
+    except sqlite3.OperationalError:
+        return
+
+    for path, name, supersedes, contradicts in declared:
+        stem = os.path.basename(path)
+        label = name or (stem[:-3] if stem.endswith(".md") else stem)
+        for column, value in (("superseded_by", supersedes), ("contradicted_by", contradicts)):
+            for target in _split_relation_targets(value):
+                for target_path in by_key.get(target, ()):
+                    if target_path == path:
+                        continue
+                    conn.execute(
+                        f"UPDATE memory_chunks SET {column} = ? "
+                        f"WHERE path = ? AND IFNULL({column}, '') = ''",
+                        (label, target_path),
+                    )
+    conn.commit()
 
 
 def run_full(conn, files):
@@ -551,6 +620,7 @@ def run_full(conn, files):
             except Exception as e:
                 print(f"WARN: skip {filepath}: {e}", file=sys.stderr)
         tmp_conn.commit()
+        propagate_declared_relations(tmp_conn)
         tmp_conn.close()
 
         conn.close()
@@ -607,6 +677,7 @@ def run_incremental(conn, files):
             removed += 1
 
     conn.commit()
+    propagate_declared_relations(conn)
     if force_backfill:
         print("Lifecycle metadata backfill: reindexed existing memory files")
     return indexed, skipped, removed

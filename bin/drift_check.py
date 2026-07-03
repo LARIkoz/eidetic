@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Eidetic v2.5 — Drift Detection
 
-Detects stale/decaying memories via three checks: wikilink validation, age
-thresholds, and confidence escalation. Reads from index.db, writes to
-drift_state.db (separate from the derived index — P1). Runs at SessionStart
-(24h throttle). No file mutations.
+Detects stale/decaying memories via four checks: wikilink validation, age
+thresholds, confidence escalation, and DECLARED contradictions. Reads from
+index.db, writes to drift_state.db (separate from the derived index — P1).
+Runs at SessionStart (24h throttle). No file mutations.
 
-Charter: P1 (derived separate), P5 (quality tracked), P6 (improves). NOTE: this
-module does NOT auto-detect contradictions (P11) — contradiction surfacing is
-manual, via `contradicts:`/`contradicted_by:` frontmatter read by the linter.
-An automated P11 contradiction detector is v6 territory.
+Charter: P1 (derived separate), P5 (quality tracked), P6 (improves). NOTE on
+P11 (truth maintenance): contradictions DECLARED in frontmatter
+(`contradicts:`/`contradicted_by:`, propagated onto targets at index time)
+are surfaced as `contradicted` findings here and penalized 0.4x in ranking
+immediately (declared facts bypass the first_seen grace gate). Automated
+SEMANTIC contradiction detection — noticing that two cards disagree without
+anyone declaring it — remains v6 territory.
 """
 
 import os
@@ -425,6 +428,29 @@ def check_confidence_escalation(index_conn):
     return findings
 
 
+def check_declared_contradictions(index_conn):
+    """Surface declared contradictions (truth-maintenance slice, not P11 auto-detect).
+
+    The `contradicted_by` column is filled either by the card's own
+    frontmatter or by index-time propagation from a card declaring
+    `contradicts:` it. The finding auto-resolves when the declaration is
+    removed and the store reindexed.
+    """
+    try:
+        rows = index_conn.execute("""
+            SELECT DISTINCT path, type, contradicted_by
+            FROM memory_chunks
+            WHERE IFNULL(contradicted_by, '') != ''
+        """).fetchall()
+    except sqlite3.OperationalError:
+        # Pre-v5.14 index without the column — nothing to surface.
+        return []
+    return [
+        (path, mem_type, "contradicted", f"by={contradicted_by.strip()}")
+        for path, mem_type, contradicted_by in rows
+    ]
+
+
 def write_findings(drift_conn, findings):
     now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
     new_count = 0
@@ -529,6 +555,7 @@ def main():
     all_findings.extend(check_wikilink_drift(index_conn, known_names))
     all_findings.extend(check_age_drift(index_conn))
     all_findings.extend(check_confidence_escalation(index_conn))
+    all_findings.extend(check_declared_contradictions(index_conn))
 
     pruned = prune_orphans(drift_conn, index_conn)
     resolved = auto_resolve(drift_conn, all_findings)

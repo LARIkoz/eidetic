@@ -71,11 +71,12 @@ STOPWORDS = {
 # Single source of truth: bin/constants.py. Literal fallback only for when the
 # module is run somewhere constants.py is not importable (W3 dedup).
 try:
-    from constants import EVIDENCE_WEIGHTS, SOURCE_WEIGHTS, DRIFT_PENALTIES
+    from constants import EVIDENCE_WEIGHTS, SOURCE_WEIGHTS, DRIFT_PENALTIES, DECLARED_DRIFT_TYPES
 except ImportError:
     EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
     SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
-    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3}
+    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3, "contradicted": 0.4}
+    DECLARED_DRIFT_TYPES = {"contradicted"}
 
 
 def ensure_agent_columns(conn):
@@ -91,6 +92,8 @@ def ensure_agent_columns(conn):
         "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
         "supersedes": "ALTER TABLE memory_chunks ADD COLUMN supersedes TEXT DEFAULT ''",
         "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
+        "contradicts": "ALTER TABLE memory_chunks ADD COLUMN contradicts TEXT DEFAULT ''",
+        "contradicted_by": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by TEXT DEFAULT ''",
     }
     for column, statement in migrations.items():
         if column not in existing:
@@ -125,7 +128,9 @@ def _load_drift_data(db_path):
         # fresh finding is diagnostics-only for at least one full cycle —
         # one transient mis-detection (e.g. a file mid-rename) never
         # down-ranks a card. Same gate in assemble_context.load_drift_findings.
-        penalized = int(first_seen or 0) > 1
+        # DECLARED relations (e.g. `contradicted`) are asserted facts, not
+        # detections — they bypass the gate and penalize immediately.
+        penalized = int(first_seen or 0) > 1 or drift_type in DECLARED_DRIFT_TYPES
         penalty = DRIFT_PENALTIES.get(drift_type, 0.5)
         if penalized and (entry["penalty"] is None or penalty < entry["penalty"]):
             entry["penalty"] = penalty
@@ -229,6 +234,7 @@ def _base_result(row, drift_info=None, drift_penalty=None, freshness=None, statu
         "area": row["area"] or "",
         "supersedes": row["supersedes"] or "",
         "superseded_by": row["superseded_by"] or "",
+        "contradicted_by": row["contradicted_by"] or "",
         "section": section,
         "snippet": _snippet(content),
         "content_chars": len(content),
@@ -298,6 +304,7 @@ def _fetch_fts_rows(conn, query, limit, type_filter):
             c.id, c.path, c.project, c.name, c.type,
             c.evidence, c.source, c.confidence, c.last_verified,
             c.card_kind, c.status, c.area, c.supersedes, c.superseded_by,
+            c.contradicted_by,
             c.section_heading, c.content, c.description,
             memory_fts.rank AS fts_rank
         FROM memory_fts
@@ -631,7 +638,7 @@ def _detail_lookup(conn, selector, section=None):
         rows = conn.execute("""
             SELECT path, project, name, type, evidence, source, confidence,
                    last_verified, card_kind, status, area, supersedes,
-                   superseded_by, section_heading, content, description, mtime
+                   superseded_by, contradicted_by, section_heading, content, description, mtime
             FROM memory_chunks
             ORDER BY path, section_heading
         """).fetchall()
@@ -663,7 +670,7 @@ def _detail_lookup(conn, selector, section=None):
             rows.extend(conn.execute("""
                 SELECT path, project, name, type, evidence, source, confidence,
                        last_verified, card_kind, status, area, supersedes,
-                       superseded_by, section_heading, content, description, mtime
+                       superseded_by, contradicted_by, section_heading, content, description, mtime
                 FROM memory_chunks
                 WHERE path = ?
                 ORDER BY section_heading
@@ -672,7 +679,7 @@ def _detail_lookup(conn, selector, section=None):
             rows.extend(conn.execute("""
                 SELECT path, project, name, type, evidence, source, confidence,
                        last_verified, card_kind, status, area, supersedes,
-                       superseded_by, section_heading, content, description, mtime
+                       superseded_by, contradicted_by, section_heading, content, description, mtime
                 FROM memory_chunks
                 WHERE path = ? AND COALESCE(section_heading, '') = ?
                 ORDER BY section_heading
@@ -1030,13 +1037,14 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=
         row = index_conn.execute("""
             SELECT path, type, evidence, source, last_verified, content, section_heading,
                    description,
-                   project, card_kind, status, area, supersedes, superseded_by
+                   project, card_kind, status, area, supersedes, superseded_by,
+                   contradicted_by
             FROM memory_chunks WHERE id = ?
         """, (chunk_id,)).fetchone()
         if not row:
             continue
         (row_path, typ, evidence, source, lv, content, heading, desc, project, card_kind,
-         status, area, supersedes, superseded_by) = row
+         status, area, supersedes, superseded_by, contradicted_by) = row
         if row_path != path or (heading or "") != vector_heading:
             continue
         if not vector_hash:
@@ -1068,6 +1076,7 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=
             "area": area or "",
             "supersedes": supersedes or "",
             "superseded_by": superseded_by or "",
+            "contradicted_by": contradicted_by or "",
             "section_heading": heading or "",
             "content": content or "",
             "description": desc or "",

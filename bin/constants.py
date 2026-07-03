@@ -10,4 +10,14 @@ DRIFT_PENALTIES = {
     "broken_wikilink": 0.8,
     "age_stale": 0.5,
     "confidence_escalation": 0.3,
+    # Truth-maintenance slice (v6 preview): a card DECLARED contradicted
+    # (frontmatter `contradicted_by:` on the card, or `contradicts:` on the
+    # contradicting card, propagated at index time) ranks below its
+    # contradictor. Semantic auto-DETECTION of contradictions remains v6.
+    "contradicted": 0.4,
 }
+
+# Declared relations are facts the writer asserted, not heuristic detections —
+# they penalize from the FIRST drift run, bypassing the `first_seen > 1`
+# grace gate that protects against transient mis-detections.
+DECLARED_DRIFT_TYPES = {"contradicted"}

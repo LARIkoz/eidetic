@@ -73,11 +73,12 @@ RULE_CLUSTERS = _load_rule_clusters()
 # Single source of truth: bin/constants.py. Literal fallback only for when the
 # module is run somewhere constants.py is not importable (W3 dedup).
 try:
-    from constants import EVIDENCE_WEIGHTS, SOURCE_WEIGHTS, DRIFT_PENALTIES
+    from constants import EVIDENCE_WEIGHTS, SOURCE_WEIGHTS, DRIFT_PENALTIES, DECLARED_DRIFT_TYPES
 except ImportError:
     EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
     SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
-    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3}
+    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3, "contradicted": 0.4}
+    DECLARED_DRIFT_TYPES = {"contradicted"}
 
 
 def load_drift_findings(db_path):
@@ -88,14 +89,18 @@ def load_drift_findings(db_path):
         conn = sqlite3.connect(drift_path)
         conn.execute("PRAGMA busy_timeout=2000")
         rows = conn.execute("""
-            SELECT path, drift_type FROM drift_findings
-            WHERE resolved_at IS NULL AND first_seen > 1
+            SELECT path, drift_type, first_seen FROM drift_findings
+            WHERE resolved_at IS NULL
         """).fetchall()
         conn.close()
     except sqlite3.OperationalError:
         return {}
     findings = {}
-    for path, drift_type in rows:
+    for path, drift_type, first_seen in rows:
+        # Grace gate (see search_impl._load_drift_data): heuristic findings
+        # penalize from the 2nd detection; DECLARED relations immediately.
+        if int(first_seen or 0) <= 1 and drift_type not in DECLARED_DRIFT_TYPES:
+            continue
         penalty = DRIFT_PENALTIES.get(drift_type, 0.5)
         if path not in findings or penalty < findings[path]:
             findings[path] = penalty
