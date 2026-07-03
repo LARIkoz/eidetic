@@ -101,6 +101,17 @@ the live embedder and, on a mismatch (someone changed the model or upgraded
 fastembed under a built index), returns no hits with a one-line reason instead of
 silently scoring meaningless cosines. Rebuild (`index.sh --full`) re-stamps.
 
+## Limits (v1)
+
+The v1 surface covers index-time embedding, the vector index, drift-guarded
+search, and rerank. It does **not** yet expose the lower-level primitives some
+in-repo code needs — notably the raw `embed_texts` / `embed_query_texts` and the
+active `EMBED_PROFILE`. Accordingly, `bin/compound.py`'s semantic dedup gate
+stays on the internal `embed.py` path for now (it embeds a query/passage pair and
+reads the profile threshold directly). A v1.1 (additive) surface for those
+primitives is the migration path; until then compound is a deliberate,
+disclosed exception, not an oversight.
+
 ## Reference consumer — task-tracker semantic search
 
 The first external consumer is a **task-tracker search skill** (YouGile): live
