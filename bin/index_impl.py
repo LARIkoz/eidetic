@@ -37,9 +37,18 @@ except ImportError:
         "superseded_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN superseded_by_explicit TEXT DEFAULT ''",
         "contradicted_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by_explicit TEXT DEFAULT ''",
         "status_explicit": "ALTER TABLE memory_chunks ADD COLUMN status_explicit TEXT DEFAULT ''",
+        "lifecycle": "ALTER TABLE memory_chunks ADD COLUMN lifecycle TEXT DEFAULT ''",
     }
     RELATION_EXPLICIT_COLUMNS = {"superseded_by_explicit", "contradicted_by_explicit"}
     FORCED_REREAD_ON_ADD = RELATION_EXPLICIT_COLUMNS | {"status_explicit"}
+
+# Pure confidence-lifecycle algebra (spec §4–§5). Literal-import fallback keeps
+# index_impl runnable if confidence.py is somehow unavailable (degrades to no
+# lifecycle materialization — dark by default anyway).
+try:
+    import confidence as _confidence
+except ImportError:  # pragma: no cover
+    _confidence = None
 
 DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory_chunks (
@@ -62,6 +71,7 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
     superseded_by_explicit TEXT DEFAULT '',
     contradicted_by_explicit TEXT DEFAULT '',
     status_explicit TEXT DEFAULT '',
+    lifecycle TEXT DEFAULT '',
     section_heading TEXT,
     content TEXT NOT NULL,
     description TEXT,
@@ -102,6 +112,21 @@ CREATE TABLE IF NOT EXISTS schema_meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- STEP 1B — evidence events (spec §3.2). A DERIVED projection rebuilt from each
+-- card's `## Evidence` markdown on reindex (the markdown is the durable truth,
+-- P1); confidence is the deterministic fold of these rows.
+CREATE TABLE IF NOT EXISTS card_events (
+    card_slug     TEXT NOT NULL,
+    project_hash  TEXT NOT NULL,
+    ts            TEXT NOT NULL,
+    event_type    TEXT NOT NULL,
+    actor_tier    INTEGER NOT NULL,
+    session_id    TEXT,
+    delta         REAL NOT NULL,
+    note          TEXT,
+    PRIMARY KEY (project_hash, card_slug, ts, event_type)
+);
 """
 
 # Durable stamp (NEW-1): written once the writer-back-fill file re-read has run,
@@ -110,7 +135,13 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 # the effective column is set" — but that is the LEGITIMATE steady state for a
 # card superseded/contradicted BY PROPAGATION (own *_explicit empty), so it
 # re-indexed every file on every incremental (rowid churn / vector thrash).
-BACKFILL_STAMP_KEY = "backfill_v6"
+#
+# STEP 1B (audit OBS-1): the key is BUMPED to `backfill_v6b` because 1B adds new
+# back-fill state (the `lifecycle` column + the materialized `confidence` fold).
+# A store already stamped `backfill_v6` by STEP 1 therefore lacks `backfill_v6b`
+# → migrate_schema forces exactly ONE re-read to back-fill the 1B columns, then
+# stamps `backfill_v6b`. Bump this suffix on every future back-fill-column add.
+BACKFILL_STAMP_KEY = "backfill_v6b"
 
 # Explicit statuses that demote AT LEAST as hard as a propagated supersession
 # (status weight <= superseded's 0.35). Only these override a propagated
@@ -642,6 +673,112 @@ def init_db(db_path):
     return conn
 
 
+_EVIDENCE_LINE_RE = re.compile(r"^-\s+(.*\S)\s*$")
+
+
+def parse_evidence_events(body):
+    """Parse a card's `## Evidence` section into chronological events (spec §3.2).
+
+    Line format: `- <ts> · <event_type> · <actor> · sess=<id> · Δ<signed> · "note"`.
+    Only the typed `## Evidence` section is read — NEVER legacy `## History`
+    date-lines (risk #5 double-count guard). The fold recomputes the effective
+    delta from event_type + order; the parsed Δ is decorative/audit only.
+    """
+    events = []
+    in_section = False
+    for line in (body or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            in_section = stripped[3:].strip().casefold() == "evidence"
+            continue
+        if not in_section:
+            continue
+        m = _EVIDENCE_LINE_RE.match(stripped)
+        if not m:
+            continue
+        parts = [p.strip() for p in m.group(1).split("·")]
+        if len(parts) < 2:
+            continue
+        etype = parts[1].strip().lower()
+        if _confidence is not None and etype not in _confidence.EVENT_TYPES:
+            continue
+        actor = parts[2].strip().lower() if len(parts) > 2 else ""
+        tier = _confidence.ACTOR_TIERS.get(actor) if _confidence is not None else None
+        session_id, delta, note = None, 0.0, ""
+        for p in parts[3:]:
+            if p.startswith("sess="):
+                session_id = p[5:].strip() or None
+            elif p.startswith("Δ"):
+                try:
+                    delta = float(p[1:].replace("+", "").strip())
+                except ValueError:
+                    pass
+            elif p[:1] in ("\"", "'"):
+                note = p.strip("\"'")
+        events.append({"ts": parts[0], "event_type": etype, "actor_tier": tier,
+                       "session_id": session_id, "delta": delta, "note": note})
+    return events
+
+
+def _card_slug(meta, filepath):
+    """Normalized slug for the confidence identity (spec §3.3)."""
+    name = meta.get("name") or os.path.basename(_path_sans_md(filepath))
+    slug = re.sub(r"[^a-z0-9]+", "-", (name or "").casefold()).strip("-")
+    if slug.endswith(".md"):
+        slug = slug[:-3]
+    return slug or "unnamed"
+
+
+def _write_card_events(conn, filepath, meta, card_kind, events):
+    """Rebuild this card's `card_events` projection from its `## Evidence`
+    markdown (P1: markdown is truth; DELETE-then-insert makes it order-independent
+    and clears removed events every reindex). Tolerates the table's absence."""
+    slug = _card_slug(meta, filepath)
+    phash = detect_project(filepath) or ""
+    try:
+        conn.execute(
+            "DELETE FROM card_events WHERE project_hash = ? AND card_slug = ?",
+            (phash, slug),
+        )
+        for ev in events:
+            tier = ev.get("actor_tier")
+            if tier is None and _confidence is not None:
+                tier = _confidence.EVENT_SPECS.get(ev["event_type"], {"tier": 1})["tier"]
+            conn.execute(
+                "INSERT OR REPLACE INTO card_events "
+                "(card_slug, project_hash, ts, event_type, actor_tier, session_id, delta, note) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (slug, phash, ev["ts"], ev["event_type"], int(tier or 1),
+                 ev.get("session_id"), float(ev.get("delta", 0.0) or 0.0),
+                 ev.get("note", "")),
+            )
+    except sqlite3.OperationalError:
+        pass  # legacy DB without card_events (reader path) — tolerate
+
+
+def _lifecycle_and_confidence(conn, filepath, meta, card_kind, body):
+    """STEP 1B dark materialization (spec §2.3, §3.4, §4): compute the card's
+    lifecycle label and its DERIVED confidence (the deterministic fold of its
+    `## Evidence` events over the cold-start). Also rebuild this card's
+    `card_events` projection from the markdown (P1: markdown is truth).
+
+    Managed cards: confidence = fold(cold_start, events). At migration (no
+    `## Evidence` yet) events=[] → the §3.4 cold-start value exactly. Exempt
+    cards keep their authored/default `confidence` (unused — conf_w = 1.0).
+    """
+    if _confidence is None:
+        return "", meta["confidence"]
+    lifecycle = _confidence.lifecycle_label(meta["type"], meta["source"], card_kind)
+    events = parse_evidence_events(body)
+    _write_card_events(conn, filepath, meta, card_kind, events)
+    if lifecycle != "managed":
+        return lifecycle, meta["confidence"]
+    cold = _confidence.cold_start_confidence(meta["type"], meta["source"], card_kind)
+    user_authored = (meta.get("source") or "") == "user-explicit"
+    conf, _flags = _confidence.fold_confidence(cold, events, user_authored=user_authored)
+    return lifecycle, conf
+
+
 def index_file(conn, filepath, meta, body):
     """Index a single file's sections into the database."""
     project = detect_project(filepath)
@@ -650,6 +787,8 @@ def index_file(conn, filepath, meta, body):
     area = infer_area(meta, filepath, project)
     mtime = file_mtime(filepath)
     sections = split_sections(body, filepath)
+    lifecycle, confidence_value = _lifecycle_and_confidence(
+        conn, filepath, meta, card_kind, body)
 
     conn.execute("DELETE FROM memory_chunks WHERE path = ?", (filepath,))
 
@@ -660,16 +799,16 @@ def index_file(conn, filepath, meta, body):
                 last_verified, card_kind, status, area, supersedes,
                 superseded_by, contradicts, contradicted_by,
                 superseded_by_explicit, contradicted_by_explicit, status_explicit,
-                section_heading, content, description, mtime)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                lifecycle, section_heading, content, description, mtime)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 filepath, project, meta["name"], meta["type"],
-                meta["evidence"], meta["source"], meta["confidence"],
+                meta["evidence"], meta["source"], confidence_value,
                 meta["last_verified"], card_kind, status, area,
                 meta["supersedes"], meta["superseded_by"],
                 meta["contradicts"], meta["contradicted_by"],
                 meta["superseded_by"], meta["contradicted_by"],
-                (meta.get("status") or "").strip().lower(), heading,
+                (meta.get("status") or "").strip().lower(), lifecycle, heading,
                 content, meta["description"], mtime,
             ),
         )

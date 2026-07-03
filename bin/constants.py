@@ -71,6 +71,9 @@ WRITER_BACKFILL_MIGRATIONS = {
     # propagation recompute the derived status each reindex WITHOUT clobbering a
     # project-authored status (archived/deprecated/…).
     "status_explicit": "ALTER TABLE memory_chunks ADD COLUMN status_explicit TEXT DEFAULT ''",
+    # STEP 1B — the derived managed/exempt lifecycle label (§2.3). Derived from
+    # type/source/card_kind + materialized at index time; a re-read populates it.
+    "lifecycle": "ALTER TABLE memory_chunks ADD COLUMN lifecycle TEXT DEFAULT ''",
 }
 # The WRITER's full migration set (reader-safe first, then back-fill columns).
 MEMORY_CHUNK_MIGRATIONS = {**READER_SAFE_MIGRATIONS, **WRITER_BACKFILL_MIGRATIONS}
