@@ -18,10 +18,26 @@ import time
 # Single source of truth: bin/constants.py. Literal fallback only for when the
 # module is run somewhere constants.py is not importable (W3 dedup).
 try:
-    from constants import EVIDENCE_WEIGHTS, SOURCE_WEIGHTS
+    from constants import (
+        EVIDENCE_WEIGHTS, SOURCE_WEIGHTS,
+        MEMORY_CHUNK_MIGRATIONS, RELATION_EXPLICIT_COLUMNS,
+    )
 except ImportError:
     EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
     SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3, "imported": 0.3}
+    MEMORY_CHUNK_MIGRATIONS = {
+        "project": "ALTER TABLE memory_chunks ADD COLUMN project TEXT DEFAULT ''",
+        "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
+        "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
+        "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
+        "supersedes": "ALTER TABLE memory_chunks ADD COLUMN supersedes TEXT DEFAULT ''",
+        "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
+        "contradicts": "ALTER TABLE memory_chunks ADD COLUMN contradicts TEXT DEFAULT ''",
+        "contradicted_by": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by TEXT DEFAULT ''",
+        "superseded_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN superseded_by_explicit TEXT DEFAULT ''",
+        "contradicted_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by_explicit TEXT DEFAULT ''",
+    }
+    RELATION_EXPLICIT_COLUMNS = {"superseded_by_explicit", "contradicted_by_explicit"}
 
 DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory_chunks (
@@ -89,24 +105,11 @@ BASE_SCAN_DIRS = [
 SCAN_DIRS = list(BASE_SCAN_DIRS)
 
 EXCLUDE_FILES = {"MEMORY.md", "BACKLOG.md"}
-DERIVED_COLUMNS = {
-    "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
-    "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
-    "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
-    "supersedes": "ALTER TABLE memory_chunks ADD COLUMN supersedes TEXT DEFAULT ''",
-    "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
-    "contradicts": "ALTER TABLE memory_chunks ADD COLUMN contradicts TEXT DEFAULT ''",
-    "contradicted_by": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by TEXT DEFAULT ''",
-    # The card's OWN frontmatter value, kept apart from the effective column so
-    # authoritative re-propagation can distinguish "the file says so" from
-    # "another card's declaration was pushed here" and clear the latter when
-    # the declarer disappears.
-    "superseded_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN superseded_by_explicit TEXT DEFAULT ''",
-    "contradicted_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by_explicit TEXT DEFAULT ''",
-}
-# Columns whose addition requires re-reading every file: pre-upgrade rows cannot
-# distinguish own-frontmatter values from previously propagated ones.
-RELATION_EXPLICIT_COLUMNS = {"superseded_by_explicit", "contradicted_by_explicit"}
+# The writer's migrations ARE the shared single source (constants.MEMORY_CHUNK_
+# MIGRATIONS) — kept identical to the reader's (search_impl.ensure_agent_columns)
+# so a column added on one path always exists on the other. RELATION_EXPLICIT_
+# COLUMNS (also shared) drives the writer-only forced re-read below.
+DERIVED_COLUMNS = MEMORY_CHUNK_MIGRATIONS
 
 
 def parse_frontmatter(text):

@@ -32,3 +32,34 @@ DRIFT_PENALTIES = {
 # they penalize from the FIRST drift run, bypassing the `first_seen > 1`
 # grace gate that protects against transient mis-detections.
 DECLARED_DRIFT_TYPES = {"contradicted"}
+
+# SINGLE SOURCE of the memory_chunks derived/relation-column migrations, shared
+# by BOTH schema paths: the WRITER (index_impl.migrate_schema, applied to
+# index.db at init) and the READER (search_impl.ensure_agent_columns, applied
+# defensively when searching a possibly-older index). The two used to keep
+# separate hand-maintained lists that DRIFTED — the reader was missing the
+# `*_explicit` columns while the writer was missing `project` — so a column
+# added on one path silently did not exist on the other. Keep every column an
+# older DB might lack here, ordered as added; both paths iterate this dict and
+# skip columns that already exist (duplicate-column errors are swallowed).
+MEMORY_CHUNK_MIGRATIONS = {
+    "project": "ALTER TABLE memory_chunks ADD COLUMN project TEXT DEFAULT ''",
+    "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
+    "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
+    "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
+    "supersedes": "ALTER TABLE memory_chunks ADD COLUMN supersedes TEXT DEFAULT ''",
+    "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
+    "contradicts": "ALTER TABLE memory_chunks ADD COLUMN contradicts TEXT DEFAULT ''",
+    "contradicted_by": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by TEXT DEFAULT ''",
+    # The card's OWN frontmatter relation value, kept apart from the effective
+    # column so authoritative re-propagation can distinguish "the file says so"
+    # from "another card's declaration was pushed here" and clear the latter
+    # when the declarer disappears.
+    "superseded_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN superseded_by_explicit TEXT DEFAULT ''",
+    "contradicted_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by_explicit TEXT DEFAULT ''",
+}
+
+# Columns whose ADDITION requires re-reading every file (the writer path only):
+# pre-upgrade rows cannot distinguish own-frontmatter values from previously
+# propagated ones, so the effective columns must be recomputed from source.
+RELATION_EXPLICIT_COLUMNS = {"superseded_by_explicit", "contradicted_by_explicit"}

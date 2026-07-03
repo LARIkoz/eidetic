@@ -71,26 +71,17 @@ STOPWORDS = {
 # Single source of truth: bin/constants.py. Literal fallback only for when the
 # module is run somewhere constants.py is not importable (W3 dedup).
 try:
-    from constants import EVIDENCE_WEIGHTS, SOURCE_WEIGHTS, DRIFT_PENALTIES, DECLARED_DRIFT_TYPES
+    from constants import (
+        EVIDENCE_WEIGHTS, SOURCE_WEIGHTS, DRIFT_PENALTIES, DECLARED_DRIFT_TYPES,
+        MEMORY_CHUNK_MIGRATIONS,
+    )
 except ImportError:
     EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
     SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
     DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3,
                        "contradicted": 0.4, "unresolved_relation": 1.0, "relation_claim": 1.0}
     DECLARED_DRIFT_TYPES = {"contradicted"}
-
-# A card with several distinct penalized findings compounds them (product);
-# the floor keeps a many-problem card retrievable at all (verify-then-fix).
-DRIFT_PENALTY_FLOOR = 0.1
-
-
-def ensure_agent_columns(conn):
-    """Add v2.6 derived columns when searching an older index.db."""
-    try:
-        existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
-    except sqlite3.OperationalError:
-        return
-    migrations = {
+    MEMORY_CHUNK_MIGRATIONS = {
         "project": "ALTER TABLE memory_chunks ADD COLUMN project TEXT DEFAULT ''",
         "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
         "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
@@ -99,8 +90,29 @@ def ensure_agent_columns(conn):
         "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
         "contradicts": "ALTER TABLE memory_chunks ADD COLUMN contradicts TEXT DEFAULT ''",
         "contradicted_by": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by TEXT DEFAULT ''",
+        "superseded_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN superseded_by_explicit TEXT DEFAULT ''",
+        "contradicted_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by_explicit TEXT DEFAULT ''",
     }
-    for column, statement in migrations.items():
+
+# A card with several distinct penalized findings compounds them (product);
+# the floor keeps a many-problem card retrievable at all (verify-then-fix).
+DRIFT_PENALTY_FLOOR = 0.1
+
+
+def ensure_agent_columns(conn):
+    """Add derived/relation columns when searching an older index.db.
+
+    Reader side of the schema migration; uses the SHARED source
+    (constants.MEMORY_CHUNK_MIGRATIONS) so it can never drift from the writer
+    (index_impl.migrate_schema) again — a column added on one path always exists
+    on the other. Previously this kept its own list and silently lacked the
+    `*_explicit` columns the writer added (KEEP #3).
+    """
+    try:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
+    except sqlite3.OperationalError:
+        return
+    for column, statement in MEMORY_CHUNK_MIGRATIONS.items():
         if column not in existing:
             try:
                 conn.execute(statement)
