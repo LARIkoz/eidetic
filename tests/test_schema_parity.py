@@ -1,8 +1,16 @@
-"""KEEP #3 — the writer (index_impl) and reader (search_impl) schema-migration
-paths must share ONE source of truth: a column added on one path must exist on
-the other. They used to keep two hand-maintained lists that DRIFTED — the reader
-lacked the `*_explicit` columns and the writer lacked `project` — so an index
-migrated by one path had a different effective schema than the other expected.
+"""KEEP #3 + audit F1/F3 — every schema-migration path shares ONE source.
+
+Three paths touch the memory_chunks schema on an old index:
+  * WRITER — index_impl.migrate_schema (adds every column + back-fills).
+  * READER (search) — search_impl.ensure_agent_columns.
+  * READER (inject) — assemble_context.ensure_agent_columns.
+
+Invariants:
+  - the two READERS produce identical schemas (no hand-maintained drift, F3);
+  - the WRITER schema is a SUPERSET of the readers, and the extra columns are
+    exactly the writer-back-fill set (F1 — readers must NOT add those, because
+    adding them with DEFAULT '' and no file re-read erases deliberate demotions);
+  - all three reference the shared constants source (no private column lists).
 
 unittest so it runs under `python3 -m unittest discover` + pytest.
 """
@@ -14,12 +22,11 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bin"))
 
+import assemble_context  # noqa: E402
 import constants  # noqa: E402
 import index_impl  # noqa: E402
 import search_impl  # noqa: E402
 
-# A minimal LEGACY memory_chunks table: the pre-derived-columns shape an old
-# index.db would have. Both migration paths must bring it to the SAME schema.
 LEGACY_SCHEMA = """
 CREATE TABLE memory_chunks (
     id INTEGER PRIMARY KEY,
@@ -38,6 +45,12 @@ CREATE TABLE memory_chunks (
 );
 """
 
+WRITER = index_impl.migrate_schema
+READERS = {
+    "search_impl.ensure_agent_columns": search_impl.ensure_agent_columns,
+    "assemble_context.ensure_agent_columns": assemble_context.ensure_agent_columns,
+}
+
 
 def _columns_after(migrate):
     conn = sqlite3.connect(":memory:")
@@ -49,29 +62,50 @@ def _columns_after(migrate):
 
 
 class SchemaParityTest(unittest.TestCase):
-    def test_writer_and_reader_migrations_produce_identical_schema(self):
-        index_cols = _columns_after(index_impl.migrate_schema)
-        search_cols = _columns_after(search_impl.ensure_agent_columns)
+    def test_both_readers_produce_identical_schema(self):
+        cols = {name: _columns_after(fn) for name, fn in READERS.items()}
+        (a_name, a_cols), (b_name, b_cols) = cols.items()
         self.assertEqual(
-            index_cols, search_cols,
-            "index_impl.migrate_schema and search_impl.ensure_agent_columns "
-            "produced diverging effective schemas:\n"
-            f"  only in writer: {sorted(index_cols - search_cols)}\n"
-            f"  only in reader: {sorted(search_cols - index_cols)}",
+            a_cols, b_cols,
+            f"reader schemas diverge:\n  only in {a_name}: {sorted(a_cols - b_cols)}\n"
+            f"  only in {b_name}: {sorted(b_cols - a_cols)}",
         )
 
-    def test_both_paths_add_the_relation_and_project_columns(self):
-        # The exact columns the two lists used to disagree on.
-        for migrate in (index_impl.migrate_schema, search_impl.ensure_agent_columns):
-            cols = _columns_after(migrate)
-            for required in ("project", "superseded_by_explicit", "contradicted_by_explicit"):
-                self.assertIn(required, cols,
-                              f"{migrate.__module__}.{migrate.__name__} did not add {required!r}")
+    def test_writer_is_a_superset_and_the_extra_columns_are_the_backfill_set(self):
+        writer_cols = _columns_after(WRITER)
+        for name, fn in READERS.items():
+            reader_cols = _columns_after(fn)
+            self.assertTrue(reader_cols <= writer_cols,
+                            f"{name} added a column the writer does not: "
+                            f"{sorted(reader_cols - writer_cols)}")
+            self.assertEqual(
+                writer_cols - reader_cols, set(constants.WRITER_BACKFILL_MIGRATIONS),
+                f"writer/{name} difference is not exactly the back-fill set",
+            )
 
-    def test_both_paths_reference_the_shared_migration_source(self):
-        # Structural guarantee: neither path may hardcode its own column list.
+    def test_readers_never_add_backfill_columns(self):
+        # F1: a read-only path must never create *_explicit/status_explicit.
+        for name, fn in READERS.items():
+            cols = _columns_after(fn)
+            for backfill in constants.WRITER_BACKFILL_MIGRATIONS:
+                self.assertNotIn(
+                    backfill, cols,
+                    f"{name} added back-fill column {backfill!r} (defeats the re-read)")
+
+    def test_all_paths_add_the_columns_they_should(self):
+        writer_cols = _columns_after(WRITER)
+        for required in ("project", "superseded_by_explicit", "contradicted_by_explicit",
+                         "status_explicit"):
+            self.assertIn(required, writer_cols)
+        for name, fn in READERS.items():
+            self.assertIn("project", _columns_after(fn), name)
+            self.assertIn("contradicted_by", _columns_after(fn), name)
+
+    def test_every_path_references_the_shared_source(self):
+        # No path may hardcode its own column list.
         self.assertIs(index_impl.DERIVED_COLUMNS, constants.MEMORY_CHUNK_MIGRATIONS)
-        self.assertIs(search_impl.MEMORY_CHUNK_MIGRATIONS, constants.MEMORY_CHUNK_MIGRATIONS)
+        self.assertIs(search_impl.READER_SAFE_MIGRATIONS, constants.READER_SAFE_MIGRATIONS)
+        self.assertIs(assemble_context.READER_SAFE_MIGRATIONS, constants.READER_SAFE_MIGRATIONS)
 
 
 if __name__ == "__main__":

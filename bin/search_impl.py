@@ -73,7 +73,7 @@ STOPWORDS = {
 try:
     from constants import (
         EVIDENCE_WEIGHTS, SOURCE_WEIGHTS, DRIFT_PENALTIES, DECLARED_DRIFT_TYPES,
-        MEMORY_CHUNK_MIGRATIONS,
+        READER_SAFE_MIGRATIONS,
     )
 except ImportError:
     EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
@@ -81,7 +81,11 @@ except ImportError:
     DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3,
                        "contradicted": 0.4, "unresolved_relation": 1.0, "relation_claim": 1.0}
     DECLARED_DRIFT_TYPES = {"contradicted"}
-    MEMORY_CHUNK_MIGRATIONS = {
+    # Reader-safe columns ONLY (see constants.READER_SAFE_MIGRATIONS): a read-only
+    # search must never add the writer-back-fill columns (*_explicit/status_explicit)
+    # — adding them with DEFAULT '' and no file re-read defeats the back-fill and
+    # lets propagation erase a deliberate demotion (audit F1).
+    READER_SAFE_MIGRATIONS = {
         "project": "ALTER TABLE memory_chunks ADD COLUMN project TEXT DEFAULT ''",
         "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
         "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
@@ -90,9 +94,6 @@ except ImportError:
         "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
         "contradicts": "ALTER TABLE memory_chunks ADD COLUMN contradicts TEXT DEFAULT ''",
         "contradicted_by": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by TEXT DEFAULT ''",
-        "superseded_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN superseded_by_explicit TEXT DEFAULT ''",
-        "contradicted_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by_explicit TEXT DEFAULT ''",
-        "status_explicit": "ALTER TABLE memory_chunks ADD COLUMN status_explicit TEXT DEFAULT ''",
     }
 
 # A card with several distinct penalized findings compounds them (product);
@@ -101,19 +102,22 @@ DRIFT_PENALTY_FLOOR = 0.1
 
 
 def ensure_agent_columns(conn):
-    """Add derived/relation columns when searching an older index.db.
+    """Add READER-SAFE derived columns when searching an older index.db.
 
     Reader side of the schema migration; uses the SHARED source
-    (constants.MEMORY_CHUNK_MIGRATIONS) so it can never drift from the writer
-    (index_impl.migrate_schema) again — a column added on one path always exists
-    on the other. Previously this kept its own list and silently lacked the
-    `*_explicit` columns the writer added (KEEP #3).
+    (constants.READER_SAFE_MIGRATIONS) so it can never drift from the writer
+    (KEEP #3). It adds ONLY reader-safe columns — never the writer-back-fill
+    `*_explicit`/`status_explicit` columns: a search that ADDed those with
+    DEFAULT '' and no file re-read would defeat the back-fill and let the next
+    incremental propagation erase a deliberate superseded/archived demotion
+    (audit F1). A DB lacking those columns is tolerated — the reader never
+    SELECTs them; the writer adds+back-fills them on its next index run.
     """
     try:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
     except sqlite3.OperationalError:
         return
-    for column, statement in MEMORY_CHUNK_MIGRATIONS.items():
+    for column, statement in READER_SAFE_MIGRATIONS.items():
         if column not in existing:
             try:
                 conn.execute(statement)

@@ -33,16 +33,21 @@ DRIFT_PENALTIES = {
 # grace gate that protects against transient mis-detections.
 DECLARED_DRIFT_TYPES = {"contradicted"}
 
-# SINGLE SOURCE of the memory_chunks derived/relation-column migrations, shared
-# by BOTH schema paths: the WRITER (index_impl.migrate_schema, applied to
-# index.db at init) and the READER (search_impl.ensure_agent_columns, applied
-# defensively when searching a possibly-older index). The two used to keep
-# separate hand-maintained lists that DRIFTED — the reader was missing the
-# `*_explicit` columns while the writer was missing `project` — so a column
-# added on one path silently did not exist on the other. Keep every column an
-# older DB might lack here, ordered as added; both paths iterate this dict and
-# skip columns that already exist (duplicate-column errors are swallowed).
-MEMORY_CHUNK_MIGRATIONS = {
+# SINGLE SOURCE of the memory_chunks derived/relation-column migrations, split
+# by who may safely ADD a column (audit F1 — reader-first back-fill defeat).
+#
+# READER_SAFE_MIGRATIONS — columns any code (writer OR a read-only search) may
+# add on an old index: their DEFAULT is a correct value with no back-fill from
+# frontmatter needed ('' / 'current').
+#
+# WRITER_BACKFILL_MIGRATIONS — columns that store the card's OWN frontmatter
+# value and CANNOT be reconstructed from a DEFAULT: adding one with DEFAULT ''
+# silently means "the file declared nothing", so it MUST be paired with a forced
+# file re-read. Only the WRITER (which then reindexes) may add these — a reader
+# that added them (with no re-read) would defeat the back-fill and let
+# propagation clear a deliberate superseded/archived demotion. A reader that
+# meets a DB lacking these tolerates their absence (it never SELECTs them).
+READER_SAFE_MIGRATIONS = {
     "project": "ALTER TABLE memory_chunks ADD COLUMN project TEXT DEFAULT ''",
     "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
     "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
@@ -51,6 +56,8 @@ MEMORY_CHUNK_MIGRATIONS = {
     "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
     "contradicts": "ALTER TABLE memory_chunks ADD COLUMN contradicts TEXT DEFAULT ''",
     "contradicted_by": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by TEXT DEFAULT ''",
+}
+WRITER_BACKFILL_MIGRATIONS = {
     # The card's OWN frontmatter relation value, kept apart from the effective
     # column so authoritative re-propagation can distinguish "the file says so"
     # from "another card's declaration was pushed here" and clear the latter
@@ -65,9 +72,12 @@ MEMORY_CHUNK_MIGRATIONS = {
     # project-authored status (archived/deprecated/…).
     "status_explicit": "ALTER TABLE memory_chunks ADD COLUMN status_explicit TEXT DEFAULT ''",
 }
+# The WRITER's full migration set (reader-safe first, then back-fill columns).
+MEMORY_CHUNK_MIGRATIONS = {**READER_SAFE_MIGRATIONS, **WRITER_BACKFILL_MIGRATIONS}
 
 # Columns whose ADDITION requires re-reading every file (the writer path only):
 # pre-upgrade rows cannot distinguish own-frontmatter values from previously
-# propagated ones, so the source values must be reloaded from the files.
+# propagated ones, so the source values must be reloaded from the files. Equal
+# to the writer-back-fill set by construction.
 RELATION_EXPLICIT_COLUMNS = {"superseded_by_explicit", "contradicted_by_explicit"}
-FORCED_REREAD_ON_ADD = RELATION_EXPLICIT_COLUMNS | {"status_explicit"}
+FORCED_REREAD_ON_ADD = set(WRITER_BACKFILL_MIGRATIONS)

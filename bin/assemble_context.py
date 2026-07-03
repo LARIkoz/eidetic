@@ -73,13 +73,26 @@ RULE_CLUSTERS = _load_rule_clusters()
 # Single source of truth: bin/constants.py. Literal fallback only for when the
 # module is run somewhere constants.py is not importable (W3 dedup).
 try:
-    from constants import EVIDENCE_WEIGHTS, SOURCE_WEIGHTS, DRIFT_PENALTIES, DECLARED_DRIFT_TYPES
+    from constants import (
+        EVIDENCE_WEIGHTS, SOURCE_WEIGHTS, DRIFT_PENALTIES, DECLARED_DRIFT_TYPES,
+        READER_SAFE_MIGRATIONS,
+    )
 except ImportError:
     EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
     SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
     DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3,
                        "contradicted": 0.4, "unresolved_relation": 1.0, "relation_claim": 1.0}
     DECLARED_DRIFT_TYPES = {"contradicted"}
+    READER_SAFE_MIGRATIONS = {
+        "project": "ALTER TABLE memory_chunks ADD COLUMN project TEXT DEFAULT ''",
+        "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
+        "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
+        "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
+        "supersedes": "ALTER TABLE memory_chunks ADD COLUMN supersedes TEXT DEFAULT ''",
+        "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
+        "contradicts": "ALTER TABLE memory_chunks ADD COLUMN contradicts TEXT DEFAULT ''",
+        "contradicted_by": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by TEXT DEFAULT ''",
+    }
 
 DRIFT_PENALTY_FLOOR = 0.1
 
@@ -124,20 +137,20 @@ def load_drift_findings(db_path):
 
 
 def ensure_agent_columns(conn):
-    """Add v2.6 derived columns when context assembly sees an older DB."""
+    """Add READER-SAFE derived columns when context assembly sees an older DB.
+
+    Third reader of the schema (SessionStart injection). Uses the SHARED
+    constants.READER_SAFE_MIGRATIONS — audit F3: it previously hand-maintained
+    its own 6-column list (the exact "two lists that drift" defect KEEP #3 set
+    out to kill, surviving in a third file the parity test never checked). Like
+    the search reader it adds ONLY reader-safe columns, never the writer-back-fill
+    columns (audit F1).
+    """
     try:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
     except sqlite3.OperationalError:
         return
-    migrations = {
-        "project": "ALTER TABLE memory_chunks ADD COLUMN project TEXT DEFAULT ''",
-        "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
-        "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
-        "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
-        "supersedes": "ALTER TABLE memory_chunks ADD COLUMN supersedes TEXT DEFAULT ''",
-        "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
-    }
-    for column, statement in migrations.items():
+    for column, statement in READER_SAFE_MIGRATIONS.items():
         if column not in existing:
             try:
                 conn.execute(statement)

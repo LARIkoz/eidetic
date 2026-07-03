@@ -347,6 +347,48 @@ def infer_area(meta, filepath, project):
     return project or ""
 
 
+def _backfill_incomplete(conn):
+    """Self-healing detector (audit F1(b)): a writer-back-fill column exists but
+    was never populated from frontmatter, yet its source signal is present.
+
+    Back-fill normally fires when the WRITER adds the column (added &
+    FORCED_REREAD_ON_ADD). But if some other path already created the column with
+    DEFAULT '' (e.g. an older build, an interrupted migration), add-detection
+    misses it and propagation would recompute derived state as if the frontmatter
+    were empty — erasing deliberate demotions. So ALSO force a re-read when a
+    back-fill column is empty on EVERY row while its source is non-empty
+    somewhere. Idempotent: the `status: archived`/`superseded` signals below
+    back-fill to a non-empty value on the re-read, so this never loops.
+    """
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
+    except sqlite3.OperationalError:
+        return False
+    # (back-fill column, predicate for "this row had an authoritative source"):
+    # status_explicit is loop-safe on statuses that CANNOT be derived — only an
+    # explicit frontmatter status yields anything other than ''/current/superseded.
+    checks = [
+        ("status_explicit", "IFNULL(status,'') NOT IN ('', 'current', 'superseded')"),
+        ("superseded_by_explicit", "IFNULL(superseded_by,'') != ''"),
+        ("contradicted_by_explicit", "IFNULL(contradicted_by,'') != ''"),
+    ]
+    for backfill_col, source_pred in checks:
+        if backfill_col not in cols:
+            continue
+        try:
+            filled, sourced = conn.execute(
+                f"SELECT "
+                f"  SUM(CASE WHEN IFNULL({backfill_col},'') != '' THEN 1 ELSE 0 END), "
+                f"  SUM(CASE WHEN {source_pred} THEN 1 ELSE 0 END) "
+                f"FROM memory_chunks"
+            ).fetchone()
+        except sqlite3.OperationalError:
+            continue
+        if (filled or 0) == 0 and (sourced or 0) > 0:
+            return True
+    return False
+
+
 def migrate_schema(conn):
     """Add v2.6 columns to existing derived DBs."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
@@ -359,10 +401,12 @@ def migrate_schema(conn):
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
-    if added & FORCED_REREAD_ON_ADD:
-        # One-time forced re-read: invalidate stored mtimes (keep the rows so
-        # deleted-file cleanup still works) so the next incremental run reloads
-        # every file and fills the *_explicit columns from real frontmatter.
+    # Force a one-time file re-read when a back-fill column was just added by the
+    # writer, OR (self-healing, F1(b)) when a pre-existing back-fill column was
+    # never populated. Either way, invalidate stored mtimes (keep the rows so
+    # deleted-file cleanup still works) so the next incremental reloads every
+    # file and fills *_explicit/status_explicit from real frontmatter.
+    if (added & FORCED_REREAD_ON_ADD) or _backfill_incomplete(conn):
         try:
             conn.execute("UPDATE index_meta SET mtime = -1")
         except sqlite3.OperationalError:

@@ -29,6 +29,28 @@ FRESH = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
 BODY = "The flarnpuzzle rotation policy requires daily rotation of keys."
 QUERY = "flarnpuzzle rotation policy"
 
+# A faithful v5.13.1 (base a78af37) memory_chunks schema: has the relation
+# columns but NOT the branch-new back-fill columns (*_explicit/status_explicit).
+LEGACY_SCHEMA = """
+CREATE TABLE memory_chunks (
+    id INTEGER PRIMARY KEY, path TEXT NOT NULL, project TEXT, name TEXT, type TEXT,
+    evidence TEXT DEFAULT 'observed', source TEXT DEFAULT 'user-explicit',
+    confidence REAL DEFAULT 0.7, last_verified TEXT, card_kind TEXT DEFAULT '',
+    status TEXT DEFAULT 'current', area TEXT DEFAULT '', supersedes TEXT DEFAULT '',
+    superseded_by TEXT DEFAULT '', contradicts TEXT DEFAULT '',
+    contradicted_by TEXT DEFAULT '', section_heading TEXT, content TEXT NOT NULL,
+    description TEXT, mtime INTEGER, UNIQUE(path, section_heading)
+);
+CREATE VIRTUAL TABLE memory_fts USING fts5(
+    name, description, section_heading, content,
+    content=memory_chunks, content_rowid=id, tokenize='porter unicode61');
+CREATE TRIGGER memory_chunks_ai AFTER INSERT ON memory_chunks BEGIN
+    INSERT INTO memory_fts(rowid, name, description, section_heading, content)
+    VALUES (new.id, new.name, new.description, new.section_heading, new.content);
+END;
+CREATE TABLE index_meta (path TEXT PRIMARY KEY, mtime INTEGER);
+"""
+
 
 def _card(name, relations="", source="user-explicit"):
     rel_block = f"\n  {relations}" if relations else ""
@@ -261,6 +283,58 @@ class TruthMaintenanceTest(unittest.TestCase):
         index_impl.run_incremental(conn, [a, b])
         self.assertEqual(self._status(conn, "b-card"), "archived")
         conn.close()
+
+    def _legacy_row(self, path, name, status, superseded_by):
+        return (
+            "INSERT INTO memory_chunks (path, project, name, type, evidence, source,"
+            " last_verified, card_kind, status, area, supersedes, superseded_by,"
+            " contradicts, contradicted_by, section_heading, content, description, mtime)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (path, "", name, "project", "observed", "user-explicit", FRESH, "finding",
+             status, "", "", superseded_by, "", "", name, BODY, "", index_impl.file_mtime(path)),
+        )
+
+    def test_reader_first_migration_preserves_demotion(self):
+        # audit F1: a search (reader) that touches a freshly-upgraded legacy DB
+        # BEFORE the first writer-incremental must NOT defeat the *_explicit
+        # back-fill and let propagation erase a deliberate demotion. Two demoted
+        # cards: an own-frontmatter supersession (0.35) and an explicit archive
+        # (0.25). Both must SURVIVE the reader→writer-incremental sequence.
+        sup = self._write("self-super.md", _card("self-super", "superseded_by: newer-card"))
+        arch = self._write("shelved.md", _card("shelved", "status: archived"))
+
+        # 1) Build the legacy v5.13.1 DB with both cards indexed and index_meta
+        #    mtimes matching the files (so a plain incremental would SKIP them).
+        os.makedirs(os.path.dirname(self.db), exist_ok=True)
+        legacy = sqlite3.connect(self.db)
+        legacy.executescript(LEGACY_SCHEMA)
+        legacy.execute(*self._legacy_row(sup, "self-super", "superseded", "newer-card"))
+        legacy.execute(*self._legacy_row(arch, "shelved", "archived", ""))
+        for p in (sup, arch):
+            legacy.execute("INSERT INTO index_meta (path, mtime) VALUES (?, ?)",
+                           (p, index_impl.file_mtime(p)))
+        legacy.commit()
+        legacy.close()
+
+        # 2) READER FIRST: a search opens the upgraded DB and runs its migration.
+        rconn = sqlite3.connect(self.db)
+        si.ensure_agent_columns(rconn)
+        rconn.commit()
+        rconn.close()
+
+        # 3) WRITER incremental, exactly as the next index run does.
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, [sup, arch])
+        sup_row = conn.execute(
+            "SELECT superseded_by, status FROM memory_chunks WHERE name='self-super'").fetchone()
+        arch_status = self._status(conn, "shelved")
+        conn.close()
+
+        self.assertEqual(sup_row[0], "newer-card",
+                         "reader-first migration erased the superseded_by demotion")
+        self.assertEqual(sup_row[1], "superseded")
+        self.assertEqual(arch_status, "archived",
+                         "reader-first migration un-archived a deliberately archived card")
 
     def test_low_trust_declarer_cannot_downrank_user_explicit_target(self):
         # Authority gate: an agent-extracted card contradicting a NEWER-tier
