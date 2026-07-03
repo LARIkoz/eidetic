@@ -120,6 +120,11 @@ def _load_drift_data(db_path):
     result = {}
     for path, drift_type, detail, first_seen, detected_at in rows:
         entry = result.setdefault(path, {"penalty": None, "findings": []})
+        # Grace gate: a finding penalizes ranking only from its SECOND
+        # detection (`first_seen > 1`). Drift runs are >=24h apart, so a
+        # fresh finding is diagnostics-only for at least one full cycle —
+        # one transient mis-detection (e.g. a file mid-rename) never
+        # down-ranks a card. Same gate in assemble_context.load_drift_findings.
         penalized = int(first_seen or 0) > 1
         penalty = DRIFT_PENALTIES.get(drift_type, 0.5)
         if penalized and (entry["penalty"] is None or penalty < entry["penalty"]):
@@ -155,6 +160,23 @@ def compute_freshness(last_verified):
         return 0.5
     except (ValueError, TypeError):
         return 0.7
+
+
+def combine_freshness(freshness, drift_penalty):
+    """Fold an active drift penalty INTO freshness (multiply), never replace it.
+
+    v5.13.0 REPLACED freshness with the penalty, so broken_wikilink (0.8)
+    overwrote stale freshness (0.5) and UP-ranked a rotten card by +60%
+    (2026-07-02 causal audit), while age_stale (0.5) was a no-op on any
+    >30-day card (0.5 -> 0.5). Multiplying guarantees:
+      (a) monotonic — penalty <= 1, so a drifted card can never outrank the
+          same card without the finding;
+      (b) stale + drifted (0.5 * 0.8 = 0.4) ranks strictly below merely-old (0.5);
+      (c) confidence_escalation stays the strongest down-rank (<= 0.3 always).
+    """
+    if drift_penalty is None:
+        return freshness
+    return freshness * drift_penalty
 
 
 def compute_status_weight(status, superseded_by=""):
@@ -738,7 +760,7 @@ def _run_query(db_path, query, limit, type_filter, warn=False):
             status_w = compute_status_weight(row["status"], row["superseded_by"])
             drift_info = drift_data.get(row["path"], {})
             dp = drift_info.get("penalty")
-            fr_w = dp if dp is not None else compute_freshness(row["last_verified"])
+            fr_w = combine_freshness(compute_freshness(row["last_verified"]), dp)
             raw_rank = abs(row["fts_rank"])
             compound = raw_rank * ev_w * src_w * fr_w * status_w * max(0.1, match_quality)
 
@@ -1030,7 +1052,7 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=
         status_w = compute_status_weight(status, superseded_by)
         drift_info = (drift_data or {}).get(path, {})
         dp = drift_info.get("penalty")
-        fr_w = dp if dp is not None else compute_freshness(lv)
+        fr_w = combine_freshness(compute_freshness(lv), dp)
         compound = sim * ev_w * src_w * fr_w * status_w
 
         row_dict = {

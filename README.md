@@ -159,7 +159,7 @@ score = relevance x evidence x source x freshness x status
 
 evidence:   validated = 1.0    observed = 0.7    hypothesis = 0.4
 source:     user-explicit = 1.0  agent-extracted = 0.5  system = 0.3  imported = 0.3
-freshness:  < 30 days = 1.0    > 30 days = 0.5    (a drift finding overrides: stale 0.5x, broken link 0.8x)
+freshness:  < 30 days = 1.0    > 30 days = 0.5    (an active drift finding multiplies in: stale 0.5x, broken link 0.8x)
 status:     current = 1.0      resolved/fixed = 0.75   superseded/deprecated = 0.35   archived = 0.25
 ```
 
@@ -179,7 +179,9 @@ The feature that makes Eidetic different. Three checks, 24h throttle, zero file 
 | **Age staleness**         | Project memory untouched for 30+ days                  | 30d project, 60d status, 90d reference |
 | **Confidence escalation** | 3+ agent-extracted updates, 0 human confirmation       | 3 events                               |
 
-Drift findings penalize ranking: broken wikilink = 0.8x, stale = 0.5x, confidence escalation = 0.3x. Auto-resolve when the problem disappears.
+Drift findings penalize ranking by **multiplying into the freshness factor**: broken wikilink = 0.8x, stale = 0.5x, confidence escalation = 0.3x — so a stale card with a drift finding always ranks below a merely-old one, and a finding can never *raise* a card. Auto-resolve when the problem disappears.
+
+**Grace gate:** a finding starts penalizing only on its **second** detection (drift runs are ≥24h apart), so one transient mis-detection never down-ranks a card. Until then it appears in diagnostics only.
 
 ### Smart Token Compression (v1.3)
 

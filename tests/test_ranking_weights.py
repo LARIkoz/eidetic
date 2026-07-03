@@ -65,5 +65,58 @@ class RankingWeightsTest(unittest.TestCase):
         self.assertAlmostEqual(ev.compound_weight({}, "no/such/path", {}, body=None), 0.7)
 
 
+class DriftPenaltyMonotonicityTest(unittest.TestCase):
+    """Drift penalties must be genuine DOWN-ranks (2026-07-02 causal audit).
+
+    v5.13.0 REPLACED freshness with the penalty, so broken_wikilink (0.8)
+    up-ranked any >30-day card (+60% observed) and age_stale (0.5) was a
+    no-op. combine_freshness must multiply, so a drift finding can NEVER
+    raise a card's score relative to the same card without the finding.
+    """
+
+    FRESHNESS_VALUES = (1.0, 0.7, 0.5)
+
+    def test_no_penalty_is_identity(self):
+        for fresh in self.FRESHNESS_VALUES:
+            self.assertEqual(si.combine_freshness(fresh, None), fresh)
+
+    def test_penalty_never_raises_effective_freshness(self):
+        # (a) NO drift penalty may ever up-rank: combined <= plain freshness
+        # for every (freshness, penalty) pair in the tables.
+        for fresh in self.FRESHNESS_VALUES:
+            for kind, dp in constants.DRIFT_PENALTIES.items():
+                self.assertLessEqual(
+                    si.combine_freshness(fresh, dp), fresh,
+                    f"{kind} penalty {dp} raised freshness {fresh}",
+                )
+
+    def test_broken_wikilink_downranks_stale_cards(self):
+        # Regression for the audit's headline defect: on a stale card
+        # (freshness 0.5) the 0.8 penalty replaced 0.5 → score ROSE +60%.
+        combined = si.combine_freshness(0.5, constants.DRIFT_PENALTIES["broken_wikilink"])
+        self.assertLess(combined, 0.5)
+
+    def test_age_stale_strictly_lowers_a_stale_card(self):
+        # (b) age_stale used to be a no-op (0.5 replaced 0.5). A stale card
+        # WITH the finding must now rank strictly below one without it.
+        combined = si.combine_freshness(0.5, constants.DRIFT_PENALTIES["age_stale"])
+        self.assertLess(combined, 0.5)
+
+    def test_confidence_escalation_remains_the_strongest_downrank(self):
+        # (c) escalation must stay a decisive down-rank at every freshness.
+        dp = constants.DRIFT_PENALTIES["confidence_escalation"]
+        for fresh in self.FRESHNESS_VALUES:
+            self.assertLessEqual(si.combine_freshness(fresh, dp), 0.3)
+            self.assertLess(si.combine_freshness(fresh, dp), fresh)
+
+    def test_assemble_context_multiplies_drift_into_freshness(self):
+        # Same replace-bug lived in the injection weigher; "2025-01-01" is
+        # >30d old → freshness 0.5, so a 0.8 penalty must LOWER the weight.
+        clean = ac.compound_weight("observed", "user-explicit", "2025-01-01")
+        flagged = ac.compound_weight("observed", "user-explicit", "2025-01-01", drift_penalty=0.8)
+        self.assertLess(flagged, clean)
+        self.assertAlmostEqual(flagged, clean * 0.8)
+
+
 if __name__ == "__main__":
     unittest.main()

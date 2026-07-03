@@ -137,17 +137,18 @@ def compound_weight(evidence, source, last_verified, drift_penalty=None, status=
     ev = EVIDENCE_WEIGHTS.get(evidence, 0.7)
     src = SOURCE_WEIGHTS.get(source, 1.0)
     st = status_weight(status, superseded_by)
+    fr = 0.7
+    if last_verified:
+        try:
+            lv = datetime.fromisoformat(str(last_verified).replace("Z", "+00:00"))
+            now = datetime.now(lv.tzinfo) if lv.tzinfo else datetime.now()
+            fr = 1.0 if (now - lv).days < FRESHNESS_DAYS else 0.5
+        except (ValueError, TypeError):
+            pass
     if drift_penalty is not None:
-        fr = drift_penalty
-    else:
-        fr = 0.7
-        if last_verified:
-            try:
-                lv = datetime.fromisoformat(str(last_verified).replace("Z", "+00:00"))
-                now = datetime.now(lv.tzinfo) if lv.tzinfo else datetime.now()
-                fr = 1.0 if (now - lv).days < FRESHNESS_DAYS else 0.5
-            except (ValueError, TypeError):
-                pass
+        # Multiply, never replace — replacing let a mild penalty (0.8) overwrite
+        # stale freshness (0.5) and up-rank rot. See search_impl.combine_freshness.
+        fr *= drift_penalty
     return ev * src * fr * st
 
 
