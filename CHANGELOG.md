@@ -2,6 +2,15 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.13.1 (2026-07-03)
+
+Ranking-correctness fix: makes the flagship "drift down-ranks stale memories" claim actually true — an adversarial claims-vs-reality audit of v5.13.0 found it overstated. No new dependencies; the fix is guarded by tests that fail on the pre-fix code.
+
+**Drift-penalty ranking (`search_impl.py`, `assemble_context.py`):**
+
+- **Drift penalties now multiply into the freshness factor instead of replacing it.** v5.13.0 let a penalty _overwrite_ freshness, so on any card older than 30 days (freshness 0.5) a broken-wikilink finding (0.8×) actually _raised_ the card's score by +60%, and an age-stale finding (0.5×) was a no-op against the identical freshness decay. Multiplying is monotonic: a drift finding can never raise a card, a stale-and-drifted card always ranks below a merely-old one, and confidence escalation (0.3×) stays the strongest down-rank.
+- **The `first_seen > 1` grace gate is now documented** (in code and the README drift section): a finding starts penalizing only on its second detection (drift runs are ≥24 h apart), so a transient mis-detection never down-ranks a card — until then it appears in diagnostics only.
+
 ## v5.13.0 (2026-07-02)
 
 Reliability + honest-diagnostics release: everything found by a full self-audit of a clean install. No behavior changes to search/ranking.

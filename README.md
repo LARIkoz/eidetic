@@ -1,6 +1,6 @@
 🇬🇧 **English** · [🇷🇺 Русский](README.ru.md)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.13.0-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-5.13.1-blue.svg)](CHANGELOG.md) [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md) [![Agents: Claude · Codex · Gemini](https://img.shields.io/badge/agents-Claude%20%C2%B7%20Codex%20%C2%B7%20Gemini-8A63D2.svg)](#works-with-any-agent)
 
 # Eidetic
 
@@ -179,7 +179,7 @@ The feature that makes Eidetic different. Three checks, 24h throttle, zero file 
 | **Age staleness**         | Project memory untouched for 30+ days                  | 30d project, 60d status, 90d reference |
 | **Confidence escalation** | 3+ agent-extracted updates, 0 human confirmation       | 3 events                               |
 
-Drift findings penalize ranking by **multiplying into the freshness factor**: broken wikilink = 0.8x, stale = 0.5x, confidence escalation = 0.3x — so a stale card with a drift finding always ranks below a merely-old one, and a finding can never *raise* a card. Auto-resolve when the problem disappears.
+Drift findings penalize ranking by **multiplying into the freshness factor**: broken wikilink = 0.8x, stale = 0.5x, confidence escalation = 0.3x — so a stale card with a drift finding always ranks below a merely-old one, and a finding can never _raise_ a card. Auto-resolve when the problem disappears.
 
 **Grace gate:** a finding starts penalizing only on its **second** detection (drift runs are ≥24h apart), so one transient mis-detection never down-ranks a card. Until then it appears in diagnostics only.
 
