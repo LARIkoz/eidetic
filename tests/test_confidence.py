@@ -198,6 +198,50 @@ class MigrationTest(unittest.TestCase):
             conn.execute("SELECT COUNT(*) FROM card_events").fetchone()[0], 0)
         conn.close()
 
+    def test_same_slug_cards_do_not_collide_in_projection(self):  # audit F3
+        # Two distinct files whose name: normalizes to the same slug in one
+        # project must NOT collide in card_events — the projection is keyed by
+        # the card's file path (the fold's per-card identity), so the second
+        # card's index cannot DELETE the first's events.
+        a = self._write("a.md", _card("Shared Rule", type_="project", source="agent-extracted",
+                                      evidence_lines=["2026-07-01 · observed · agent-extracted · Δ+0.05 · \"a\""]))
+        b = self._write("b.md", _card("Shared-Rule", type_="project", source="agent-extracted",
+                                      evidence_lines=["2026-07-02 · confirmed · user-explicit · Δ+0.20 · \"b\""]))
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, [a, b])
+        rows = dict(conn.execute("SELECT path, event_type FROM card_events ORDER BY path").fetchall())
+        conn.close()
+        self.assertEqual(set(rows), {a, b}, "same-slug cards collided in card_events (F3)")
+        self.assertEqual(rows[a], "observed")
+        self.assertEqual(rows[b], "confirmed")
+
+    def test_f3_migrates_old_projection_schema_and_repopulates_once(self):
+        # An existing 1B store (card_events keyed by project_hash+slug, stamped
+        # backfill_v6b) migrates to the per-path schema and repopulates exactly
+        # once on the next run.
+        a = self._write("m.md", _card("m", type_="project", source="agent-extracted",
+                        evidence_lines=["2026-07-01 · observed · agent-extracted · Δ+0.05 · \"x\""]))
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, [a])
+        conn.execute("DROP TABLE card_events")
+        conn.execute(
+            "CREATE TABLE card_events (card_slug TEXT NOT NULL, project_hash TEXT NOT NULL, "
+            "ts TEXT NOT NULL, event_type TEXT NOT NULL, actor_tier INTEGER NOT NULL, "
+            "session_id TEXT, delta REAL NOT NULL, note TEXT, "
+            "PRIMARY KEY (project_hash, card_slug, ts, event_type))")
+        conn.execute("DELETE FROM schema_meta WHERE key = ?", (index_impl.BACKFILL_STAMP_KEY,))
+        conn.execute("INSERT INTO schema_meta(key, value) VALUES('backfill_v6b', 'done')")
+        conn.commit()
+        conn.close()
+
+        conn = index_impl.init_db(self.db)  # _migrate_card_events drops old schema
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(card_events)")}
+        self.assertIn("path", cols)
+        index_impl.run_incremental(conn, [a])  # forced re-read repopulates
+        rows = conn.execute("SELECT path, event_type FROM card_events").fetchall()
+        conn.close()
+        self.assertEqual(rows, [(a, "observed")])
+
     def test_obs1_step1_stamped_store_backfills_once_stable_rowids(self):
         # A store stamped by STEP 1 (backfill_v6) but lacking the 1B columns must
         # back-fill EXACTLY once when the 1B code runs, then never re-index again.

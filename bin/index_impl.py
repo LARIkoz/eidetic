@@ -115,8 +115,12 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 
 -- STEP 1B — evidence events (spec §3.2). A DERIVED projection rebuilt from each
 -- card's `## Evidence` markdown on reindex (the markdown is the durable truth,
--- P1); confidence is the deterministic fold of these rows.
+-- P1); confidence is the deterministic fold of these rows. Keyed by the card's
+-- FILE PATH — the same per-file identity the fold uses — so two same-slug cards
+-- under one project_hash cannot collide in the projection (audit F3);
+-- project_hash + card_slug are retained for the §6 cross-project promotion query.
 CREATE TABLE IF NOT EXISTS card_events (
+    path          TEXT NOT NULL,
     card_slug     TEXT NOT NULL,
     project_hash  TEXT NOT NULL,
     ts            TEXT NOT NULL,
@@ -125,7 +129,7 @@ CREATE TABLE IF NOT EXISTS card_events (
     session_id    TEXT,
     delta         REAL NOT NULL,
     note          TEXT,
-    PRIMARY KEY (project_hash, card_slug, ts, event_type)
+    PRIMARY KEY (path, ts, event_type)
 );
 """
 
@@ -136,12 +140,12 @@ CREATE TABLE IF NOT EXISTS card_events (
 # card superseded/contradicted BY PROPAGATION (own *_explicit empty), so it
 # re-indexed every file on every incremental (rowid churn / vector thrash).
 #
-# STEP 1B (audit OBS-1): the key is BUMPED to `backfill_v6b` because 1B adds new
-# back-fill state (the `lifecycle` column + the materialized `confidence` fold).
-# A store already stamped `backfill_v6` by STEP 1 therefore lacks `backfill_v6b`
-# → migrate_schema forces exactly ONE re-read to back-fill the 1B columns, then
-# stamps `backfill_v6b`. Bump this suffix on every future back-fill-column add.
-BACKFILL_STAMP_KEY = "backfill_v6b"
+# STEP 1B (audit OBS-1): the key is BUMPED on every new back-fill state so an
+# already-stamped store re-reads exactly ONCE to populate it, then stamps the new
+# key. `backfill_v6b` added the `lifecycle` column + materialized `confidence`;
+# `backfill_v6c` (audit F3, turn 11) repopulates `card_events` under its new
+# per-`path` schema. A store lacking the current key gets one forced re-read.
+BACKFILL_STAMP_KEY = "backfill_v6c"
 
 # Explicit statuses that demote AT LEAST as hard as a propagated supersession
 # (status weight <= superseded's 0.35). Only these override a propagated
@@ -667,10 +671,26 @@ def init_db(db_path):
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(DB_SCHEMA)
+    _migrate_card_events(conn)
     migrate_schema(conn)
     migrate_feedback_user_inferred_statuses(conn)
     conn.commit()
     return conn
+
+
+def _migrate_card_events(conn):
+    """F3: an existing 1B store has a card_events table keyed by
+    (project_hash, card_slug); drop it so the new per-`path` schema (from
+    DB_SCHEMA) takes effect. Safe — card_events is a DERIVED projection rebuilt
+    from the `## Evidence` markdown; the stamp bump forces a one-time re-read
+    that repopulates it under the new key."""
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(card_events)")}
+    except sqlite3.OperationalError:
+        return
+    if cols and "path" not in cols:
+        conn.execute("DROP TABLE card_events")
+        conn.executescript(DB_SCHEMA)  # re-create card_events (CREATE IF NOT EXISTS)
 
 
 _EVIDENCE_LINE_RE = re.compile(r"^-\s+(.*\S)\s*$")
@@ -736,19 +756,18 @@ def _write_card_events(conn, filepath, meta, card_kind, events):
     slug = _card_slug(meta, filepath)
     phash = detect_project(filepath) or ""
     try:
-        conn.execute(
-            "DELETE FROM card_events WHERE project_hash = ? AND card_slug = ?",
-            (phash, slug),
-        )
+        # Scope by the FILE PATH (the fold's per-card identity), so a same-slug
+        # sibling in the same project can never DELETE this card's events (F3).
+        conn.execute("DELETE FROM card_events WHERE path = ?", (filepath,))
         for ev in events:
             tier = ev.get("actor_tier")
             if tier is None and _confidence is not None:
                 tier = _confidence.EVENT_SPECS.get(ev["event_type"], {"tier": 1})["tier"]
             conn.execute(
                 "INSERT OR REPLACE INTO card_events "
-                "(card_slug, project_hash, ts, event_type, actor_tier, session_id, delta, note) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (slug, phash, ev["ts"], ev["event_type"], int(tier or 1),
+                "(path, card_slug, project_hash, ts, event_type, actor_tier, session_id, delta, note) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (filepath, slug, phash, ev["ts"], ev["event_type"], int(tier or 1),
                  ev.get("session_id"), float(ev.get("delta", 0.0) or 0.0),
                  ev.get("note", "")),
             )
