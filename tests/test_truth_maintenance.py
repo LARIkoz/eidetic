@@ -274,6 +274,21 @@ class TruthMaintenanceTest(unittest.TestCase):
                          "derived status stayed 'superseded' after the declaration was removed")
         conn.close()
 
+    def test_explicit_status_current_does_not_defeat_propagated_supersession(self):
+        # audit F4: `status: current` is the non-authoritative DEFAULT. A card
+        # carrying it that is superseded by ANOTHER card's `supersedes:` must
+        # still derive status='superseded' — literal 'current' must not block it.
+        c = self._write("c-current.md", _card("c-current", "status: current"))
+        d = self._write("d-super.md", _card("d-super", "supersedes: c-current"))
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, [c, d])
+        row = conn.execute(
+            "SELECT superseded_by, status FROM memory_chunks WHERE name='c-current'").fetchone()
+        conn.close()
+        self.assertEqual(row[0], "d-super")
+        self.assertEqual(row[1], "superseded",
+                         "explicit 'status: current' wrongly defeated the propagated supersession")
+
     def test_propagation_never_overrides_explicit_status(self):
         # An explicit `status:` must survive propagated supersession — derived
         # recompute must respect the (project-authored) explicit value.

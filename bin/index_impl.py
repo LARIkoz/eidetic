@@ -793,13 +793,18 @@ def compute_relation_state(conn):
             updates[(path, column)] = explicit or ", ".join(sorted(desired[path][column]))
         # DERIVED status recompute (clear-when-removed): a card whose EFFECTIVE
         # superseded_by (own OR another card's propagated `supersedes:`) is set
-        # is 'superseded'; else its explicit frontmatter status; else 'current'.
-        # Mirrors infer_status but folds in the PROPAGATED supersession the
-        # index-time pass could not see, and reverts to 'current' the moment the
-        # declaration is removed. An explicit status always wins (never clobbered).
+        # is 'superseded'; else its AUTHORITATIVE explicit frontmatter status;
+        # else 'current'. Folds in the PROPAGATED supersession the index-time
+        # pass could not see, and reverts to 'current' when the declaration is
+        # removed. Audit F4: literal `status: current` (and empty) is the
+        # NON-authoritative default and must NOT block a propagated supersession
+        # — only an explicit demotion/promotion (superseded/archived/deprecated/
+        # resolved/validated/…) overrides the derived value.
+        explicit_status = card["status_explicit"]
+        authoritative_status = explicit_status if explicit_status not in ("", "current") else ""
         effective_superseded_by = updates[(path, "superseded_by")]
         updates[(path, "status")] = (
-            card["status_explicit"]
+            authoritative_status
             or ("superseded" if effective_superseded_by else "current")
         )
     return updates, unresolved, gated
