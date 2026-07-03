@@ -490,6 +490,44 @@ def migrate_schema(conn):
             pass
 
 
+def check_evidence_divergence(conn):
+    """§3.2 doctor check: report any card whose `## Evidence` markdown (the
+    durable truth) disagrees with its `card_events` projection.
+
+    The projection is rebuilt from the markdown on every reindex, so markdown
+    always WINS and a divergence self-heals — but a transient (edited-not-yet-
+    reindexed) or tampered divergence is surfaced LOUDLY here. Returns a list of
+    human-readable problems (empty when consistent). Candidates = every path in
+    the projection plus every card that carries an indexed `## Evidence` section.
+    """
+    problems = []
+    try:
+        proj = {}
+        for path, ts, et in conn.execute("SELECT path, ts, event_type FROM card_events"):
+            proj.setdefault(path, set()).add((ts, et))
+        candidates = set(proj)
+        for (path,) in conn.execute(
+                "SELECT DISTINCT path FROM memory_chunks WHERE section_heading = 'Evidence'"):
+            candidates.add(path)
+    except sqlite3.OperationalError:
+        return problems  # pre-1B DB without card_events — nothing to check
+    for path in sorted(candidates):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                _meta, body = parse_frontmatter(f.read())
+            src = {(e["ts"], e["event_type"]) for e in parse_evidence_events(body)}
+        except OSError:
+            src = set()  # file gone but the projection still has rows → divergence
+        got = proj.get(path, set())
+        if src != got:
+            problems.append(
+                f"{path}: card_events diverges from `## Evidence` "
+                f"(markdown-only={len(src - got)}, projection-only={len(got - src)}) "
+                "— markdown wins; run index.sh --full to rebuild the projection"
+            )
+    return problems
+
+
 def check_relation_schema(conn):
     """Surface a missing/malformed explicit-relation column instead of letting
     truth-maintenance silently no-op.

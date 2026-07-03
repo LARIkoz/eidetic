@@ -149,6 +149,22 @@ print('{}|{}'.format(len(disk), sum(1 for p in disk if p not in idx)))
     fi
 fi
 
+# Confidence rails (§3.2): the card_events projection must match each card's
+# `## Evidence` markdown (the truth). A divergence self-heals on reindex, but
+# surface it loudly so a tampered/stale projection is visible.
+if [ -f "$DB" ]; then
+    EV_DIV=$(python3 -c "import sys; sys.path.insert(0,'$SCRIPT_DIR'); import sqlite3, index_impl
+c=sqlite3.connect('file:$DB?mode=ro', uri=True)
+[print(p) for p in index_impl.check_evidence_divergence(c)]
+c.close()" 2>/dev/null)
+    if [ -n "$EV_DIV" ]; then
+        EV_N=$(printf '%s\n' "$EV_DIV" | grep -c .)
+        warn "card_events diverges from ## Evidence on $EV_N card(s) — markdown wins" "bash $MEMORY_SYSTEM/bin/index.sh --full   # rebuild the confidence-event projection"
+    else
+        ok "confidence rails: card_events matches ## Evidence"
+    fi
+fi
+
 # ------------------------------------------------------------ VECTORS / MODEL
 hdr "Vectors & embedding model"
 if [ -f "$VDB" ]; then

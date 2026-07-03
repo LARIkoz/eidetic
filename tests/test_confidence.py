@@ -198,6 +198,24 @@ class MigrationTest(unittest.TestCase):
             conn.execute("SELECT COUNT(*) FROM card_events").fetchone()[0], 0)
         conn.close()
 
+    def test_evidence_divergence_doctor_check(self):  # audit F2 / §3.2
+        # A consistent store reports no divergence; a tampered projection is
+        # surfaced LOUDLY (non-zero problem count) — markdown wins.
+        f = self._write("d.md", _card("d", type_="project", source="agent-extracted",
+                        evidence_lines=["2026-07-01 · observed · agent-extracted · Δ+0.05 · \"x\""]))
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, [f])
+        self.assertEqual(index_impl.check_evidence_divergence(conn), [])
+        conn.execute(
+            "INSERT INTO card_events (path, card_slug, project_hash, ts, event_type, actor_tier, delta) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)", (f, "d", "", "2099-01-01", "confirmed", 3, 0.2))
+        conn.commit()
+        problems = index_impl.check_evidence_divergence(conn)
+        conn.close()
+        self.assertEqual(len(problems), 1)
+        self.assertIn("card_events diverges", problems[0])
+        self.assertIn("projection-only=1", problems[0])
+
     def test_same_slug_cards_do_not_collide_in_projection(self):  # audit F3
         # Two distinct files whose name: normalizes to the same slug in one
         # project must NOT collide in card_events — the projection is keyed by

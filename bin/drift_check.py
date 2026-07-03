@@ -660,6 +660,13 @@ def main():
         import index_impl
         for problem in index_impl.check_relation_schema(index_conn):
             print(f"WARNING: relation schema — {problem}", file=sys.stderr)
+        # §3.2 (audit F2): surface any `## Evidence` ↔ card_events divergence.
+        evidence_divergences = index_impl.check_evidence_divergence(index_conn)
+        for problem in evidence_divergences:
+            print(f"WARNING: evidence divergence — {problem}", file=sys.stderr)
+        if evidence_divergences:
+            print(f"Doctor: {len(evidence_divergences)} card_events divergence(s) "
+                  "(markdown wins; run index.sh --full).", file=sys.stderr)
     except ImportError:
         pass
 
