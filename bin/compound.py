@@ -36,12 +36,24 @@ TODAY = datetime.now().strftime("%Y-%m-%d")
 # and still create the new file. Below FLAG → genuinely new topic.
 OVERLAP_COMPOUND_MIN = 3
 OVERLAP_FLAG_MIN = 2
-# The gate threshold must clear the ACTIVE embedder's unrelated-pair floor or
-# it approves everything: e5-large cosines for unrelated query/passage pairs
-# sit ~0.75-0.85 (see search_impl's measured calibration — garbage <=0.79,
-# true 0.80-0.85), so 0.85 = "at least as similar as a true retrieval match";
-# bge-small-en spreads much wider and 0.60 discriminates there. Unknown
-# profile → strict (fail toward FLAGGING, never toward auto-compounding).
+# Vector gate = POSITIVE-ONLY promotion threshold (never a veto).
+#
+# Design law (audit findings, KEEP #6): the vector gate may ADD positive signal
+# (promote a BORDERLINE lexical match the salient-keyword counter under-counted)
+# or stay silent — it must NEVER hard-veto a STRONG lexical match. A cosine at
+# or above this threshold is treated as "the embedder judges this a true
+# duplicate"; below it the gate is silent and the lexical stage alone decides.
+#
+# Threshold calibrated empirically ON THIS BOX (multilingual-e5-large, 1024d,
+# fastembed 0.8.0, query:/passage: prefixes — see eidetic-v6-build calibration
+# 2026-07-03): a genuine same-topic duplicate scored cos 0.920, while topical-
+# but-distinct near-dups sharing surface keywords scored 0.833-0.837 and a
+# strong-lexical paraphrase of the target scored 0.843. 0.85 therefore cleanly
+# separates a real duplicate (>=0.92) from e5 topical noise (~0.83-0.84) — and,
+# critically, sits ABOVE the 0.843 strong-lexical paraphrase, proving why the
+# gate must not veto strong lexical matches (they legitimately score below it).
+# bge-small-en spreads wider and 0.60 discriminates there. Unknown profile →
+# strict (fail toward FLAGGING, never toward auto-compounding).
 VECTOR_GATE_MIN_SIM_BY_PROFILE = {"multilingual": 0.85, "english": 0.60}
 VECTOR_GATE_MIN_SIM_DEFAULT = 0.85
 
@@ -144,13 +156,16 @@ _vector_gate_warned = False
 
 
 def _vector_gate(signal_text, candidate_text):
-    """Optional semantic guard for the threshold fallback.
+    """Optional semantic signal for the threshold fallback (positive-only).
 
-    True/False = vectors judged the pair; None = vectors unavailable (no
-    vectors.db / no fastembed — the FTS-only default), caller proceeds on
-    the lexical threshold alone. Never raises, but a degradation WITH a
-    vectors.db present is logged once (class only) — a silently dead gate
-    looks identical to an approving one.
+    True  = cosine >= the profile promotion threshold (the embedder judges the
+            pair a true duplicate) — used only to PROMOTE a borderline lexical
+            match, never to veto a strong one (see find_overlap_candidate).
+    False = cosine below threshold (embedder does not see a duplicate).
+    None  = vectors unavailable (no vectors.db / no fastembed — the FTS-only
+            default); caller proceeds on the lexical stage alone.
+    Never raises, but a degradation WITH a vectors.db present is logged once
+    (class only) — a silently dead gate looks identical to an approving one.
 
     Asymmetric prefixes: the signal is the QUERY side, the candidate card the
     passage side — embedding both as passage: inflates e5 cosine and defeats
@@ -193,11 +208,25 @@ def find_overlap_candidate(conn, query, signal_text):
     """Stage-3 thresholded fallback after phrase + AND both missed.
 
     Counts how many of the top-6 salient keywords individually hit the same
-    card (porter stemming absorbs inflection: performs/performing). Returns:
-      ("compound", rows)  — >= OVERLAP_COMPOUND_MIN keywords converge on one
-                            card (and the vector gate, when available, agrees);
-      ("flag", path)      — OVERLAP_FLAG_MIN keywords: possible duplicate,
-                            surface it instead of silently creating a file;
+    card (porter stemming absorbs inflection: performs/performing), then applies
+    the vector gate as a POSITIVE-ONLY signal per the KEEP #6 design law:
+
+      STRONG lexical (>= OVERLAP_COMPOUND_MIN keywords converge on one card):
+        compound unconditionally. The vector gate may CONFIRM but must NEVER
+        veto — a genuine strong-lexical paraphrase scores below e5's duplicate
+        line (0.843 < 0.85 on this box), so a cosine veto here demoted real
+        compounds (the pre-fix bug: 1 RED test on the vectored box).
+      BORDERLINE lexical (OVERLAP_FLAG_MIN .. OVERLAP_COMPOUND_MIN-1): too weak
+        to auto-compound on lexical alone, but the vector gate may ADD positive
+        signal — a near-dup the salient counter under-counted still compounds
+        when the embedder judges the pair a true duplicate (sim >= threshold).
+        Otherwise FLAG.
+      No lexical (< OVERLAP_FLAG_MIN): genuinely new topic — vector-only
+        compounding is NEVER allowed.
+
+    Returns:
+      ("compound", rows)  — strong lexical, or borderline confirmed by vectors;
+      ("flag", path)      — a possible duplicate: surface it, don't silently dup;
       (None, None)        — genuinely new topic.
     """
     words = _sanitize_words(query)
@@ -217,17 +246,22 @@ def find_overlap_candidate(conn, query, signal_text):
     if best_count < OVERLAP_FLAG_MIN:
         return None, None
 
-    if best_count >= OVERLAP_COMPOUND_MIN:
-        rows = conn.execute("""
+    def _card_rows():
+        return conn.execute("""
             SELECT path, name, section_heading, content, 0 AS fts_rank
             FROM memory_chunks WHERE path = ? LIMIT 1
         """, (best_path,)).fetchall()
-        if rows:
-            gate = _vector_gate(signal_text, rows[0][3] or "")
-            if gate is not False:
-                return "compound", rows
-        return "flag", best_path
 
+    # STRONG lexical: compound; gate may confirm, never veto (so it isn't called).
+    if best_count >= OVERLAP_COMPOUND_MIN:
+        rows = _card_rows()
+        return ("compound", rows) if rows else ("flag", best_path)
+
+    # BORDERLINE lexical: vectors decide. Only a positive (True) cosine promotes
+    # to compound; False (below threshold) and None (vectors unavailable) FLAG.
+    rows = _card_rows()
+    if rows and _vector_gate(signal_text, rows[0][3] or "") is True:
+        return "compound", rows
     return "flag", best_path
 
 
