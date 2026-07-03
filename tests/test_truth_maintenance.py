@@ -197,6 +197,35 @@ class TruthMaintenanceTest(unittest.TestCase):
         self.assertEqual(rows[files[0]], "new-rule")
         self.assertEqual(rows[files[1]], "", "cross-project same-slug card was contaminated")
 
+    def test_path_qualified_target_does_not_nuke_other_project(self):
+        # KEEP #1: a PATH-QUALIFIED `contradicts: notes/methodology.md` declared
+        # in proj-a must resolve ONLY inside proj-a. The pre-fix path-suffix
+        # match (`endswith("/notes/methodology")`) matched the same-suffix card
+        # in ANY project, rank-nuking proj-b's identically-named card. Identity
+        # is (project, normalized name) — never a bare suffix match across
+        # projects. proj-b's card must be byte- and rank-identical (untouched).
+        proj_a = os.path.join(self.tmp, ".claude", "projects", "proj-a", "memory")
+        proj_b = os.path.join(self.tmp, ".claude", "projects", "proj-b", "memory")
+        files = [
+            self._write("methodology.md", _card("methodology"),
+                        os.path.join(proj_a, "notes")),
+            self._write("methodology.md", _card("methodology"),
+                        os.path.join(proj_b, "notes")),
+            self._write("rules.md", _card("rules", "contradicts: notes/methodology.md"),
+                        proj_a),
+        ]
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, files)
+        rows = dict(conn.execute(
+            "SELECT DISTINCT path, contradicted_by FROM memory_chunks WHERE name = 'methodology'"
+        ).fetchall())
+        conn.close()
+        # proj-a's methodology IS the real target of the same-project declaration.
+        self.assertEqual(rows[files[0]], "rules")
+        # proj-b's same-suffix card in ANOTHER project must be untouched.
+        self.assertEqual(rows[files[1]], "",
+                         "path-qualified target nuked a same-suffix card in another project")
+
     def test_low_trust_declarer_cannot_downrank_user_explicit_target(self):
         # Authority gate: an agent-extracted card contradicting a NEWER-tier
         # user-explicit card must not apply the 0.4x penalty — the claim is
