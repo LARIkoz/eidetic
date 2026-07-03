@@ -75,8 +75,13 @@ try:
 except ImportError:
     EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
     SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
-    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3, "contradicted": 0.4}
+    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3,
+                       "contradicted": 0.4, "unresolved_relation": 1.0, "relation_claim": 1.0}
     DECLARED_DRIFT_TYPES = {"contradicted"}
+
+# A card with several distinct penalized findings compounds them (product);
+# the floor keeps a many-problem card retrievable at all (verify-then-fix).
+DRIFT_PENALTY_FLOOR = 0.1
 
 
 def ensure_agent_columns(conn):
@@ -122,7 +127,7 @@ def _load_drift_data(db_path):
         return {}
     result = {}
     for path, drift_type, detail, first_seen, detected_at in rows:
-        entry = result.setdefault(path, {"penalty": None, "findings": []})
+        entry = result.setdefault(path, {"penalty": None, "findings": [], "_types": set()})
         # Grace gate: a finding penalizes ranking only from its SECOND
         # detection (`first_seen > 1`). Drift runs are >=24h apart, so a
         # fresh finding is diagnostics-only for at least one full cycle —
@@ -130,10 +135,20 @@ def _load_drift_data(db_path):
         # down-ranks a card. Same gate in assemble_context.load_drift_findings.
         # DECLARED relations (e.g. `contradicted`) are asserted facts, not
         # detections — they bypass the gate and penalize immediately.
-        penalized = int(first_seen or 0) > 1 or drift_type in DECLARED_DRIFT_TYPES
+        # Penalty-1.0 types (unresolved_relation, relation_claim) are
+        # diagnostics-only by construction and never count as penalized.
         penalty = DRIFT_PENALTIES.get(drift_type, 0.5)
-        if penalized and (entry["penalty"] is None or penalty < entry["penalty"]):
-            entry["penalty"] = penalty
+        penalized = penalty < 1.0 and (
+            int(first_seen or 0) > 1 or drift_type in DECLARED_DRIFT_TYPES
+        )
+        # Distinct penalized types COMPOUND (multiply): a stale card with a
+        # broken wikilink AND a declared contradiction must rank below a card
+        # with any one of those. Keeping only the min let a 3-problem card
+        # rank like a 1-problem card. Duplicate findings of the SAME type
+        # (e.g. 3 broken wikilinks) still count once.
+        if penalized and drift_type not in entry["_types"]:
+            entry["_types"].add(drift_type)
+            entry["penalty"] = penalty if entry["penalty"] is None else entry["penalty"] * penalty
         entry["findings"].append({
             "type": drift_type,
             "detail": detail or "",
@@ -142,6 +157,10 @@ def _load_drift_data(db_path):
             "penalized": penalized,
             "penalty": penalty if penalized else None,
         })
+    for entry in result.values():
+        entry.pop("_types", None)
+        if entry["penalty"] is not None:
+            entry["penalty"] = max(DRIFT_PENALTY_FLOOR, entry["penalty"])
     return result
 
 

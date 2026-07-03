@@ -182,7 +182,7 @@ The feature that makes Eidetic different. Four checks, 24h throttle, zero file m
 | **Confidence escalation** | 3+ agent-extracted updates, 0 human confirmation       | 3 events                               |
 | **Declared contradiction** | A card another card declares `contradicts:` (or its own `contradicted_by:`) | Immediate, no grace gate |
 
-Drift findings penalize ranking by **multiplying into the freshness factor**: broken wikilink = 0.8x, stale = 0.5x, confidence escalation = 0.3x — so a stale card with a drift finding always ranks below a merely-old one, and a finding can never _raise_ a card. Auto-resolve when the problem disappears.
+Drift findings penalize ranking by **multiplying into the freshness factor**: broken wikilink = 0.8x, stale = 0.5x, confidence escalation = 0.3x, declared contradiction = 0.4x — so a stale card with a drift finding always ranks below a merely-old one, and a finding can never *raise* a card. Distinct findings on one card **compound** (their penalties multiply, floored at 0.1x), so a three-problem card ranks below a one-problem card. Auto-resolve when the problem disappears — including declared relations: propagation is recomputed from the current declarers on every reindex, so removing a `contradicts:`/`supersedes:` line drops the penalty on the next drift run. A declaration only down-ranks its target when the declarer is at least as new and of equal-or-higher source tier; otherwise the claim is surfaced in diagnostics without touching ranking.
 
 **Grace gate:** a finding starts penalizing only on its **second** detection (drift runs are ≥24h apart), so one transient mis-detection never down-ranks a card. Until then it appears in diagnostics only.
 

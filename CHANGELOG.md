@@ -4,12 +4,25 @@ All notable changes to Eidetic are documented here.
 
 ## v5.13.1 (2026-07-03)
 
-Ranking-correctness fix: makes the flagship "drift down-ranks stale memories" claim actually true — an adversarial claims-vs-reality audit of v5.13.0 found it overstated. No new dependencies; the fix is guarded by tests that fail on the pre-fix code.
+Ranking-integrity release: causal fixes to drift-penalty ranking, the declared truth-maintenance slice, and the compounding write-path, from two adversarial audits (2026-07-02/03). The anti-goals were ranking POISON and SILENT duplication; every fix below closes one such path and is guarded by a regression test that fails on the reverted code.
 
-**Drift-penalty ranking (`search_impl.py`, `assemble_context.py`):**
+**Drift-penalty ranking (`search_impl`/`assemble_context`):**
 
-- **Drift penalties now multiply into the freshness factor instead of replacing it.** v5.13.0 let a penalty _overwrite_ freshness, so on any card older than 30 days (freshness 0.5) a broken-wikilink finding (0.8×) actually _raised_ the card's score by +60%, and an age-stale finding (0.5×) was a no-op against the identical freshness decay. Multiplying is monotonic: a drift finding can never raise a card, a stale-and-drifted card always ranks below a merely-old one, and confidence escalation (0.3×) stays the strongest down-rank.
-- **The `first_seen > 1` grace gate is now documented** (in code and the README drift section): a finding starts penalizing only on its second detection (drift runs are ≥24 h apart), so a transient mis-detection never down-ranks a card — until then it appears in diagnostics only.
+- **Penalties multiply into freshness instead of replacing it** — v5.13.0's replacement let broken_wikilink (0.8) overwrite stale freshness (0.5) and *up-rank* a rotten card by +60%, while age_stale was a no-op on any >30-day card. Multiplying is monotonic: a finding can never raise a card.
+- **Distinct findings on one card compound** (product, floored at 0.1×) — keeping only the minimum let a three-problem card rank like a one-problem card. Duplicate findings of the same type still count once.
+
+**Declared truth-maintenance (`contradicts:`/`supersedes:`, index-time propagation):**
+
+- **Propagation is authoritative, not sticky**: every reindex (incremental included) recomputes each target's `contradicted_by`/`superseded_by` from the CURRENT declarers and clears cells whose declarer is gone — a removed declaration drops its 0.4×/0.35× penalty on the next drift run instead of persisting until `--full`. All current contradictors are recorded deterministically (fill-first-only silently dropped the second one). A target's own frontmatter still wins (new `*_explicit` columns; one-time forced re-read on migration).
+- **Project-scoped resolution**: a bare target slug matches only cards in the declarer's memory tree — same-slug cards across projects no longer contaminate each other; path-qualified targets resolve by path anywhere. Targets are normalized (`.md` stripped, case-folded), and a target that still doesn't resolve WARNs at index time and surfaces as an `unresolved_relation` diagnostic finding instead of silently no-opping.
+- **Authority gate**: a declaration down-ranks its target only when the declarer is at least as new AND of source-tier ≥ the target's (user-explicit always tier-qualifies) — an agent-extracted or hypothesis card can no longer poison a user-explicit/validated card's ranking. Refused claims surface as non-penalizing `relation_claim` findings on the target.
+- **Honest diagnostics**: the injected drift block counts/labels "penalized" with the same predicate ranking uses (declared types penalize at first_seen=1), so it can no longer report "0 penalized" while a 0.4× penalty is applied; the bulk auto-resolve safety valve now also counts declared findings.
+
+**Compounding write-path (`compound.py`):**
+
+- **No silent duplicates**: dedup matching is staged (phrase → salient-keyword AND → thresholded overlap fallback), and every path that still creates a new card next to a near-match FLAGS it (`compound-flag — possible duplicate of <card>` on stderr + op-log) — including the previously silent cases where the matched card was protected (`feedback`/`user`) or the update write failed.
+- **The vector gate discriminates**: profile-aware threshold (e5-family 0.85 — the old 0.60 sat below e5's unrelated-pair floor and approved everything; bge-en 0.60) with asymmetric `query:`/`passage:` prefixes (new `embed.embed_query_texts`). Gate errors with `vectors.db` present log the exception class once instead of degrading silently.
+- **Deterministic candidates**: keyword candidate scans `ORDER BY path` before `LIMIT` — an arbitrary subset made the same signal compound one run and duplicate the next. Hyphenated identifiers (`scikit-learn`) count as one keyword in the overlap threshold, not two.
 
 ## v5.13.0 (2026-07-02)
 
