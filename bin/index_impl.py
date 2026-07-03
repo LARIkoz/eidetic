@@ -15,6 +15,14 @@ import sqlite3
 import sys
 import time
 
+# Single source of truth: bin/constants.py. Literal fallback only for when the
+# module is run somewhere constants.py is not importable (W3 dedup).
+try:
+    from constants import EVIDENCE_WEIGHTS, SOURCE_WEIGHTS
+except ImportError:
+    EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
+    SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3, "imported": 0.3}
+
 DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory_chunks (
     id INTEGER PRIMARY KEY,
@@ -33,6 +41,8 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
     superseded_by TEXT DEFAULT '',
     contradicts TEXT DEFAULT '',
     contradicted_by TEXT DEFAULT '',
+    superseded_by_explicit TEXT DEFAULT '',
+    contradicted_by_explicit TEXT DEFAULT '',
     section_heading TEXT,
     content TEXT NOT NULL,
     description TEXT,
@@ -87,7 +97,16 @@ DERIVED_COLUMNS = {
     "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
     "contradicts": "ALTER TABLE memory_chunks ADD COLUMN contradicts TEXT DEFAULT ''",
     "contradicted_by": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by TEXT DEFAULT ''",
+    # The card's OWN frontmatter value, kept apart from the effective column so
+    # authoritative re-propagation can distinguish "the file says so" from
+    # "another card's declaration was pushed here" and clear the latter when
+    # the declarer disappears.
+    "superseded_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN superseded_by_explicit TEXT DEFAULT ''",
+    "contradicted_by_explicit": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by_explicit TEXT DEFAULT ''",
 }
+# Columns whose addition requires re-reading every file: pre-upgrade rows cannot
+# distinguish own-frontmatter values from previously propagated ones.
+RELATION_EXPLICIT_COLUMNS = {"superseded_by_explicit", "contradicted_by_explicit"}
 
 
 def parse_frontmatter(text):
@@ -325,13 +344,23 @@ def infer_area(meta, filepath, project):
 def migrate_schema(conn):
     """Add v2.6 columns to existing derived DBs."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
+    added = set()
     for column, statement in DERIVED_COLUMNS.items():
         if column not in existing:
             try:
                 conn.execute(statement)
+                added.add(column)
             except sqlite3.OperationalError as exc:
                 if "duplicate column name" not in str(exc).lower():
                     raise
+    if added & RELATION_EXPLICIT_COLUMNS:
+        # One-time forced re-read: invalidate stored mtimes (keep the rows so
+        # deleted-file cleanup still works) so the next incremental run reloads
+        # every file and fills the *_explicit columns from real frontmatter.
+        try:
+            conn.execute("UPDATE index_meta SET mtime = -1")
+        except sqlite3.OperationalError:
+            pass
 
 
 def migrate_feedback_user_inferred_statuses(conn):
@@ -501,14 +530,16 @@ def index_file(conn, filepath, meta, body):
                (path, project, name, type, evidence, source, confidence,
                 last_verified, card_kind, status, area, supersedes,
                 superseded_by, contradicts, contradicted_by,
+                superseded_by_explicit, contradicted_by_explicit,
                 section_heading, content, description, mtime)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 filepath, project, meta["name"], meta["type"],
                 meta["evidence"], meta["source"], meta["confidence"],
                 meta["last_verified"], card_kind, status, area,
                 meta["supersedes"], meta["superseded_by"],
-                meta["contradicts"], meta["contradicted_by"], heading,
+                meta["contradicts"], meta["contradicted_by"],
+                meta["superseded_by"], meta["contradicted_by"], heading,
                 content, meta["description"], mtime,
             ),
         )
@@ -541,53 +572,162 @@ def _split_relation_targets(value):
     return targets
 
 
+def _normalize_relation_target(target):
+    """Match key for a declared target: drop a `.md` suffix, casefold."""
+    t = (target or "").strip()
+    if t.endswith(".md"):
+        t = t[:-3]
+    return t.casefold()
+
+
+def _path_sans_md(path):
+    return path[:-3] if path.endswith(".md") else path
+
+
+def _card_label(path, name):
+    stem = os.path.basename(path)
+    return name or (stem[:-3] if stem.endswith(".md") else stem)
+
+
+def _declarer_outranks(declarer, target):
+    """Authority gate: may this declaration DOWN-RANK its target?
+
+    A declaration down-ranks only when the declaring card is at least as new
+    AND of source-tier >= the target's (user-explicit always tier-qualifies).
+    An agent-extracted or hypothesis card can therefore never poison a
+    user-explicit/validated card's ranking; the claim is still SURFACED as a
+    non-penalizing drift finding (drift_check.check_relation_diagnostics).
+    """
+    if (declarer["mtime"] or 0) < (target["mtime"] or 0):
+        return False
+    if (declarer["source"] or "user-explicit") == "user-explicit":
+        return True
+    d_tier = (SOURCE_WEIGHTS.get(declarer["source"], 0.5)
+              * EVIDENCE_WEIGHTS.get(declarer["evidence"], 0.7))
+    t_tier = (SOURCE_WEIGHTS.get(target["source"], 0.5)
+              * EVIDENCE_WEIGHTS.get(target["evidence"], 0.7))
+    return d_tier >= t_tier
+
+
+def compute_relation_state(conn):
+    """Recompute the FULL declared-relation state from current declarers.
+
+    Returns (updates, unresolved, gated):
+      updates    — {(target_path, column): effective_value} for EVERY card and
+                   both columns; '' when no live declarer and no explicit
+                   frontmatter, so removed declarations CLEAR on the next run.
+      unresolved — [(declarer_path, relation, target)] declared targets that
+                   resolve to no card in the declarer's project (typo, deleted
+                   target, or unqualified cross-project reference).
+      gated      — [(target_path, column, label)] declarations refused by the
+                   authority gate: surfaced, never applied to ranking.
+
+    Scoping: a bare target slug/name matches only cards in the SAME project
+    (cross-project same-slug cards can no longer contaminate each other); a
+    path-qualified target (contains '/') matches by path suffix anywhere.
+    """
+    rows = conn.execute("""
+        SELECT DISTINCT path, project, name, source, evidence, mtime,
+               supersedes, contradicts,
+               superseded_by_explicit, contradicted_by_explicit
+        FROM memory_chunks
+    """).fetchall()
+
+    cards = {}
+    by_key = {}
+    for (path, project, name, source, evidence, mtime,
+         supersedes, contradicts, sup_explicit, con_explicit) in rows:
+        cards[path] = {
+            "project": project or "",
+            "name": name or "",
+            "source": source or "user-explicit",
+            "evidence": evidence or "observed",
+            "mtime": mtime or 0,
+            "supersedes": supersedes or "",
+            "contradicts": contradicts or "",
+            "superseded_by_explicit": (sup_explicit or "").strip(),
+            "contradicted_by_explicit": (con_explicit or "").strip(),
+        }
+        stem = os.path.basename(_path_sans_md(path))
+        by_key.setdefault((project or "", stem.casefold()), set()).add(path)
+        if name:
+            by_key.setdefault((project or "", name.casefold()), set()).add(path)
+
+    def resolve(declarer_path, target):
+        if "/" in target:
+            cand = _path_sans_md(os.path.expanduser(target.strip()))
+            return {
+                p for p in cards
+                if _path_sans_md(p) == cand
+                or _path_sans_md(p).endswith("/" + cand.lstrip("/"))
+            }
+        key = (cards[declarer_path]["project"], _normalize_relation_target(target))
+        return set(by_key.get(key, ()))
+
+    desired = {path: {"superseded_by": set(), "contradicted_by": set()} for path in cards}
+    unresolved = []
+    gated = []
+
+    for path, card in cards.items():
+        for column, relation, value in (
+            ("superseded_by", "supersedes", card["supersedes"]),
+            ("contradicted_by", "contradicts", card["contradicts"]),
+        ):
+            for target in _split_relation_targets(value):
+                target_paths = resolve(path, target) - {path}
+                if not target_paths:
+                    unresolved.append((path, relation, target))
+                    continue
+                label = _card_label(path, card["name"])
+                for target_path in sorted(target_paths):
+                    target_card = cards[target_path]
+                    if target_card[column + "_explicit"]:
+                        continue  # the target's own frontmatter wins
+                    if _declarer_outranks(card, target_card):
+                        desired[target_path][column].add(label)
+                    else:
+                        gated.append((target_path, column, label))
+
+    updates = {}
+    for path, card in cards.items():
+        for column in ("superseded_by", "contradicted_by"):
+            explicit = card[column + "_explicit"]
+            updates[(path, column)] = explicit or ", ".join(sorted(desired[path][column]))
+    return updates, unresolved, gated
+
+
 def propagate_declared_relations(conn):
     """Truth-maintenance slice: push declared `supersedes:`/`contradicts:`
     onto their TARGET cards (the target's file usually doesn't know).
 
-    A card declaring `supersedes: X` marks every card named/slugged X as
-    `superseded_by` it (→ existing 0.35 status weight at search time); a card
-    declaring `contradicts: X` marks X `contradicted_by` it (→ drift finding +
-    0.4 ranking penalty). Only fills EMPTY columns — a target's own explicit
-    frontmatter wins. Runs as a whole-DB post-pass on every index run, so
-    incremental runs propagate relations onto unchanged targets too.
-    Resolution is by declared name / file stem; semantic matching is v6.
+    A card declaring `supersedes: X` marks every same-project card named/
+    slugged X as `superseded_by` it (→ existing 0.35 status weight at search
+    time); a card declaring `contradicts: X` marks X `contradicted_by` it
+    (→ drift finding + 0.4 ranking penalty). AUTHORITATIVE: the whole-DB
+    post-pass recomputes every target's state from the CURRENT declarers on
+    every run (incremental included), so a removed/edited declaration clears
+    its target and the penalty auto-resolves on the next drift run. A target's
+    own explicit frontmatter always wins; below-authority declarations are
+    gated (see _declarer_outranks) and only surfaced. Resolution is by
+    declared name / file stem within the declarer's project; semantic
+    matching is v6.
     """
     try:
-        rows = conn.execute("SELECT DISTINCT path, name FROM memory_chunks").fetchall()
+        updates, unresolved, gated = compute_relation_state(conn)
     except sqlite3.OperationalError:
         return
-    by_key = {}
-    for path, name in rows:
-        stem = os.path.basename(path)
-        if stem.endswith(".md"):
-            stem = stem[:-3]
-        by_key.setdefault(stem, set()).add(path)
-        if name:
-            by_key.setdefault(name, set()).add(path)
-
-    try:
-        declared = conn.execute("""
-            SELECT DISTINCT path, name, supersedes, contradicts
-            FROM memory_chunks
-            WHERE IFNULL(supersedes, '') != '' OR IFNULL(contradicts, '') != ''
-        """).fetchall()
-    except sqlite3.OperationalError:
-        return
-
-    for path, name, supersedes, contradicts in declared:
-        stem = os.path.basename(path)
-        label = name or (stem[:-3] if stem.endswith(".md") else stem)
-        for column, value in (("superseded_by", supersedes), ("contradicted_by", contradicts)):
-            for target in _split_relation_targets(value):
-                for target_path in by_key.get(target, ()):
-                    if target_path == path:
-                        continue
-                    conn.execute(
-                        f"UPDATE memory_chunks SET {column} = ? "
-                        f"WHERE path = ? AND IFNULL({column}, '') = ''",
-                        (label, target_path),
-                    )
+    for (path, column), value in updates.items():
+        conn.execute(
+            f"UPDATE memory_chunks SET {column} = ? "
+            f"WHERE path = ? AND IFNULL({column}, '') != ?",
+            (value, path, value),
+        )
+    for declarer_path, relation, target in unresolved:
+        print(
+            f"WARN: unresolved {relation} target {target!r} declared in "
+            f"{declarer_path} — no matching card in its project",
+            file=sys.stderr,
+        )
     conn.commit()
 
 

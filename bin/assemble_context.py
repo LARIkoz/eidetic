@@ -77,8 +77,21 @@ try:
 except ImportError:
     EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
     SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
-    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3, "contradicted": 0.4}
+    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3,
+                       "contradicted": 0.4, "unresolved_relation": 1.0, "relation_claim": 1.0}
     DECLARED_DRIFT_TYPES = {"contradicted"}
+
+DRIFT_PENALTY_FLOOR = 0.1
+
+
+def _drift_finding_penalized(drift_type, first_seen):
+    """One predicate for penalize + diagnostics, so the report can never say
+    "0 penalized" while a penalty is applied. Heuristic findings penalize from
+    the 2nd detection (grace gate); DECLARED relations immediately; penalty-1.0
+    diagnostic types never (they change nothing by construction)."""
+    if DRIFT_PENALTIES.get(drift_type, 0.5) >= 1.0:
+        return False
+    return int(first_seen or 0) > 1 or drift_type in DECLARED_DRIFT_TYPES
 
 
 def load_drift_findings(db_path):
@@ -95,15 +108,18 @@ def load_drift_findings(db_path):
         conn.close()
     except sqlite3.OperationalError:
         return {}
-    findings = {}
+    # Distinct penalized types per card COMPOUND (multiply, floored) — same
+    # rule as search_impl._load_drift_data, so injection and search agree.
+    types_by_path = {}
     for path, drift_type, first_seen in rows:
-        # Grace gate (see search_impl._load_drift_data): heuristic findings
-        # penalize from the 2nd detection; DECLARED relations immediately.
-        if int(first_seen or 0) <= 1 and drift_type not in DECLARED_DRIFT_TYPES:
-            continue
-        penalty = DRIFT_PENALTIES.get(drift_type, 0.5)
-        if path not in findings or penalty < findings[path]:
-            findings[path] = penalty
+        if _drift_finding_penalized(drift_type, first_seen):
+            types_by_path.setdefault(path, set()).add(drift_type)
+    findings = {}
+    for path, types in types_by_path.items():
+        penalty = 1.0
+        for drift_type in types:
+            penalty *= DRIFT_PENALTIES.get(drift_type, 0.5)
+        findings[path] = max(DRIFT_PENALTY_FLOOR, penalty)
     return findings
 
 
@@ -165,12 +181,10 @@ def fetch_drift_diagnostics(db_path, limit=8):
     try:
         conn = sqlite3.connect(drift_path)
         conn.execute("PRAGMA busy_timeout=2000")
-        counts = conn.execute("""
-            SELECT drift_type, COUNT(*), SUM(CASE WHEN first_seen > 1 THEN 1 ELSE 0 END)
+        count_rows = conn.execute("""
+            SELECT drift_type, first_seen
             FROM drift_findings
             WHERE resolved_at IS NULL
-            GROUP BY drift_type
-            ORDER BY COUNT(*) DESC
         """).fetchall()
         rows = conn.execute("""
             SELECT path, drift_type, detail, first_seen, detected_at
@@ -183,19 +197,31 @@ def fetch_drift_diagnostics(db_path, limit=8):
     except sqlite3.OperationalError:
         return "", 0
 
-    if not counts:
+    if not count_rows:
         return "", 0
+
+    # Penalized = the same predicate ranking uses (declared types penalize at
+    # first_seen=1) — counting `first_seen > 1` alone reported "0 penalized"
+    # while a 0.4x declared penalty was being applied.
+    agg = {}
+    for drift_type, first_seen in count_rows:
+        total, penalized = agg.get(drift_type, (0, 0))
+        agg[drift_type] = (
+            total + 1,
+            penalized + (1 if _drift_finding_penalized(drift_type, first_seen) else 0),
+        )
+    counts = sorted(agg.items(), key=lambda kv: kv[1][0], reverse=True)
 
     parts = ["## Memory Drift Diagnostics\n\n"]
     summary = ", ".join(
-        f"{kind}={count} ({penalized or 0} penalized)"
-        for kind, count, penalized in counts
+        f"{kind}={total} ({penalized} penalized)"
+        for kind, (total, penalized) in counts
     )
     parts.append(f"- Active findings: {summary}\n")
     parts.append("- Treat penalized/stale memories as candidates to verify, not as source-of-truth.\n")
     for path, drift_type, detail, first_seen, detected_at in rows:
         short_path = path.replace(os.path.expanduser("~"), "~")
-        marker = "penalized" if int(first_seen or 0) > 1 else "baseline"
+        marker = "penalized" if _drift_finding_penalized(drift_type, first_seen) else "baseline"
         parts.append(
             f"- {drift_type} [{marker}, seen={first_seen}] {short_path}: {detail or ''} ({detected_at or 'unknown'})\n"
         )

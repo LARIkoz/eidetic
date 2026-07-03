@@ -15,6 +15,17 @@ DRIFT_PENALTIES = {
     # contradicting card, propagated at index time) ranks below its
     # contradictor. Semantic auto-DETECTION of contradictions remains v6.
     "contradicted": 0.4,
+    # Diagnostics-only findings (penalty 1.0 = never changes ranking):
+    # a declared `contradicts:`/`supersedes:` whose target resolves to no
+    # card in the declarer's project (typo / deleted / unqualified
+    # cross-project ref) — surfaced on the DECLARER so the dead declaration
+    # gets fixed instead of silently no-opping;
+    "unresolved_relation": 1.0,
+    # a declaration REFUSED by the authority gate (declarer older or of a
+    # lower source-tier than its target) — surfaced on the TARGET so the
+    # dispute is visible, but a low-trust card can never down-rank a
+    # canonical one.
+    "relation_claim": 1.0,
 }
 
 # Declared relations are facts the writer asserted, not heuristic detections —

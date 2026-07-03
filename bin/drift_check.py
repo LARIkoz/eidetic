@@ -48,9 +48,11 @@ INACTIVE_STATUSES = {"archived", "deprecated", "fixed", "obsolete", "resolved", 
 DEFAULT_AGE_DAYS = 60
 
 try:
-    from constants import DRIFT_PENALTIES
+    from constants import DRIFT_PENALTIES, DECLARED_DRIFT_TYPES
 except ImportError:
-    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3}
+    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3,
+                       "contradicted": 0.4, "unresolved_relation": 1.0, "relation_claim": 1.0}
+    DECLARED_DRIFT_TYPES = {"contradicted"}
 
 
 def get_drift_db_path(index_db_path):
@@ -433,8 +435,10 @@ def check_declared_contradictions(index_conn):
 
     The `contradicted_by` column is filled either by the card's own
     frontmatter or by index-time propagation from a card declaring
-    `contradicts:` it. The finding auto-resolves when the declaration is
-    removed and the store reindexed.
+    `contradicts:` it (propagation is authoritative AND authority-gated —
+    see index_impl.compute_relation_state — so only live, qualified
+    declarations reach this column). The finding auto-resolves when the
+    declaration is removed and the store reindexed.
     """
     try:
         rows = index_conn.execute("""
@@ -449,6 +453,34 @@ def check_declared_contradictions(index_conn):
         (path, mem_type, "contradicted", f"by={contradicted_by.strip()}")
         for path, mem_type, contradicted_by in rows
     ]
+
+
+def check_relation_diagnostics(index_conn):
+    """Diagnostics-only findings from declared relations (penalty 1.0 — visible
+    in drift/lint output, never applied to ranking):
+
+    - `unresolved_relation` on the DECLARER: its `contradicts:`/`supersedes:`
+      target resolves to no card in its project (typo, deleted target, or an
+      unqualified cross-project reference) — previously a silent no-op.
+    - `relation_claim` on the TARGET: a declaration the authority gate refused
+      (declarer older or lower source-tier), so the dispute stays visible while
+      a low-trust card cannot down-rank a canonical one.
+    """
+    try:
+        import index_impl
+        _updates, unresolved, gated = index_impl.compute_relation_state(index_conn)
+    except (ImportError, sqlite3.OperationalError):
+        return []
+    findings = []
+    for declarer_path, relation, target in unresolved:
+        findings.append((declarer_path, None, "unresolved_relation", f"{relation}: {target}"))
+    for target_path, column, label in gated:
+        relation = "contradicts" if column == "contradicted_by" else "supersedes"
+        findings.append((
+            target_path, None, "relation_claim",
+            f"{relation}-claim by={label} (below authority; not penalized)",
+        ))
+    return findings
 
 
 def write_findings(drift_conn, findings):
@@ -485,7 +517,13 @@ def auto_resolve(drift_conn, findings):
     ).fetchall()
 
     would_resolve = [e for e in existing if (e[0], e[1], e[2]) not in finding_keys]
-    penalized_resolves = [e for e in would_resolve if int(e[3] or 0) > 1]
+    # Declared types penalize from first_seen=1 (no grace gate), so a bulk
+    # disappearance of them must trip the safety valve exactly like any other
+    # actively-penalizing finding.
+    penalized_resolves = [
+        e for e in would_resolve
+        if int(e[3] or 0) > 1 or e[1] in DECLARED_DRIFT_TYPES
+    ]
     if existing and len(penalized_resolves) > len(existing) * 0.5 and len(penalized_resolves) > 5:
         print(
             f"WARNING: auto-resolve blocked — {len(penalized_resolves)}/{len(existing)} "
@@ -556,6 +594,7 @@ def main():
     all_findings.extend(check_age_drift(index_conn))
     all_findings.extend(check_confidence_escalation(index_conn))
     all_findings.extend(check_declared_contradictions(index_conn))
+    all_findings.extend(check_relation_diagnostics(index_conn))
 
     pruned = prune_orphans(drift_conn, index_conn)
     resolved = auto_resolve(drift_conn, all_findings)
