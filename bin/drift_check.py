@@ -587,6 +587,16 @@ def main():
         drift_conn.close()
         return
 
+    # Surface a broken relation schema (missing/malformed *_explicit columns)
+    # in the routine drift run — otherwise declared-relation truth-maintenance
+    # is silently disabled and nothing tells the operator.
+    try:
+        import index_impl
+        for problem in index_impl.check_relation_schema(index_conn):
+            print(f"WARNING: relation schema — {problem}", file=sys.stderr)
+    except ImportError:
+        pass
+
     known_names = build_known_names(index_conn)
 
     all_findings = []

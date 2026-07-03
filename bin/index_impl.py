@@ -363,6 +363,43 @@ def migrate_schema(conn):
             pass
 
 
+def check_relation_schema(conn):
+    """Surface a missing/malformed explicit-relation column instead of letting
+    truth-maintenance silently no-op.
+
+    The `*_explicit` columns are load-bearing: compute_relation_state SELECTs
+    them, so if they are absent (a pre-migration or corrupted schema) the query
+    raises OperationalError and the whole declared-relation propagation is
+    skipped. That skip used to be swallowed silently — a contradiction/
+    supersession would simply never take effect, with no warning. This returns
+    a list of human-readable problems (empty when the schema is healthy) so the
+    index-time path and any doctor/lint can WARN loudly.
+    """
+    try:
+        cols = {row[1]: row for row in conn.execute("PRAGMA table_info(memory_chunks)")}
+    except sqlite3.OperationalError as exc:
+        return [f"memory_chunks table unreadable ({exc}) — run index.sh --full"]
+    if not cols:
+        return ["memory_chunks table missing — run index.sh --full"]
+    problems = []
+    for col in sorted(RELATION_EXPLICIT_COLUMNS):
+        info = cols.get(col)
+        if info is None:
+            problems.append(
+                f"missing relation column {col!r} — declared contradictions/"
+                "supersession are disabled; run index.sh --full to migrate"
+            )
+            continue
+        # PRAGMA table_info row = (cid, name, type, notnull, dflt_value, pk).
+        col_type = (info[2] or "").upper()
+        if col_type not in ("TEXT", ""):
+            problems.append(
+                f"relation column {col!r} has unexpected type {col_type!r} "
+                "(expected TEXT); run index.sh --full to repair"
+            )
+    return problems
+
+
 def migrate_feedback_user_inferred_statuses(conn):
     """Correct derived inactive statuses inferred from feedback/user wording."""
     try:
@@ -723,7 +760,15 @@ def propagate_declared_relations(conn):
     """
     try:
         updates, unresolved, gated = compute_relation_state(conn)
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        # Never swallow this silently: a missing/malformed *_explicit column
+        # disables ALL truth-maintenance, so SURFACE why before skipping.
+        problems = check_relation_schema(conn) or [f"memory_chunks query failed ({exc})"]
+        for problem in problems:
+            print(
+                f"WARN: declared-relation propagation skipped — {problem}",
+                file=sys.stderr,
+            )
         return
     for (path, column), value in updates.items():
         conn.execute(
