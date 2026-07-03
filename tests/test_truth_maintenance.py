@@ -284,6 +284,54 @@ class TruthMaintenanceTest(unittest.TestCase):
         self.assertEqual(contradicted, "challenger-a, challenger-b")
         self.assertEqual(findings[0][3], "by=challenger-a, challenger-b")
 
+    def test_missing_explicit_relation_column_surfaces_not_silent(self):
+        # KEEP #2: the *_explicit columns are load-bearing for truth-maintenance.
+        # When they are absent/malformed, compute_relation_state raises
+        # OperationalError and the pre-fix propagate_declared_relations SWALLOWED
+        # it and skipped ALL propagation with zero signal — a silent no-op. A
+        # missing/malformed explicit-relation column must SURFACE (warning),
+        # never silently disable truth-maintenance, and must not crash.
+        import contextlib
+        import io
+
+        os.makedirs(os.path.dirname(self.db), exist_ok=True)
+        conn = sqlite3.connect(self.db)
+        # A memory_chunks table WITHOUT the *_explicit columns (a pre-migration
+        # or corrupted schema).
+        conn.execute("""
+            CREATE TABLE memory_chunks (
+                id INTEGER PRIMARY KEY, path TEXT NOT NULL, project TEXT, name TEXT,
+                type TEXT, source TEXT DEFAULT 'user-explicit',
+                evidence TEXT DEFAULT 'observed', mtime INTEGER,
+                supersedes TEXT DEFAULT '', contradicts TEXT DEFAULT '',
+                superseded_by TEXT DEFAULT '', contradicted_by TEXT DEFAULT '',
+                section_heading TEXT, content TEXT NOT NULL,
+                UNIQUE(path, section_heading)
+            )""")
+        conn.commit()
+
+        # (a) the schema check surfaces BOTH missing columns.
+        problems = index_impl.check_relation_schema(conn)
+        self.assertTrue(any("superseded_by_explicit" in p for p in problems), problems)
+        self.assertTrue(any("contradicted_by_explicit" in p for p in problems), problems)
+
+        # (b) propagation surfaces a warning to stderr instead of silently
+        #     no-oping, and does not raise.
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            index_impl.propagate_declared_relations(conn)  # must not raise
+        conn.close()
+        err = buf.getvalue().lower()
+        self.assertIn("relation", err, f"no surfaced warning: {err!r}")
+        self.assertIn("skip", err, f"warning did not report the skip: {err!r}")
+
+    def test_healthy_relation_schema_reports_no_problems(self):
+        # The surfacing check must NOT false-positive on a correctly migrated DB.
+        conn = index_impl.init_db(self.db)
+        problems = index_impl.check_relation_schema(conn)
+        conn.close()
+        self.assertEqual(problems, [])
+
     def test_bulk_declared_resolve_trips_the_safety_valve(self):
         # Declared findings penalize from first_seen=1, so a bulk
         # disappearance of them (possible detector regression) must be
