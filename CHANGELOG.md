@@ -2,6 +2,13 @@
 
 All notable changes to Eidetic are documented here.
 
+## v5.13.2 (2026-07-03)
+
+Docs-only honesty patch — no code changes.
+
+- **README: the Karpathy LLM-Wiki claim now says what is true.** "Implemented end-to-end" is scoped to the wiki **structure** (compounding pages, typed schema, op-log); the maintenance **metabolism** (contradiction detection, multi-page synthesis, auto-filing) is explicitly labeled as the v6 roadmap, in all three places the claim appeared (intro lineage, Promote section, Design philosophy).
+- **README: removed a mis-pointed citation** — the "AI wiki concept" link in Design philosophy pointed to an unrelated Karpathy gist (a git-commit-message shell function), not a wiki document.
+
 ## v5.13.1 (2026-07-03)
 
 Ranking-correctness fix: makes the flagship "drift down-ranks stale memories" claim actually true — an adversarial claims-vs-reality audit of v5.13.0 found it overstated. No new dependencies; the fix is guarded by tests that fail on the pre-fix code.

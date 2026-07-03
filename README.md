@@ -19,7 +19,7 @@ Eidetic gives an AI coding agent **long-term memory** that lives in plain Markdo
 
 What makes it different from every other memory tool: it **detects when memories go stale** and down-ranks them — so more memory doesn't quietly make the agent _worse_ (that's [why](#why-eidetic) it exists). Claude Code-native via zero-config hooks; works with Codex, Gemini, Cursor, Cline, and any MCP agent.
 
-_Lineage: [Luhmann's Zettelkasten](https://en.wikipedia.org/wiki/Zettelkasten), [Tiago Forte's Second Brain](https://www.buildingasecondbrain.com/), and [Karpathy's **LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) — implemented end-to-end (compounding pages, a typed schema, an op-log, typed pages), with drift detection layered on top. More in [Design philosophy](#design-philosophy)._
+_Lineage: [Luhmann's Zettelkasten](https://en.wikipedia.org/wiki/Zettelkasten), [Tiago Forte's Second Brain](https://www.buildingasecondbrain.com/), and [Karpathy's **LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) — the wiki **structure** implemented end-to-end (compounding pages, a typed schema, an op-log, typed pages), with drift detection layered on top; the maintenance **metabolism** (contradiction detection, multi-page synthesis, auto-filing) is the v6 roadmap. More in [Design philosophy](#design-philosophy)._
 
 ---
 
@@ -207,7 +207,7 @@ Before creating a new memory, searches for existing ones on the same topic. Foun
 
 A good synthesized answer shouldn't die in the chat log. **Promote** files it back as one **typed page** — `echo "<answer>" | python3 ~/.claude/memory-system/bin/remember.py "<title>"`. Search-before-write means a re-promote on the same topic appends a dated `## Update` section instead of duplicating, and a new page gets `## Related` wikilinks to its neighbours. It's the deliberate, mid-session companion to the end-of-session signal capture, and it's the same write-path a future importer reuses. Every write also lands on a greppable **op-log** — `grep '^## \[' log.md` is the whole timeline.
 
-This is Eidetic implementing [Karpathy's **LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) end-to-end: compounding pages, an explicit **maintenance contract** ([docs/MEMORY-SCHEMA.md](docs/MEMORY-SCHEMA.md)), typed pages (`synthesis` / `concept` / `entity`), and an op-log — with auto-extraction and drift detection layered on top, so the wiki maintains itself instead of rotting.
+This is Eidetic implementing the **structure** of [Karpathy's **LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) end-to-end: compounding pages, an explicit **maintenance contract** ([docs/MEMORY-SCHEMA.md](docs/MEMORY-SCHEMA.md)), typed pages (`synthesis` / `concept` / `entity`), and an op-log — with auto-extraction and drift detection layered on top to surface rot. The maintenance **metabolism** that resolves it (contradiction detection, multi-page synthesis, auto-filing) is the v6 roadmap.
 
 ### Session-End Auto-Capture (configurable)
 
@@ -332,7 +332,7 @@ _Not your use-case? The [40-repo competitive analysis](https://github.com/LARIko
 
 ## Design philosophy
 
-Inspired by [Luhmann's Zettelkasten](https://en.wikipedia.org/wiki/Zettelkasten), [Tiago Forte's Second Brain](https://www.buildingasecondbrain.com/), and Karpathy's wiki-for-LLMs idea — both his [AI wiki concept](https://gist.github.com/karpathy/1dd0294ef9567971c1e4348a90d69285) and the [**LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) pattern Eidetic now implements end-to-end (compounding pages, an explicit schema, an op-log, typed pages). Per Karpathy, _"humans abandon wikis because maintenance grows faster than value; LLMs don't get bored"_ — so Eidetic's value curve climbs with use instead of decaying.
+Inspired by [Luhmann's Zettelkasten](https://en.wikipedia.org/wiki/Zettelkasten), [Tiago Forte's Second Brain](https://www.buildingasecondbrain.com/), and the [**LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) pattern by Karpathy, whose **structure** Eidetic implements end-to-end (compounding pages, an explicit schema, an op-log, typed pages); the maintenance metabolism is the v6 roadmap. Per Karpathy, _"humans abandon wikis because maintenance grows faster than value; LLMs don't get bored"_ — so Eidetic's value curve climbs with use instead of decaying.
 
 Core principles:
 
