@@ -13,14 +13,21 @@ duplicate — never silently duplicate.
 unittest so it runs under `python3 -m unittest discover` + pytest.
 """
 
+import glob
 import os
+import shutil
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bin"))
 
 import compound  # noqa: E402
+import index_impl  # noqa: E402
+
+BIN_DIR = os.path.join(os.path.dirname(__file__), "..", "bin")
 
 SCHEMA = """
 CREATE TABLE memory_chunks (
@@ -190,6 +197,109 @@ class OverlapFallbackTest(unittest.TestCase):
         )
         self.assertIsNone(action)
         self.assertIsNone(payload)
+
+
+class DeterministicCandidateTest(unittest.TestCase):
+    """B10: _keyword_paths must return the SAME candidate subset every run —
+    an unordered LIMIT made the same signal compound one run, duplicate the next."""
+
+    def test_keyword_paths_are_the_lexicographically_first_paths(self):
+        conn = sqlite3.connect(":memory:")
+        conn.executescript(SCHEMA)
+        # Insert in REVERSE lexicographic order: the reverted (no ORDER BY)
+        # query emits scan order → the LAST three paths → this fails there.
+        for i in reversed(range(6)):
+            conn.execute(
+                "INSERT INTO memory_chunks (path, project, name, type, section_heading, content, description) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (f"/tmp/eidetic-test/memory/card-{i}.md", "eidetic-test",
+                 f"card-{i}", "project", f"card-{i}", "zanzibar topic entry", ""),
+            )
+        conn.commit()
+        got = compound._keyword_paths(conn, "zanzibar", limit=3)
+        conn.close()
+        self.assertEqual(got, {f"/tmp/eidetic-test/memory/card-{i}.md" for i in range(3)})
+
+
+class HyphenKeywordTest(unittest.TestCase):
+    """B11: a hyphenated identifier must count as ONE overlap unit —
+    _sanitize_words splitting on '-' while extract_keywords kept the word
+    whole double-counted both halves and false-compounded."""
+
+    SKLEARN_CARD = (
+        "/tmp/eidetic-test/memory/sklearn-choice.md",
+        "Sklearn Choice",
+        "We standardized the training pipeline on scikit-learn estimators.",
+    )
+
+    def test_hyphenated_identifier_counts_once_in_overlap(self):
+        conn = sqlite3.connect(":memory:")
+        conn.executescript(SCHEMA)
+        path, name, content = self.SKLEARN_CARD
+        conn.execute(
+            "INSERT INTO memory_chunks (path, project, name, type, section_heading, content, description) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (path, "eidetic-test", name, "project", name, content, name),
+        )
+        conn.commit()
+        signal = "Knowledge: prefer scikit-learn estimators for quick baselines"
+        keywords = compound.extract_keywords(signal)
+        self.assertIn("scikit-learn", keywords.split())
+        self.assertEqual(compound.search_fts5(conn, keywords, limit=3), [])
+        # Overlap = {scikit-learn, estimators} = 2 → FLAG. The split-on-hyphen
+        # bug counted {scikit, learn, estimators} = 3 → false auto-compound.
+        action, payload = compound.find_overlap_candidate(conn, keywords, signal)
+        conn.close()
+        self.assertEqual(action, "flag")
+        self.assertEqual(payload, path)
+
+
+class ProtectedDupFlagTest(unittest.TestCase):
+    """B8: a near-dup of a protected (feedback/user) card must emit the
+    compound-flag — not silently land as a new card next to the rule."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="eidetic-flag-test-")
+        self.mem = os.path.join(self.tmp, "memory")
+        os.makedirs(self.mem)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_protected_near_dup_emits_flag_not_silent_new_card(self):
+        card_path = os.path.join(self.mem, "ruby-linter-rule.md")
+        card_text = """---
+name: ruby-linter-rule
+description: run the ruby linter before committing
+metadata:
+  type: feedback
+  source: user-explicit
+---
+
+Always run the ruby linter before committing changes to the monorepo.
+"""
+        with open(card_path, "w", encoding="utf-8") as f:
+            f.write(card_text)
+        conn = index_impl.init_db(os.path.join(self.tmp, "db", "index.db"))
+        meta, body = index_impl.parse_frontmatter(card_text)
+        index_impl.index_file(conn, card_path, meta, body)
+        conn.commit()
+        conn.close()
+
+        env = dict(os.environ, EIDETIC_MEMORY_SYSTEM=self.tmp)
+        proc = subprocess.run(
+            [sys.executable, os.path.join(BIN_DIR, "compound.py"), self.tmp],
+            input="Rule: always run the ruby linter before committing changes\n",
+            text=True, capture_output=True, env=env, timeout=60,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("1 flagged", proc.stderr)
+        self.assertIn(f"possible duplicate of {card_path}", proc.stderr)
+        # The signal still lands as a new card (never lost)...
+        self.assertTrue(glob.glob(os.path.join(self.tmp, "signals", "*.md")))
+        # ...and the protected card was NOT written into.
+        with open(card_path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), card_text)
 
 
 if __name__ == "__main__":

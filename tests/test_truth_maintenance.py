@@ -30,7 +30,7 @@ BODY = "The flarnpuzzle rotation policy requires daily rotation of keys."
 QUERY = "flarnpuzzle rotation policy"
 
 
-def _card(name, relations=""):
+def _card(name, relations="", source="user-explicit"):
     rel_block = f"\n  {relations}" if relations else ""
     return f"""---
 name: {name}
@@ -38,7 +38,7 @@ description: test card {name}
 metadata:
   type: project
   evidence: observed
-  source: user-explicit
+  source: {source}
   last_verified: {FRESH}{rel_block}
 ---
 
@@ -144,6 +144,138 @@ class TruthMaintenanceTest(unittest.TestCase):
             ["a-card", "b-card", "c"],
         )
         self.assertEqual(index_impl._split_relation_targets(""), [])
+
+    # --- v5.13.1 audit regressions ------------------------------------------
+
+    def _write(self, filename, text, directory=None):
+        directory = directory or self.mem
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, filename)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return path
+
+    def _contradicted_by(self, conn, name):
+        row = conn.execute(
+            "SELECT contradicted_by FROM memory_chunks WHERE name = ?", (name,)
+        ).fetchone()
+        return row[0]
+
+    def test_removed_declaration_clears_on_incremental_reindex(self):
+        # Sticky propagation (fill-empty-only) kept the 0.4x penalty forever
+        # after the contradicts: line was deleted, until a --full rebuild.
+        old = self._write("old-rule.md", _card("old-rule"))
+        new = self._write("new-rule.md", _card("new-rule", "contradicts: old-rule"))
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, [old, new])
+        self.assertEqual(self._contradicted_by(conn, "old-rule"), "new-rule")
+
+        self._write("new-rule.md", _card("new-rule"))
+        bumped = os.stat(new).st_mtime_ns + 10**9  # deterministic mtime change
+        os.utime(new, ns=(bumped, bumped))
+        index_impl.run_incremental(conn, [old, new])
+        self.assertEqual(self._contradicted_by(conn, "old-rule"), "")
+        self.assertEqual(drift_check.check_declared_contradictions(conn), [])
+        conn.close()
+
+    def test_cross_project_same_slug_does_not_contaminate(self):
+        # Bare targets resolve only inside the declarer's project: a
+        # `contradicts: old-rule` in proj-a must not mark proj-b's old-rule.
+        proj_a = os.path.join(self.tmp, ".claude", "projects", "proj-a", "memory")
+        proj_b = os.path.join(self.tmp, ".claude", "projects", "proj-b", "memory")
+        files = [
+            self._write("old-rule.md", _card("old-rule"), proj_a),
+            self._write("old-rule.md", _card("old-rule"), proj_b),
+            self._write("new-rule.md", _card("new-rule", "contradicts: old-rule"), proj_a),
+        ]
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, files)
+        rows = dict(conn.execute(
+            "SELECT DISTINCT path, contradicted_by FROM memory_chunks WHERE name = 'old-rule'"
+        ).fetchall())
+        conn.close()
+        self.assertEqual(rows[files[0]], "new-rule")
+        self.assertEqual(rows[files[1]], "", "cross-project same-slug card was contaminated")
+
+    def test_low_trust_declarer_cannot_downrank_user_explicit_target(self):
+        # Authority gate: an agent-extracted card contradicting a NEWER-tier
+        # user-explicit card must not apply the 0.4x penalty — the claim is
+        # surfaced as a non-penalizing relation_claim finding instead.
+        conn = self._index([
+            ("old-rule.md", _card("old-rule")),
+            ("sneaky.md", _card("sneaky", "contradicts: old-rule", source="agent-extracted")),
+        ])
+        self.assertEqual(self._contradicted_by(conn, "old-rule"), "")
+        self.assertEqual(drift_check.check_declared_contradictions(conn), [])
+        diags = drift_check.check_relation_diagnostics(conn)
+        conn.close()
+        claims = [d for d in diags if d[2] == "relation_claim"]
+        self.assertEqual(len(claims), 1)
+        self.assertTrue(claims[0][0].endswith("old-rule.md"))
+        self.assertIn("by=sneaky", claims[0][3])
+        # relation_claim must be diagnostics-only: penalty 1.0, not declared.
+        from constants import DRIFT_PENALTIES, DECLARED_DRIFT_TYPES
+        self.assertEqual(DRIFT_PENALTIES["relation_claim"], 1.0)
+        self.assertNotIn("relation_claim", DECLARED_DRIFT_TYPES)
+
+    def test_unresolved_target_surfaces_diagnostic_finding(self):
+        # A typo'd/deleted target used to silently no-op; it must surface as
+        # an unresolved_relation finding on the DECLARER.
+        conn = self._index([
+            ("new-rule.md", _card("new-rule", "contradicts: no-such-card")),
+        ])
+        diags = drift_check.check_relation_diagnostics(conn)
+        conn.close()
+        unresolved = [d for d in diags if d[2] == "unresolved_relation"]
+        self.assertEqual(len(unresolved), 1)
+        self.assertTrue(unresolved[0][0].endswith("new-rule.md"))
+        self.assertIn("no-such-card", unresolved[0][3])
+
+    def test_target_resolution_normalizes_md_suffix_and_case(self):
+        conn = self._index([
+            ("old-rule.md", _card("old-rule")),
+            ("new-rule.md", _card("new-rule", "contradicts: Old-Rule.md")),
+        ])
+        contradicted = self._contradicted_by(conn, "old-rule")
+        conn.close()
+        self.assertEqual(contradicted, "new-rule")
+
+    def test_multiple_contradictors_recorded_deterministically(self):
+        # Fill-first-only dropped every contradictor after the first; all
+        # current declarers must be recorded, sorted, so the surfaced finding
+        # detail is stable across runs.
+        conn = self._index([
+            ("old-rule.md", _card("old-rule")),
+            ("challenger-b.md", _card("challenger-b", "contradicts: old-rule")),
+            ("challenger-a.md", _card("challenger-a", "contradicts: old-rule")),
+        ])
+        contradicted = self._contradicted_by(conn, "old-rule")
+        findings = drift_check.check_declared_contradictions(conn)
+        conn.close()
+        self.assertEqual(contradicted, "challenger-a, challenger-b")
+        self.assertEqual(findings[0][3], "by=challenger-a, challenger-b")
+
+    def test_bulk_declared_resolve_trips_the_safety_valve(self):
+        # Declared findings penalize from first_seen=1, so a bulk
+        # disappearance of them (possible detector regression) must be
+        # blocked by auto_resolve's safety valve like any penalized finding.
+        os.makedirs(os.path.join(self.tmp, "db"), exist_ok=True)
+        drift_conn = drift_check.init_drift_db(os.path.join(self.tmp, "db", "drift_state.db"))
+        for i in range(8):
+            drift_conn.execute(
+                "INSERT INTO drift_findings (path, drift_type, detail, memory_type,"
+                " detected_at, first_seen) VALUES (?,?,?,?,?,1)",
+                (f"{self.mem}/card-{i}.md", "contradicted", f"by=other-{i}",
+                 "project", "2026-07-01T00:00:00Z"),
+            )
+        drift_conn.commit()
+        resolved = drift_check.auto_resolve(drift_conn, [])
+        active = drift_conn.execute(
+            "SELECT COUNT(*) FROM drift_findings WHERE resolved_at IS NULL"
+        ).fetchone()[0]
+        drift_conn.close()
+        self.assertEqual(resolved, 0, "bulk declared resolve bypassed the safety valve")
+        self.assertEqual(active, 8)
 
 
 if __name__ == "__main__":
