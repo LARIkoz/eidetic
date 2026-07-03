@@ -273,6 +273,31 @@ def detect_project(filepath):
     return None
 
 
+def detect_relation_namespace(filepath, stored_project=""):
+    """Fine-grained project key used for RELATION IDENTITY resolution only.
+
+    Audit F5: `detect_project` collapses EVERY `agent-memory/<agent>/` card to
+    `'__agent__'` and every skill/non-project card to `None → ''`, so a
+    `contradicts:`/`supersedes:` declared in one agent's (or skill's) card could
+    resolve to a same-slug card owned by a DIFFERENT agent/skill — the KEEP #1
+    identity fix cannot isolate them when the project granularity itself is
+    collapsed. This derives a per-agent / per-skill namespace from the path.
+
+    SCOPE (deliberately narrow): this is consumed ONLY by compute_relation_state
+    to decide which cards a declaration may bind to. It does NOT change the
+    stored `project` column, ranking, area inference, or context injection —
+    broadening those would alter behavior beyond the audited relation-isolation
+    fix, so the sharpening is confined here.
+    """
+    m = re.search(r'/\.claude/agent-memory/([^/]+)/', filepath)
+    if m:
+        return "__agent__:" + m.group(1)
+    m = re.search(r'/\.claude/skills/([^/]+)/', filepath)
+    if m:
+        return "skill:" + m.group(1)
+    return stored_project or ""
+
+
 def _slug_text(*parts):
     return " ".join(str(p or "").lower() for p in parts)
 
@@ -726,8 +751,11 @@ def compute_relation_state(conn):
     by_key = {}
     for (path, project, name, source, evidence, mtime,
          supersedes, contradicts, sup_explicit, con_explicit, status_explicit) in rows:
+        # Fine-grained namespace (per-agent, per-skill) for relation identity
+        # only — see detect_relation_namespace (audit F5). Not the stored column.
+        rel_project = detect_relation_namespace(path, project or "")
         cards[path] = {
-            "project": project or "",
+            "project": rel_project,
             "name": name or "",
             "source": source or "user-explicit",
             "evidence": evidence or "observed",
@@ -739,9 +767,9 @@ def compute_relation_state(conn):
             "status_explicit": (status_explicit or "").strip().lower(),
         }
         stem = os.path.basename(_path_sans_md(path))
-        by_key.setdefault((project or "", stem.casefold()), set()).add(path)
+        by_key.setdefault((rel_project, stem.casefold()), set()).add(path)
         if name:
-            by_key.setdefault((project or "", name.casefold()), set()).add(path)
+            by_key.setdefault((rel_project, name.casefold()), set()).add(path)
 
     def resolve(declarer_path, target):
         declarer_project = cards[declarer_path]["project"]

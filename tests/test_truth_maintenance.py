@@ -351,6 +351,27 @@ class TruthMaintenanceTest(unittest.TestCase):
         self.assertEqual(arch_status, "archived",
                          "reader-first migration un-archived a deliberately archived card")
 
+    def test_agent_memory_namespace_isolates_relations_by_agent(self):
+        # audit F5: detect_project collapses every agent-memory card to
+        # '__agent__', so a supersedes: in agent-a used to resolve to a same-slug
+        # card in agent-b. Relation identity must isolate per agent.
+        agent_a = os.path.join(self.tmp, ".claude", "agent-memory", "agent-a")
+        agent_b = os.path.join(self.tmp, ".claude", "agent-memory", "agent-b")
+        files = [
+            self._write("target.md", _card("target"), agent_a),
+            self._write("target.md", _card("target"), agent_b),
+            self._write("newer.md", _card("newer", "supersedes: target"), agent_a),
+        ]
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, files)
+        rows = dict(conn.execute(
+            "SELECT DISTINCT path, superseded_by FROM memory_chunks WHERE name='target'"
+        ).fetchall())
+        conn.close()
+        self.assertEqual(rows[files[0]], "newer")  # agent-a's own target IS superseded
+        self.assertEqual(rows[files[1]], "",
+                         "relation leaked across agents (agent-memory namespace collapse)")
+
     def test_low_trust_declarer_cannot_downrank_user_explicit_target(self):
         # Authority gate: an agent-extracted card contradicting a NEWER-tier
         # user-explicit card must not apply the 0.4x penalty — the claim is
