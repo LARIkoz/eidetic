@@ -622,9 +622,10 @@ def compute_relation_state(conn):
       gated      — [(target_path, column, label)] declarations refused by the
                    authority gate: surfaced, never applied to ranking.
 
-    Scoping: a bare target slug/name matches only cards in the SAME project
-    (cross-project same-slug cards can no longer contaminate each other); a
-    path-qualified target (contains '/') matches by path suffix anywhere.
+    Scoping: BOTH a bare target slug/name AND a path-qualified target (contains
+    '/') match only cards in the declarer's OWN project — cross-project same-slug
+    or same-suffix cards can never contaminate each other. Identity is always
+    (project, normalized name); a path qualifier only narrows WITHIN the project.
     """
     rows = conn.execute("""
         SELECT DISTINCT path, project, name, source, evidence, mtime,
@@ -654,14 +655,22 @@ def compute_relation_state(conn):
             by_key.setdefault((project or "", name.casefold()), set()).add(path)
 
     def resolve(declarer_path, target):
+        declarer_project = cards[declarer_path]["project"]
         if "/" in target:
+            # A path-qualified target is a MORE SPECIFIC name, not a license to
+            # reach across projects: the identity is still (project, name). The
+            # old bare `endswith("/" + cand)` matched a same-suffix card in EVERY
+            # project, so `contradicts: notes/methodology.md` in one project
+            # rank-nuked an identically-pathed card in another (the KEEP #1 bug).
+            # Scope the suffix match to the declarer's own project.
             cand = _path_sans_md(os.path.expanduser(target.strip()))
             return {
                 p for p in cards
-                if _path_sans_md(p) == cand
-                or _path_sans_md(p).endswith("/" + cand.lstrip("/"))
+                if cards[p]["project"] == declarer_project
+                and (_path_sans_md(p) == cand
+                     or _path_sans_md(p).endswith("/" + cand.lstrip("/")))
             }
-        key = (cards[declarer_path]["project"], _normalize_relation_target(target))
+        key = (declarer_project, _normalize_relation_target(target))
         return set(by_key.get(key, ()))
 
     desired = {path: {"superseded_by": set(), "contradicted_by": set()} for path in cards}
@@ -709,8 +718,8 @@ def propagate_declared_relations(conn):
     its target and the penalty auto-resolves on the next drift run. A target's
     own explicit frontmatter always wins; below-authority declarations are
     gated (see _declarer_outranks) and only surfaced. Resolution is by
-    declared name / file stem within the declarer's project; semantic
-    matching is v6.
+    declared name / file stem (or path suffix) within the declarer's project;
+    semantic matching is v6.
     """
     try:
         updates, unresolved, gated = compute_relation_state(conn)
