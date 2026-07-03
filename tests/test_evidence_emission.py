@@ -27,6 +27,17 @@ FRESH = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
 OLD = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
 
 
+def setUpModule():
+    # Event emission is gated behind EIDETIC_CONFIDENCE_EVENTS (default OFF, F1a);
+    # these tests exercise the ACTIVATED state. The subprocess inherits it via
+    # os.environ. A fresh install writes nothing — see test_evidence_safety.
+    os.environ["EIDETIC_CONFIDENCE_EVENTS"] = "on"
+
+
+def tearDownModule():
+    os.environ.pop("EIDETIC_CONFIDENCE_EVENTS", None)
+
+
 def _card(name, type_="project", source="agent-extracted", last_verified=FRESH,
           evidence_lines=None):
     ev = ""

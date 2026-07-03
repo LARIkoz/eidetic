@@ -22,7 +22,40 @@ import os
 import re
 import sys
 import tempfile
+import time
 from datetime import datetime
+
+# Bounded retry/backoff so contended appends are LOSSLESS (audit F1b) rather than
+# busy-exit-dropped: a handful of concurrent session-end / drift writers all
+# serialize instead of silently losing an event. The budget is short enough that
+# a permanently-held lock still returns False promptly.
+_LOCK_ATTEMPTS = 40
+_LOCK_BACKOFF_BASE = 0.004
+_LOCK_BACKOFF_MAX = 0.04
+
+
+def events_enabled():
+    """Phase-A ACTIVATION flag (audit F1a, spec §10). Default OFF ⇒ a fresh v6
+    install NEVER mutates user memory files: all `## Evidence` writes (emission +
+    decay) are gated here. Flip EIDETIC_CONFIDENCE_EVENTS on to activate event
+    accrual — the rails then exercise while ranking stays dark until the SEPARATE
+    EIDETIC_CONFIDENCE_RANKING flag (Phase B). Two-stage rollout, one flag each."""
+    return os.environ.get("EIDETIC_CONFIDENCE_EVENTS", "").strip().lower() in (
+        "1", "on", "true", "yes")
+
+
+def _acquire_under_retry(lock_fd):
+    """Non-blocking flock with bounded exponential backoff. Returns True once
+    held, or False only after the whole budget is exhausted (a stuck holder)."""
+    delay = _LOCK_BACKOFF_BASE
+    for _ in range(_LOCK_ATTEMPTS):
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            time.sleep(delay)
+            delay = min(delay * 1.5, _LOCK_BACKOFF_MAX)
+    return False
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -105,6 +138,9 @@ def append_event(card_path, event_type, actor=None, session_id=None, note="",
     Returns True if a line was written, False on a no-op (unknown type, missing
     file, lock contention, or a de-duped identical event). Never raises.
     """
+    # Phase-A gate (F1a): default install writes nothing to user files.
+    if not events_enabled():
+        return False
     if event_type not in _ACTOR_FOR:
         return False
     if not card_path or not os.path.exists(card_path):
@@ -119,11 +155,9 @@ def append_event(card_path, event_type, actor=None, session_id=None, note="",
     acquired = False
     try:
         lock_fd = open(lock_path, "w")
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            acquired = True
-        except OSError:
-            return False  # another writer holds it — the caller may retry
+        acquired = _acquire_under_retry(lock_fd)
+        if not acquired:
+            return False  # a stuck holder — lossless within the retry budget
         with open(card_path, "r", encoding="utf-8") as f:
             content = f.read()
         new_content = _insert_into_evidence(content, line)
