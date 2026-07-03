@@ -1051,14 +1051,25 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False, json_o
 
 
 def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=None, warn=False, relaxed=False):
+    # Vector search goes through the public Engine API v1 door (bin/engine.py):
+    # Index.search is drift-guarded and SOFT (returns [] + one stderr reason on a
+    # missing model / stamp drift), so the FTS path always still answers.
     try:
-        embed_path = os.path.join(os.path.dirname(__file__), "embed.py")
-        spec = importlib.util.spec_from_file_location("eidetic_embed", embed_path)
+        engine_path = os.path.join(os.path.dirname(__file__), "engine.py")
+        spec = importlib.util.spec_from_file_location("eidetic_engine", engine_path)
         if spec is None or spec.loader is None:
-            raise ImportError(f"cannot load {embed_path}")
-        embed = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(embed)
-        vec_results = embed.search(vector_db, query, limit=limit * 2)
+            raise ImportError(f"cannot load {engine_path}")
+        engine = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(engine)
+        index = engine.open_index(vector_db)
+        try:
+            vec_results = [
+                (h["score"], h["chunk_id"], h["path"], h["name"],
+                 h["section_heading"], h["content_hash"])
+                for h in index.search(query, limit=limit * 2)
+            ]
+        finally:
+            index.close()
     except ImportError as e:
         if warn:
             print(f"WARNING: vector search unavailable: {e}", file=sys.stderr)
@@ -1089,7 +1100,7 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=
             continue
         if not vector_hash:
             continue
-        digest = embed.content_hash(name, desc, content, heading)
+        digest = engine.content_hash(name, desc, content, heading)
         if digest != vector_hash:
             continue
         if type_filter and typ != type_filter:

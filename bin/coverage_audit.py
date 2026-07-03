@@ -10,7 +10,7 @@ can have rows in index.db yet zero usable vectors.
 Mirrors the guard exactly — joins by chunk_id first (chunk_ids churn on every
 re-index: index_file does DELETE WHERE path + re-INSERT, so an out-of-sync
 vectors.db yields orphan-vectors, not silent staleness), then recomputes
-content_hash via embed.content_hash (the sole hash authority; never re-derived
+content_hash via engine.content_hash (the sole hash authority; never re-derived
 here — it owns the content[:500] slice + HASH_SCHEME).
 
 Categories (per chunk, the current truth):
@@ -37,7 +37,7 @@ import sqlite3
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import embed          # noqa: E402  (import-safe: fastembed/numpy are lazy)
+import engine         # noqa: E402  (Engine API v1 door; import-safe: fastembed/numpy lazy)
 import index_impl     # noqa: E402
 
 
@@ -116,7 +116,7 @@ def audit(index_db, vectors_db):
         if not vhash:                                        # guard line 837
             chunk_cat[cid] = "stale-hash"
             continue
-        digest = embed.content_hash(vname, cdesc, ccontent, cheading)  # guard 839
+        digest = engine.content_hash(vname, cdesc, ccontent, cheading)  # guard 839
         chunk_cat[cid] = "aligned" if digest == vhash else "stale-hash"
 
     # Pass B — orphan vectors (chunk_id absent from live rows)
