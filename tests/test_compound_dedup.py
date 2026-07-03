@@ -181,14 +181,38 @@ class OverlapFallbackTest(unittest.TestCase):
         self.assertEqual(payload, SCATTERED_CARD[0])
 
     def test_close_paraphrase_compounds_via_threshold(self):
-        # 3 salient keywords (indexer, performs→perform, rebuilds→rebuild)
-        # converge on the card → >= OVERLAP_COMPOUND_MIN → compound.
+        # KEEP #6 paraphrase-POSITIVE: 3 salient keywords (indexer,
+        # performs→perform, rebuilds→rebuild) converge on the card → STRONG
+        # lexical (>= OVERLAP_COMPOUND_MIN) → MUST compound. On a vectored box
+        # this pair's e5 cosine is 0.843 (< the 0.85 duplicate line, measured
+        # on-box), so the pre-fix gate hard-VETOED it down to "flag" — the
+        # over-correction this item fixes. The redesigned gate may confirm a
+        # strong lexical match but must never veto it, so the outcome is
+        # "compound" in BOTH FTS-only and vectored modes.
         action, payload = self._fallback(
             "Knowledge: the indexer performs rebuilds gradually now, "
             "avoiding database locks entirely"
         )
         self.assertEqual(action, "compound")
         self.assertEqual(payload[0][0], SCATTERED_CARD[0])
+
+    def test_near_dup_sharing_surface_keywords_does_not_compound_on_vector(self):
+        # KEEP #6 near-dup-NEGATIVE: a semantically DIFFERENT card (a UI search
+        # box) that merely shares surface keywords with the target (rebuild,
+        # indexer) → BORDERLINE lexical overlap = 2. The vector gate is
+        # positive-only and this cross-topic pair scores cos 0.834 on-box
+        # (< 0.85), so it must NOT be promoted to a compound on vector signal
+        # alone — it must FLAG. Robust across modes: on the vectored box the
+        # gate returns False (below threshold) and in FTS-only mode it returns
+        # None (vectors absent); a borderline match compounds only on a True
+        # gate, so both paths FLAG. This is the guard that the fix did not
+        # merely invert the veto into an over-eager promoter.
+        action, payload = self._fallback(
+            "Knowledge: the search box rebuilds its autocomplete from the "
+            "indexer on filter clear"
+        )
+        self.assertEqual(action, "flag")
+        self.assertEqual(payload, SCATTERED_CARD[0])
 
     def test_unrelated_signal_neither_compounds_nor_flags(self):
         action, payload = self._fallback(
