@@ -238,6 +238,20 @@ def embed_texts(texts):
     return [np.array(e, dtype=np.float32).tobytes() for e in embeddings]
 
 
+def embed_query_texts(texts):
+    """Query-side embedding (asymmetric retrieval prefix).
+
+    e5-family cosines are calibrated for query:/passage: pairs; embedding both
+    sides as passage: inflates similarity and un-discriminates any gate built
+    on it (compound._vector_gate). Callers comparing a QUERY-like text against
+    stored/candidate passages must use this path, not embed_texts."""
+    import numpy as np
+
+    model = get_model()
+    embeddings = list(model.embed([QUERY_PREFIX + t for t in texts]))
+    return [np.array(e, dtype=np.float32).tobytes() for e in embeddings]
+
+
 def run_full(index_db_path, vector_db_path):
     import shutil
     backup_path = vector_db_path + ".pre-reindex.bak"

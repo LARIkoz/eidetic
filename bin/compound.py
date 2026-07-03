@@ -36,26 +36,40 @@ TODAY = datetime.now().strftime("%Y-%m-%d")
 # and still create the new file. Below FLAG → genuinely new topic.
 OVERLAP_COMPOUND_MIN = 3
 OVERLAP_FLAG_MIN = 2
-VECTOR_GATE_MIN_SIM = 0.60
+# The gate threshold must clear the ACTIVE embedder's unrelated-pair floor or
+# it approves everything: e5-large cosines for unrelated query/passage pairs
+# sit ~0.75-0.85 (see search_impl's measured calibration — garbage <=0.79,
+# true 0.80-0.85), so 0.85 = "at least as similar as a true retrieval match";
+# bge-small-en spreads much wider and 0.60 discriminates there. Unknown
+# profile → strict (fail toward FLAGGING, never toward auto-compounding).
+VECTOR_GATE_MIN_SIM_BY_PROFILE = {"multilingual": 0.85, "english": 0.60}
+VECTOR_GATE_MIN_SIM_DEFAULT = 0.85
 
 
 def _sanitize_words(query):
+    # Keep `-`: a hyphenated identifier (scikit-learn) stays ONE keyword unit,
+    # matching extract_keywords — splitting it here double-counted both halves
+    # in the overlap threshold. Hyphens are safe inside the quoted FTS terms
+    # every caller builds (porter unicode61 splits them into adjacent tokens).
     if not isinstance(query, str):
         query = " ".join(query)
-    sanitized = re.sub(r'[*()\[\]{}^~:+\-]', ' ', query)
+    sanitized = re.sub(r'[*()\[\]{}^~:+]', ' ', query)
     sanitized = sanitized.replace('"', '""')
     return [w for w in sanitized.split() if len(w) > 2 and w.upper() not in ("AND", "OR", "NOT", "NEAR")]
 
 
 def _keyword_paths(conn, word, limit=200):
     """Distinct card paths matching ONE keyword (FTS porter stemming applies,
-    so `performing` finds a card that says `performs`)."""
+    so `performing` finds a card that says `performs`). ORDER BY path before
+    LIMIT: an unordered LIMIT returned an arbitrary subset, so the same signal
+    could compound on one run and duplicate on the next."""
     try:
         rows = conn.execute("""
             SELECT DISTINCT c.path
             FROM memory_fts
             JOIN memory_chunks c ON memory_fts.rowid = c.id
             WHERE memory_fts MATCH ?
+            ORDER BY c.path
             LIMIT ?
         """, ('"' + word + '"', limit)).fetchall()
     except sqlite3.OperationalError:
@@ -121,8 +135,12 @@ def search_fts5(conn, query, limit=3):
         # An AND of fewer than 4 terms is too weak a topic signature to
         # auto-compound on; leave it to the thresholded fallback.
         return []
-    # FTS5 space-separated terms = implicit AND; input is sanitized above.
-    return run_match(" ".join(w for w, _paths in salient[:4]))
+    # FTS5 space-separated terms = implicit AND; each term quoted so a kept
+    # hyphenated identifier parses as a phrase, not FTS syntax.
+    return run_match(" ".join('"' + w + '"' for w, _paths in salient[:4]))
+
+
+_vector_gate_warned = False
 
 
 def _vector_gate(signal_text, candidate_text):
@@ -130,8 +148,15 @@ def _vector_gate(signal_text, candidate_text):
 
     True/False = vectors judged the pair; None = vectors unavailable (no
     vectors.db / no fastembed — the FTS-only default), caller proceeds on
-    the lexical threshold alone. Never raises.
+    the lexical threshold alone. Never raises, but a degradation WITH a
+    vectors.db present is logged once (class only) — a silently dead gate
+    looks identical to an approving one.
+
+    Asymmetric prefixes: the signal is the QUERY side, the candidate card the
+    passage side — embedding both as passage: inflates e5 cosine and defeats
+    the threshold. Threshold is profile-aware (see VECTOR_GATE_MIN_SIM_BY_PROFILE).
     """
+    global _vector_gate_warned
     vector_db = DB_PATH.replace("index.db", "vectors.db")
     if not os.path.exists(vector_db):
         return None
@@ -140,16 +165,27 @@ def _vector_gate(signal_text, candidate_text):
 
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import embed
-        blobs = embed.embed_texts([signal_text[:2000], candidate_text[:2000]])
-        if not blobs or len(blobs) < 2:
+        q_blobs = embed.embed_query_texts([signal_text[:2000]])
+        p_blobs = embed.embed_texts([candidate_text[:2000]])
+        if not q_blobs or not p_blobs:
             return None
-        vecs = [struct.unpack(f"{len(b) // 4}f", b) for b in blobs]
+        vecs = [struct.unpack(f"{len(b) // 4}f", b) for b in (q_blobs[0], p_blobs[0])]
         dot = sum(x * y for x, y in zip(vecs[0], vecs[1]))
         norms = [sum(x * x for x in v) ** 0.5 for v in vecs]
         if not all(norms):
             return None
-        return (dot / (norms[0] * norms[1])) >= VECTOR_GATE_MIN_SIM
-    except Exception:
+        threshold = VECTOR_GATE_MIN_SIM_BY_PROFILE.get(
+            getattr(embed, "EMBED_PROFILE", ""), VECTOR_GATE_MIN_SIM_DEFAULT
+        )
+        return (dot / (norms[0] * norms[1])) >= threshold
+    except Exception as exc:
+        if not _vector_gate_warned:
+            _vector_gate_warned = True
+            print(
+                f"WARN: compound vector gate degraded ({type(exc).__name__}) "
+                "despite vectors.db present; using lexical threshold only",
+                file=sys.stderr,
+            )
         return None
 
 
@@ -424,6 +460,12 @@ def main():
     for signal in signals:
         keywords = extract_keywords(signal)
         matched = False
+        # First candidate we could NOT compound into (protected type or a
+        # failed write): if nothing else absorbs the signal it becomes a new
+        # card, and this near-dup must be FLAGGED — a silent new card next to
+        # a matching feedback/user card is exactly the silent-duplication
+        # this release promises away.
+        dup_candidate = None
 
         if conn and keywords:
             results = search_fts5(conn, keywords, limit=3)
@@ -436,14 +478,20 @@ def main():
             for path, name, heading, content, rank in results:
                 if is_compound_candidate(path):
                     file_type = _get_file_type(path)
-                    if file_type in ("feedback", "user"):
+                    if file_type in PROTECTED_TYPES:
+                        if dup_candidate is None:
+                            dup_candidate = path
                         continue
                     if update_existing(path, signal):
                         compounded += 1
                         matched = True
                         break
+                    if dup_candidate is None:
+                        dup_candidate = path
 
         if not matched:
+            if dup_candidate is not None:
+                flagged.append((dup_candidate, signal))
             new_signals.append(signal)
 
     if new_signals:
