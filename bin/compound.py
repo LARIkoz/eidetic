@@ -341,6 +341,22 @@ def _get_file_type(filepath):
     return None
 
 
+def _emit_observed_if_managed(card_path, signal):
+    """Append one `observed` Evidence event iff the compounded card is MANAGED
+    (spec §2.3, §4.5 bullet 1). Best-effort — never breaks the compound write."""
+    try:
+        import index_impl
+        import confidence as _conf
+        import evidence
+        with open(card_path, "r", encoding="utf-8") as f:
+            meta, _body = index_impl.parse_frontmatter(f.read())
+        card_kind = index_impl.infer_card_kind(meta, card_path)
+        if _conf.is_managed(meta.get("type"), meta.get("source"), card_kind):
+            evidence.observed(card_path, note=signal[:80])
+    except Exception:
+        pass
+
+
 def _markdown_headings(content):
     in_fence = False
     offset = 0
@@ -530,6 +546,11 @@ def main():
                     if update_existing(path, signal):
                         compounded += 1
                         matched = True
+                        # STEP 1B (§4.5): a signal compounding into a MANAGED card
+                        # appends one deterministic `observed` event (tier 1) to
+                        # its `## Evidence`, not only a `## History` line — the
+                        # confidence rail then folds it on the next reindex.
+                        _emit_observed_if_managed(path, signal)
                         break
                     if dup_candidate is None:
                         dup_candidate = path

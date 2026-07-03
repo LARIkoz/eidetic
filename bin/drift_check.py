@@ -561,6 +561,72 @@ def prune_orphans(drift_conn, index_conn):
     return deleted
 
 
+def _last_evidence_event_is_decay(card_path):
+    """True if the most recent `## Evidence` event is already `decayed`, so decay
+    is emitted at most once per silence episode (idempotent across reindex)."""
+    try:
+        with open(card_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return False
+    last, in_ev = None, False
+    for line in content.splitlines():
+        st = line.strip()
+        if st.startswith("## "):
+            in_ev = st.lower() == "## evidence"
+            continue
+        if in_ev and st.startswith("- "):
+            parts = [p.strip() for p in st[2:].split("·")]
+            if len(parts) >= 2:
+                last = parts[1].lower()
+    return last == "decayed"
+
+
+def emit_decay_events(index_conn, drift_conn):
+    """§4.3 decay-on-silence. Reusing the SINGLE age clock (no second timer):
+    when a MANAGED, non-feedback card's `age_stale` finding is penalizing
+    (first_seen > 1 — the existing grace gate) AND its confidence is still above
+    the 0.55 floor, append ONE synthetic `decayed` event so the fold drops it
+    toward (never below) 0.55. Feedback cards are age-timeless → never decay.
+    Idempotent: at most one decay per silence episode. Returns the count emitted.
+    """
+    try:
+        import confidence as _conf
+        import evidence
+    except ImportError:  # pragma: no cover
+        return 0
+    try:
+        rows = drift_conn.execute(
+            "SELECT DISTINCT path FROM drift_findings "
+            "WHERE drift_type = 'age_stale' AND resolved_at IS NULL AND first_seen > 1"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    emitted = 0
+    for (path,) in rows:
+        try:
+            row = index_conn.execute(
+                "SELECT type, source, card_kind, confidence FROM memory_chunks "
+                "WHERE path = ? LIMIT 1", (path,)
+            ).fetchone()
+        except sqlite3.OperationalError:
+            continue
+        if not row:
+            continue
+        typ, source, card_kind, conf = row
+        if (typ or "").lower() == "feedback":
+            continue  # age-timeless (§4.3, P3)
+        if not _conf.is_managed(typ, source, card_kind):
+            continue
+        if (conf if conf is not None else 0.7) <= _conf.DECAY_FLOOR:
+            continue  # already at/below the floor → no decay event (§4.3)
+        if _last_evidence_event_is_decay(path):
+            continue  # one decay per silence episode
+        if evidence.decayed(path):
+            emitted += 1
+    return emitted
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: drift_check.py <index_db_path>", file=sys.stderr)
@@ -610,13 +676,18 @@ def main():
     resolved = auto_resolve(drift_conn, all_findings)
     new_count = write_findings(drift_conn, all_findings)
 
+    # STEP 1B §4.3: decay-on-silence rides the same age clock (after first_seen is
+    # updated) — a penalizing age_stale finding on a managed non-feedback card
+    # above 0.55 gets one synthetic `decayed` event on its `## Evidence`.
+    decayed_count = emit_decay_events(index_conn, drift_conn)
+
     record_run(drift_conn)
 
     active = drift_conn.execute(
         "SELECT COUNT(*) FROM drift_findings WHERE resolved_at IS NULL"
     ).fetchone()[0]
 
-    print(f"Drift check: {len(all_findings)} detected, {new_count} new, {resolved} resolved, {pruned} pruned. {active} active.")
+    print(f"Drift check: {len(all_findings)} detected, {new_count} new, {resolved} resolved, {pruned} pruned, {decayed_count} decayed. {active} active.")
     index_conn.close()
     drift_conn.close()
 
