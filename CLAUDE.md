@@ -26,6 +26,23 @@ The system runs in parallel with MEMORY.md auto-load (Phase A). Nothing breaks. 
 - Disable auto-memory without user confirmation
 - Manually create memories without checking FTS5 first (use compound.py)
 
+## Commit identity (maintainer machines only)
+
+Maintainer commits (the LARIkoz fleet) MUST use the neutral identity — set once per clone:
+
+```bash
+git config user.name "Eidetic Maintainers"
+git config user.email "maintainers@eidetic.invalid"
+```
+
+`.invalid` is an RFC 2606 reserved TLD: the address can never be verified by any GitHub account,
+so commits map to nobody — now or ever. Never use `*@users.noreply.github.com` for a neutral
+identity (`eidetic@users.noreply.github.com` is the noreply address of an unrelated dormant
+GitHub account and misattributes our commits to it). Do not add AI attribution trailers
+(Co-Authored-By, session links) — the committed `.claude/settings.json` disables them for
+Claude Code; other agents must not add their own either. External contributors: ignore this
+section and commit with your own identity.
+
 ## Architecture (for modifications)
 
 ```
