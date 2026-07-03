@@ -155,7 +155,7 @@ def search_fts5(conn, query, limit=3):
 _vector_gate_warned = False
 
 
-def _vector_gate(signal_text, candidate_text):
+def _vector_gate(signal_text, candidate_text, embedder=None):
     """Optional semantic signal for the threshold fallback (positive-only).
 
     True  = cosine >= the profile promotion threshold (the embedder judges the
@@ -167,21 +167,32 @@ def _vector_gate(signal_text, candidate_text):
     Never raises, but a degradation WITH a vectors.db present is logged once
     (class only) — a silently dead gate looks identical to an approving one.
 
+    `embedder` is INJECTABLE (audit F2): any object exposing `embed_query_texts`
+    / `embed_texts` (→ list of little-endian float32 blobs) and an `EMBED_PROFILE`
+    attribute. Tests pass a hermetic deterministic stub so the guard exercises
+    the threshold logic WITHOUT the live model/store; production passes None and
+    the module embeds against `bin/embed.py` and `DB_PATH`'s vectors.db as before.
+
     Asymmetric prefixes: the signal is the QUERY side, the candidate card the
     passage side — embedding both as passage: inflates e5 cosine and defeats
     the threshold. Threshold is profile-aware (see VECTOR_GATE_MIN_SIM_BY_PROFILE).
     """
     global _vector_gate_warned
-    vector_db = DB_PATH.replace("index.db", "vectors.db")
-    if not os.path.exists(vector_db):
-        return None
+    production = embedder is None
+    if production:
+        vector_db = DB_PATH.replace("index.db", "vectors.db")
+        if not os.path.exists(vector_db):
+            return None
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import embed as embedder
+        except Exception:
+            return None  # no usable embedder → lexical-only
     try:
         import struct
 
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        import embed
-        q_blobs = embed.embed_query_texts([signal_text[:2000]])
-        p_blobs = embed.embed_texts([candidate_text[:2000]])
+        q_blobs = embedder.embed_query_texts([signal_text[:2000]])
+        p_blobs = embedder.embed_texts([candidate_text[:2000]])
         if not q_blobs or not p_blobs:
             return None
         vecs = [struct.unpack(f"{len(b) // 4}f", b) for b in (q_blobs[0], p_blobs[0])]
@@ -190,11 +201,11 @@ def _vector_gate(signal_text, candidate_text):
         if not all(norms):
             return None
         threshold = VECTOR_GATE_MIN_SIM_BY_PROFILE.get(
-            getattr(embed, "EMBED_PROFILE", ""), VECTOR_GATE_MIN_SIM_DEFAULT
+            getattr(embedder, "EMBED_PROFILE", ""), VECTOR_GATE_MIN_SIM_DEFAULT
         )
         return (dot / (norms[0] * norms[1])) >= threshold
     except Exception as exc:
-        if not _vector_gate_warned:
+        if production and not _vector_gate_warned:
             _vector_gate_warned = True
             print(
                 f"WARN: compound vector gate degraded ({type(exc).__name__}) "
@@ -204,7 +215,7 @@ def _vector_gate(signal_text, candidate_text):
         return None
 
 
-def find_overlap_candidate(conn, query, signal_text):
+def find_overlap_candidate(conn, query, signal_text, embedder=None):
     """Stage-3 thresholded fallback after phrase + AND both missed.
 
     Counts how many of the top-6 salient keywords individually hit the same
@@ -260,7 +271,7 @@ def find_overlap_candidate(conn, query, signal_text):
     # BORDERLINE lexical: vectors decide. Only a positive (True) cosine promotes
     # to compound; False (below threshold) and None (vectors unavailable) FLAG.
     rows = _card_rows()
-    if rows and _vector_gate(signal_text, rows[0][3] or "") is True:
+    if rows and _vector_gate(signal_text, rows[0][3] or "", embedder=embedder) is True:
         return "compound", rows
     return "flag", best_path
 
