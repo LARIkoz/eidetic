@@ -198,6 +198,32 @@ class MigrationTest(unittest.TestCase):
             conn.execute("SELECT COUNT(*) FROM card_events").fetchone()[0], 0)
         conn.close()
 
+    def test_incremental_delete_clears_card_events_no_orphan(self):  # audit NEW-2
+        # A deleted event-bearing card must not orphan card_events rows on an
+        # INCREMENTAL reindex — else the doctor reports a PERSISTENT divergence
+        # until a --full. After the delete: no orphan, doctor quiet, and the
+        # projection equals a full rebuild of the surviving corpus.
+        gone = self._write("gone.md", _card("gone", type_="project", source="agent-extracted",
+                           evidence_lines=["2026-07-01 · observed · agent-extracted · Δ+0.05 · \"g\""]))
+        keep = self._write("keep.md", _card("keep", type_="project", source="agent-extracted",
+                           evidence_lines=["2026-07-02 · observed · agent-extracted · Δ+0.05 · \"k\""]))
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, [gone, keep])
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM card_events WHERE path=?", (gone,)).fetchone()[0], 1)
+
+        os.remove(gone)  # delete the card file
+        _i, _s, removed = index_impl.run_incremental(conn, [keep])
+        self.assertEqual(removed, 1)
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM card_events WHERE path=?", (gone,)).fetchone()[0], 0,
+            "orphan card_events rows after an incremental delete (NEW-2)")
+        # doctor QUIET, and the projection == a full rebuild of the survivors.
+        self.assertEqual(index_impl.check_evidence_divergence(conn), [])
+        rows = conn.execute("SELECT path, event_type FROM card_events").fetchall()
+        conn.close()
+        self.assertEqual(rows, [(keep, "observed")])
+
     def test_evidence_divergence_doctor_check(self):  # audit F2 / §3.2
         # A consistent store reports no divergence; a tampered projection is
         # surfaced LOUDLY (non-zero problem count) — markdown wins.

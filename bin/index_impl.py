@@ -1187,6 +1187,11 @@ def run_incremental(conn, files):
         if old_path not in current_paths:
             conn.execute("DELETE FROM memory_chunks WHERE path = ?", (old_path,))
             conn.execute("DELETE FROM index_meta WHERE path = ?", (old_path,))
+            # NEW-2: also drop the deleted/renamed card's event projection, else
+            # orphan card_events rows make the doctor report a PERSISTENT
+            # `## Evidence`↔card_events divergence on every incremental until a
+            # --full (the projection is per-`path`, F3), and --full != --incr.
+            conn.execute("DELETE FROM card_events WHERE path = ?", (old_path,))
             removed += 1
 
     conn.commit()
