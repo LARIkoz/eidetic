@@ -250,8 +250,10 @@ def _detect_corpus_lang(db_path, sample=300):
     import collections
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        # Stable sample (see base.py): an unordered LIMIT could sample a
+        # different subset across reindexes and flip the detected language.
         rows = conn.execute(
-            "SELECT COALESCE(name,'')||' '||COALESCE(content,'') FROM memory_chunks LIMIT ?",
+            "SELECT COALESCE(name,'')||' '||COALESCE(content,'') FROM memory_chunks ORDER BY rowid LIMIT ?",
             (sample,)).fetchall()
         conn.close()
     except sqlite3.Error:

@@ -361,7 +361,7 @@ def fetch_project(conn, cwd, budget_chars, drift_map=None):
         FROM memory_chunks c
         LEFT JOIN memory_fts ON memory_fts.rowid = c.id
         WHERE c.project LIKE ? ESCAPE '\\' AND c.type != 'feedback'
-        ORDER BY c.mtime DESC
+        ORDER BY c.mtime DESC, c.path, c.section_heading
         LIMIT 50
     """, (f"%{_escape_like(slug[-60:])}%",)).fetchall()
 
@@ -415,7 +415,9 @@ def fetch_recent(conn, budget_chars, exclude_project=None, drift_map=None):
         query += " AND (c.project IS NULL OR c.project NOT LIKE ? ESCAPE '\\')"
         params.append(f"%{_escape_like(exclude_project[-60:])}%")
 
-    query += f" ORDER BY {mtime_seconds} DESC LIMIT 30"
+    # Total order: mtime alone ties for batch-written cards, making the LIMIT-30
+    # cutoff pick an arbitrary subset. (path, section_heading) is the unique key.
+    query += f" ORDER BY {mtime_seconds} DESC, c.path, c.section_heading LIMIT 30"
 
     rows = conn.execute(query, params).fetchall()
 
