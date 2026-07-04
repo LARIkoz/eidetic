@@ -155,6 +155,24 @@ def search_fts5(conn, query, limit=3):
 _vector_gate_warned = False
 
 
+class _DoorEmbedder:
+    """Adapts the Engine API v1.1 door to the injectable-embedder shape the vector
+    gate expects (`embed_query_texts` / `embed_texts` / `EMBED_PROFILE`), routing
+    through S1 `embed_query_batch`, S4 `embed_passages`, and S3 `profile()` —
+    retiring compound's private `embed.*` back door (spec §2, S1/S3/S4). Verdicts
+    are identical to the back door because the door wraps the same functions."""
+
+    def __init__(self, engine):
+        self._engine = engine
+        self.EMBED_PROFILE = engine.profile()
+
+    def embed_query_texts(self, texts):
+        return self._engine.embed_query_batch(texts)
+
+    def embed_texts(self, texts):
+        return self._engine.embed_passages(texts)
+
+
 def _vector_gate(signal_text, candidate_text, embedder=None):
     """Optional semantic signal for the threshold fallback (positive-only).
 
@@ -185,7 +203,8 @@ def _vector_gate(signal_text, candidate_text, embedder=None):
             return None
         try:
             sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-            import embed as embedder
+            import engine
+            embedder = _DoorEmbedder(engine)  # v1.1 door (S1/S3/S4) — retires the back door
         except Exception:
             return None  # no usable embedder → lexical-only
     try:

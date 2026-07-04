@@ -158,6 +158,26 @@ class VectoredContractTest(unittest.TestCase):
         self.assertNotIn("/mem/c0.md", [h["path"] for h in thits])
         idx.close()
 
+    @unittest.skipUnless(_fastembed_available(), VECTORED_ONLY)
+    def test_ac8_compound_gate_door_equals_backdoor(self):
+        # Proof: compound._vector_gate yields IDENTICAL verdicts whether its
+        # embedder is the v1.1 door adapter (S1/S3/S4) or the private back door.
+        import compound
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "eidetic_embed_bd", os.path.join(os.path.dirname(compound.__file__), "embed.py"))
+        backdoor = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backdoor)
+        door = compound._DoorEmbedder(engine)
+        pairs = [("use postgres for the store", "use mysql for the store"),
+                 ("validate_key checks the token", "check_auth verifies the session"),
+                 ("the sky is blue today", "kubernetes ingress renewal")]
+        for sig, cand in pairs:
+            self.assertEqual(
+                compound._vector_gate(sig, cand, embedder=door),
+                compound._vector_gate(sig, cand, embedder=backdoor),
+                f"door/back-door verdict mismatch for {sig!r} vs {cand!r}")
+
 
 class ForcedDegradeTest(unittest.TestCase):
     """FR-4.3 — with the embedder runtime blocked: build raises, reads go soft."""
