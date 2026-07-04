@@ -109,15 +109,26 @@ MAX_CHUNK_CHARS = 6000
 # it drops only the far tail, the top-K=8 neighbor bound caps confirmer cost, and
 # the confirmer (FR-3) owns precision.
 #
-# AC-1b confirmer FP (turn-2, m1_contradiction.production_confirmer — a
-# deterministic shared-frame opposition detector: antonym / mutually-exclusive-set
-# / negation-asymmetry / numeric-slot): on a labeled set of 6 contradictions
-# (Postgres↔MySQL, enabled↔disabled, 3↔10 retries, expire↔never, sync↔async,
-# allow↔deny) and 7 non-contradictions (4 related-non-conflicting + 3 unrelated
-# controls in the 0.69–0.72 band) → confirmer RECALL 6/6, FALSE-POSITIVES 0/7
-# (FP-rate 0.000). Both halves of the owner-signed F4 calibration now hold:
-# candidate-gate recall 4/4 @ 0.58, confirmer FP 0.000. The english floor is the
-# documented lower band, not yet calibrated (no english-profile box on this host).
+# AC-1b confirmer FP (RE-HARDENED per AUDIT M1-1/M1-2). The confirmer is
+# m1_contradiction.production_confirmer — a deterministic MINIMAL-PAIR opposition
+# detector (antonym / mutually-exclusive-set / negation-asymmetry / numeric-slot),
+# where the opposing tokens must occupy the SAME predicate slot of an otherwise-
+# shared statement, version/temporal/date numbers are treated as UPDATES (never a
+# contradiction), and a negation that cancels an antonym ("not required" ==
+# "optional") is suppressed. Measured on the REALISTIC negative classes the audit
+# named as poison — version bump, temporal/date/size updates, compatible neg-cancel,
+# agreeing paraphrase, before/after-different-action, two-facts-both-true, add/remove
+# changelog, near-duplicate, same-number-different-units, topic-adjacent — plus 8
+# true contradictions: confirmer RECALL 8/8, FALSE-POSITIVES 0/14 (test
+# test_production_confirmer_recall_and_zero_fp_realistic, both legs). NOTE the
+# EARLIER turn-2 "0/7" number was measured on EASY negatives and is superseded.
+# Candidate-gate recall (turn-2): 4/4 @ 0.58. The english floor is the documented
+# lower band, not yet calibrated (no english-profile box on this host).
+#
+# ACTIVATION IS GATED: even with both numbers, M1 stays DORMANT (diagnostic-only,
+# writes NO contradicted event) until EIDETIC_M1_CONTRADICTION is explicitly set —
+# a switch DECOUPLED from the shared EIDETIC_CONFIDENCE_EVENTS rail (AUDIT M1-1
+# remedy c). Flip it only after re-measuring FP on the deployment's own negatives.
 M1_NEIGHBORS = 8
 M1_CANDIDATE_MIN = {"multilingual": 0.58, "english": 0.38}
 M1_CANDIDATE_MIN_DEFAULT = 0.58

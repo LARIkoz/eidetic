@@ -56,8 +56,13 @@ class M1Test(unittest.TestCase):
         self.db = os.path.join(self.tmp, "db", "index.db")
         os.environ["EIDETIC_CONFIDENCE_EVENTS"] = "on"
 
+    def _activate_m1(self):
+        # M1 is DORMANT/diagnostic-only by default; write-path tests must opt in.
+        os.environ["EIDETIC_M1_CONTRADICTION"] = "on"
+
     def tearDown(self):
         os.environ.pop("EIDETIC_CONFIDENCE_EVENTS", None)
+        os.environ.pop("EIDETIC_M1_CONTRADICTION", None)
         m1.register_confirmer(None)
         if hasattr(self, "_saved_nvd"):
             m1.neighbors_via_door = self._saved_nvd
@@ -120,6 +125,7 @@ class M1Test(unittest.TestCase):
 
     # --- AC-3 true contradiction lands on the LOSER ---------------------
     def test_ac3_event_on_loser_delta_and_confidence_drop(self):
+        self._activate_m1()
         # O = older, lower authority (agent); N = newer, user → loser is O.
         o = self._write("rule-o.md", _card("rule-o", source="agent-extracted", last_verified=OLD))
         nfile = self._write("rule-n.md", _card("rule-n", source="user-explicit", last_verified=NEW))
@@ -176,6 +182,7 @@ class M1Test(unittest.TestCase):
 
     # --- AC-6 self + idempotence + full==incremental --------------------
     def test_ac6_no_self_and_idempotent(self):
+        self._activate_m1()
         o = self._write("rule-o.md", _card("rule-o", source="agent-extracted", last_verified=OLD))
         nfile = self._write("rule-n.md", _card("rule-n", source="user-explicit"))
         self._index([o, nfile]).close()
@@ -190,29 +197,45 @@ class M1Test(unittest.TestCase):
         self.assertEqual(len(self._events(o)), 1)  # exactly one contradicted, not two
 
     # --- FR-3 production confirmer (deterministic opposition; both legs) --
-    def test_production_confirmer_recall_and_zero_fp(self):
-        # AC-1 precision + AC-1b confirmer FP, on the labeled set. Model-free.
+    # AC-1b (re-hardened per AUDIT M1-1/M1-2): the FP set is the REALISTIC negative
+    # classes the audit named as poison — version bumps, temporal/date/size UPDATES,
+    # compatible negation-cancelled pairs, agreeing paraphrases, two-facts-both-true,
+    # add/remove changelog, near-dups, same-number-different-units — NOT easy
+    # off-topic sentences. Near-zero FP on THESE is what "calibration closed" means.
+    CONTRA = [
+        ("The primary datastore is PostgreSQL.", "The primary datastore is MySQL."),
+        ("Feature flags are enabled by default.", "Feature flags are disabled by default."),
+        ("Retries are capped at 3 attempts.", "Retries are capped at 10 attempts."),
+        ("Auth tokens expire after 24 hours.", "Auth tokens never expire."),
+        ("The write path is synchronous.", "The write path is asynchronous."),
+        ("Access is allowed for guests.", "Access is denied for guests."),
+        ("The field is required.", "The field is optional."),
+        ("Always skip the cache.", "Never skip the cache."),
+    ]
+    HARD_NEG = [
+        ("version bump", "The API version is v1.", "The API version is v2."),
+        ("temporal update", "The request timeout is 30s.", "The request timeout is 60s."),
+        ("date update", "The launch date is 2024.", "The launch date is 2025."),
+        ("size update", "The max upload size is 10mb.", "The max upload size is 50mb."),
+        ("num same-slot temporal", "Auth tokens expire after 24 hours.", "Auth tokens expire after 48 hours."),
+        ("compatible (neg-cancel)", "The field is not required.", "The field is optional."),
+        ("agree paraphrase", "Never skip the tests.", "Always run the tests."),
+        ("before/after diff act", "Validate the token before saving.", "Log the request after saving."),
+        ("two-facts-both-true", "Orders are stored in postgres.", "Sessions are stored in mysql."),
+        ("add/remove changelog", "Added dark mode to the UI.", "Removed the legacy export API."),
+        ("near-duplicate", "The primary datastore is postgres.", "The primary datastore is postgres."),
+        ("same-num diff-unit", "The timeout is 30s.", "The timeout is 30m."),
+        ("synonym paraphrase", "Access is permitted for guests.", "Access is allowed for guests."),
+        ("topic-adjacent", "PostgreSQL supports JSON columns.", "The primary datastore is PostgreSQL."),
+    ]
+
+    def test_production_confirmer_recall_and_zero_fp_realistic(self):
         def v(a, b):
             return m1.production_confirmer({"text": a}, {"text": b})
-        contra = [
-            ("The primary datastore is PostgreSQL.", "The primary datastore is MySQL."),
-            ("Feature flags are enabled by default.", "Feature flags are disabled by default."),
-            ("Retries are capped at 3 attempts.", "Retries are capped at 10 attempts."),
-            ("Auth tokens expire after 24 hours.", "Auth tokens never expire."),
-            ("The API is synchronous.", "The API is asynchronous."),
-            ("Access is allowed for guests.", "Access is denied for guests."),
-        ]
-        noncontra = [
-            ("The primary datastore is PostgreSQL.", "PostgreSQL supports JSON columns."),
-            ("Feature flags are enabled by default.", "Feature flags are read from config."),
-            ("Retries are capped at 3 attempts.", "Retries use exponential backoff."),
-            ("The API is synchronous.", "The API returns JSON."),
-            ("The primary datastore is PostgreSQL.", "Kubernetes ingress certificate renewal timed out."),
-            ("Retries are capped at 3 attempts.", "The office coffee machine is broken again."),
-            ("Access is allowed for guests.", "The deployment pipeline runs on Fridays."),
-        ]
-        self.assertTrue(all(v(a, b) == "contradiction" for a, b in contra), "recall < 6/6")
-        self.assertEqual([v(a, b) for a, b in noncontra].count("contradiction"), 0, "FP > 0")
+        misses = [(a, b) for a, b in self.CONTRA if v(a, b) != "contradiction"]
+        self.assertEqual(misses, [], f"recall < {len(self.CONTRA)}/{len(self.CONTRA)}")
+        fps = [lab for lab, a, b in self.HARD_NEG if v(a, b) == "contradiction"]
+        self.assertEqual(fps, [], f"false positives on realistic negatives: {fps}")
 
     def test_production_confirmer_fail_closed_on_error(self):
         # A record without "text" (or any raising access) → no_contradiction.
@@ -240,6 +263,7 @@ class M1Test(unittest.TestCase):
     def test_ingest_hook_end_to_end_production_confirmer(self):
         # Real conflict via the DEFAULT production confirmer (no injection): the
         # exclusive-set opposition Postgres↔MySQL fires → event on the loser O.
+        self._activate_m1()
         self._saved_nvd = m1.neighbors_via_door
         o = self._write("store-o.md", _card("store-o", source="agent-extracted", last_verified=OLD,
                                              body="The primary datastore is MySQL."))
@@ -305,6 +329,7 @@ class M1Test(unittest.TestCase):
     # --- Leg-A full vectored e2e: real vectors.db + production confirmer -
     @unittest.skipUnless(_fastembed_available(), VECTORED_ONLY)
     def test_leg_a_full_e2e_real_vectors_and_confirmer(self):
+        self._activate_m1()
         import engine
         engine.configure(provider="cpu", threads=8)
         o = self._write("store-o.md", _card("store-o", source="agent-extracted", last_verified=OLD,
@@ -329,6 +354,7 @@ class M1Test(unittest.TestCase):
 
     # --- AC-7 dark-safe --------------------------------------------------
     def test_ac7_events_off_writes_nothing(self):
+        self._activate_m1()  # M1 activated, but the shared events rail is OFF
         os.environ.pop("EIDETIC_CONFIDENCE_EVENTS", None)  # default OFF
         o = self._write("rule-o.md", _card("rule-o", source="agent-extracted", last_verified=OLD))
         nfile = self._write("rule-n.md", _card("rule-n", source="user-explicit"))
@@ -338,6 +364,22 @@ class M1Test(unittest.TestCase):
         out = m1.process_card(nfile, mN, bN, neighbors=[{"score": 0.66, "path": o}], confirmer=YES)
         self.assertEqual([x["action"] for x in out], ["gated_off"])  # decided, but not written
         self.assertEqual(open(o, encoding="utf-8").read(), before)
+        self.assertNotIn("## Evidence", open(o, encoding="utf-8").read())
+
+    # --- AUDIT M1-1 remedy c: DORMANT / diagnostic-only by default -------
+    def test_m1_dormant_diagnostic_by_default(self):
+        # EIDETIC_CONFIDENCE_EVENTS on (for the OTHER rails) but the M1 activation
+        # flag OFF (default): a confirmed conflict is DIAGNOSTIC-ONLY — no
+        # `contradicted` event is written on the loser.
+        self.assertFalse(m1.m1_write_enabled())
+        o = self._write("store-o.md", _card("store-o", source="agent-extracted", last_verified=OLD,
+                                             body="The primary datastore is MySQL."))
+        nfile = self._write("store-n.md", _card("store-n", source="user-explicit",
+                                                body="The primary datastore is PostgreSQL."))
+        self._index([o, nfile]).close()
+        mN, bN = self._meta_body(nfile)
+        out = m1.process_card(nfile, mN, bN, neighbors=[{"score": 0.9, "path": o}])
+        self.assertEqual([x["action"] for x in out], ["diagnostic"])
         self.assertNotIn("## Evidence", open(o, encoding="utf-8").read())
 
 

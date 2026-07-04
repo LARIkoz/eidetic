@@ -167,26 +167,27 @@ import re as _re
 _STOP = frozenset(
     "the a an is are was were be been to of in on for and or by with as at from that this "
     "it its their our your we use uses using should must will would can may per via than then "
-    "default now always set sets get gets has have had do does not-a".split())
+    "default now set sets get gets has have had do does".split())
 
 # One side explicitly negates a shared clause the other asserts.
 _NEG_CUES = frozenset(
     "not no never without none cannot cant dont doesnt isnt arent wasnt werent wont neither "
     "nor stop stopped disable disabled off false removed remove deprecated".split())
 
-# Unambiguous antonym pairs (opposite members ⇒ opposing claim on a shared frame).
+# Unambiguous, TIME-INVARIANT antonym pairs: opposite members in the SAME slot ⇒
+# opposing claim. Deliberately EXCLUDES changelog verbs (add/remove, include/
+# exclude) and ordering words (before/after) — those are UPDATES/sequence, not
+# logical contradictions (AUDIT M1-1: "add/remove changelog", "before/after").
 _ANTONYMS = [
     {"enabled", "disabled"}, {"enable", "disable"}, {"true", "false"}, {"on", "off"},
     {"allow", "deny"}, {"allowed", "denied"}, {"required", "optional"}, {"always", "never"},
-    {"increase", "decrease"}, {"increased", "decreased"}, {"add", "remove"},
-    {"added", "removed"}, {"include", "exclude"}, {"included", "excluded"},
     {"valid", "invalid"}, {"active", "inactive"}, {"present", "absent"},
-    {"accept", "reject"}, {"grant", "revoke"}, {"granted", "revoked"}, {"open", "closed"},
+    {"accept", "reject"}, {"grant", "revoke"}, {"granted", "revoked"},
     {"success", "failure"}, {"sync", "async"}, {"synchronous", "asynchronous"},
-    {"public", "private"}, {"ascending", "descending"}, {"before", "after"},
+    {"public", "private"}, {"mandatory", "optional"},
 ]
 
-# Curated mutually-exclusive term sets: two DIFFERENT members on a shared frame is
+# Curated mutually-exclusive term sets: two DIFFERENT members in the SAME slot is
 # an opposing claim (a "primary datastore is X" can be exactly one). Deliberately
 # small + high-confidence (the flagship Postgres↔MySQL case); extend at deploy.
 _EXCLUSIVE_SETS = [
@@ -194,59 +195,136 @@ _EXCLUSIVE_SETS = [
      "oracle", "mssql", "cassandra", "dynamodb", "cockroachdb"},
 ]
 
+# A number is an UPDATE, not a contradiction, when it is a version, a date/year, or
+# carries a time/size unit, or its shared frame is temporal (AUDIT M1-1: version
+# bump, temporal 30s↔60s, date update). Such numeric diffs never emit contradicted.
+_VERSION_RE = _re.compile(r"^v?\d+(?:\.\d+)+$|^v\d+$")
+_UNIT_NUM_RE = _re.compile(
+    r"^\d+(?:\.\d+)?(?:s|ms|us|ns|m|h|d|w|mo|y|sec|secs|min|mins|hr|hrs|hour|hours|"
+    r"day|days|week|weeks|month|months|year|years|kb|mb|gb|tb|px|em|rem|k|m|b)$")
+_YEAR_RE = _re.compile(r"^\d{4}$")
+_TEMPORAL_FRAME = frozenset(
+    "timeout ttl expiry expire expires expiration duration date year deadline interval "
+    "delay latency age retention window period schedule version revision release "
+    "size limit quota timestamp uptime".split())
+
 
 def _toks(s):
     return _re.findall(r"[a-z0-9]+", (s or "").lower())
 
 
 def _content(toks):
-    return {t for t in toks if t not in _STOP}
+    from collections import Counter
+    return Counter(t for t in toks if t not in _STOP)
 
 
-def _nums(toks):
-    return {t for t in toks if any(ch.isdigit() for ch in t)}
+# Positional/elaboration words that carry no predicate of their own — safe extras
+# on the non-negating side of a negation asymmetry.
+_DETAIL_WORDS = frozenset(
+    "after before within around about over under up upto every each any all "
+    "roughly approx approximately only just even still yet "
+    "second seconds minute minutes hour hours day days week weeks month months "
+    "year years ms millis sec secs min mins hr hrs".split())
 
 
-def _frame_overlap(sa, sb, *, strong=False, ignore=frozenset()):
-    """Jaccard of the two content-token frames ≥ threshold — the two statements
-    are about the SAME subject, so the opposing token is a real conflict, not two
-    unrelated sentences that happen to share one polarity word."""
-    sa = set(sa) - ignore
-    sb = set(sb) - ignore
-    if not sa or not sb:
+def _all_detail(tokens):
+    """True if every token is DETAIL (a number, a unit-number, a temporal-frame
+    word, or a positional/elaboration word) — i.e. elaboration, not a new claim."""
+    for t in tokens:
+        if any(c.isdigit() for c in t):
+            continue
+        if t in _TEMPORAL_FRAME or t in _DETAIL_WORDS:
+            continue
         return False
-    return len(sa & sb) / len(sa | sb) >= (0.5 if strong else 0.34)
+    return True
+
+
+def _is_update_number(tok, frame):
+    """True when `tok` is a version / date / unit-bearing / temporally-framed number
+    — a value UPDATE, not a contradiction."""
+    if _VERSION_RE.match(tok) or _UNIT_NUM_RE.match(tok) or _YEAR_RE.match(tok):
+        return True
+    return bool(frame & _TEMPORAL_FRAME)
+
+
+def _minimal_pair(ca, cb):
+    """Return (a_only, b_only, shared) content Counters IFF (a, b) is a MINIMAL
+    PAIR — mostly the same tokens, differing in a small LOCALIZED slot — else None.
+    This is the deterministic proxy for 'the opposing tokens occupy the SAME
+    predicate slot' (AUDIT M1-1 remedy b): two statements that merely share ≥0.34
+    frame words but differ substantially (orders/postgres vs sessions/mysql) are
+    NOT a minimal pair and never reach the opposition branches."""
+    shared = ca & cb                      # multiset intersection (min counts)
+    a_only, b_only = ca - cb, cb - ca
+    big = max(sum(ca.values()), sum(cb.values()))
+    if big == 0 or not shared:
+        return None
+    if sum(shared.values()) / big < 0.5:          # not mostly-shared → different subject
+        return None
+    if sum(a_only.values()) > 3 or sum(b_only.values()) > 3:  # difference not localized
+        return None
+    return a_only, b_only, shared
 
 
 def opposition(a_text, b_text):
-    """Return a reason string if (a, b) is an explicit 'same entity, opposite
-    claim' pair, else None. HIGH PRECISION: every branch requires a shared frame
-    plus a distinct opposing signal on each side."""
-    ta, tb = _toks(a_text), _toks(b_text)
-    ca, cb = _content(ta), _content(tb)
+    """Return a reason string IFF (a, b) is a genuine 'same entity, opposite claim'
+    MINIMAL PAIR — the opposing tokens sit in the SAME slot of an otherwise-shared
+    statement — else None. HIGH PRECISION by construction: rejects different-subject
+    pairs (minimal-pair gate), UPDATES (version/temporal/date numbers), and
+    negation-cancelled agreements ('not required' == 'optional')."""
+    ca, cb = _content(_toks(a_text)), _content(_toks(b_text))
     if not ca or not cb:
         return None
-    # 1. antonym pair — each side carries a DISTINCT member of the pair.
+    mp = _minimal_pair(ca, cb)
+    if mp is None:
+        return None
+    a_only, b_only, shared = mp
+    a_set, b_set = set(a_only), set(b_only)
+    frame = set(shared)
+
+    # 1. antonym pair — the two opposite members sit in the localized slot.
     for pair in _ANTONYMS:
-        a_side, b_side = ca & pair, cb & pair
-        if (a_side - b_side) and (b_side - a_side) and \
-                _frame_overlap(ca - pair, cb - pair):
+        a_mem, b_mem = a_set & pair, b_set & pair
+        if (a_mem - b_mem) and (b_mem - a_mem):
+            # CANCELLATION guard: an EXTRA negation cue (not the pair members) on
+            # one side flips its clause into agreement ("not required" == "optional").
+            extra_neg = ((a_set | b_set) & _NEG_CUES) - pair
+            if extra_neg:
+                return None
             return f"antonym:{sorted(pair)}"
-    # 2. mutually-exclusive set — different, non-overlapping members on a frame.
+
+    # 2. mutually-exclusive set — different members in the localized slot.
     for st in _EXCLUSIVE_SETS:
-        a_mem, b_mem = ca & st, cb & st
-        if a_mem and b_mem and not (a_mem & b_mem) and \
-                _frame_overlap(ca - st, cb - st):
+        a_mem, b_mem = a_set & st, b_set & st
+        if a_mem and b_mem and not (a_mem & b_mem):
             return f"exclusive:{sorted(a_mem)}!={sorted(b_mem)}"
-    # 3. negation asymmetry — exactly one side negates a strongly-shared frame.
-    na, nb = bool(set(ta) & _NEG_CUES), bool(set(tb) & _NEG_CUES)
-    if na != nb and _frame_overlap(ca - _NEG_CUES, cb - _NEG_CUES, strong=True):
-        return "negation_asymmetry"
-    # 4. numeric-slot conflict — same frame, different numeric value.
-    numa, numb = _nums(ta), _nums(tb)
-    if numa and numb and numa != numb and \
-            _frame_overlap(ca, cb, strong=True, ignore=numa | numb):
-        return "numeric_conflict"
+
+    # 3. negation asymmetry — exactly one side negates the shared clause, and the
+    #    localized difference is ESSENTIALLY that negation (no other content swap
+    #    that could be the real difference).
+    a_neg, b_neg = a_set & _NEG_CUES, b_set & _NEG_CUES
+    if bool(a_neg) != bool(b_neg):
+        neg_side = a_set if a_neg else b_set
+        other_side = b_set if a_neg else a_set
+        # The negating side adds ONLY negation cues (it negates a shared term), and
+        # the non-negating side's extra tokens are all DETAIL (numbers/units/temporal
+        # elaboration like "after 24 hours") — not a different predicate. This keeps
+        # "expire after 24h" ↔ "never expire" while the minimal-pair gate already
+        # blocks different-predicate pairs.
+        if (neg_side - _NEG_CUES) <= (other_side | frame) and \
+                _all_detail((other_side - _NEG_CUES) - frame):
+            return "negation_asymmetry"
+
+    # 4. numeric-slot conflict — same slot, different numeric value, EXCLUDING
+    #    version / date / unit-bearing / temporally-framed numbers (those = updates).
+    a_num = {t for t in a_set if any(c.isdigit() for c in t)}
+    b_num = {t for t in b_set if any(c.isdigit() for c in t)}
+    if a_num and b_num and a_num != b_num:
+        if any(_is_update_number(t, frame) for t in (a_num | b_num)):
+            return None
+        # the ONLY localized difference must be the numbers themselves (same slot).
+        if not (a_set - a_num) and not (b_set - b_num):
+            return "numeric_conflict"
     return None
 
 
@@ -260,6 +338,16 @@ _CE_SAME_TOPIC_MIN = 0.0  # deploy-calibrate; jina-reranker-v2 relevance logit
 
 def _cross_encoder_enabled():
     return (os.environ.get("EIDETIC_M1_CROSS_ENCODER", "").strip().lower()
+            in ("1", "on", "true", "yes"))
+
+
+def m1_write_enabled():
+    """M1 activation switch (AUDIT M1-1 remedy c) — the EXPLICIT gate for writing
+    `contradicted` events, SEPARATE from the shared EIDETIC_CONFIDENCE_EVENTS rail.
+    Default OFF: M1 runs diagnostic-only (computes conflicts, persists never-ranking
+    `relation_claim` diagnostics) but writes NO confidence event. Flip on ONLY after
+    re-measuring the confirmer's FP rate on realistic negatives."""
+    return (os.environ.get("EIDETIC_M1_CONTRADICTION", "").strip().lower()
             in ("1", "on", "true", "yes"))
 
 
@@ -358,6 +446,17 @@ def process_card(card_path, meta, body, *, neighbors, confirmer=None, index_db_p
             outcomes.append({"loser": loser["path"], "winner": winner["slug"],
                              "action": "relation_claim",
                              "persisted": persisted})
+            continue
+        # DORMANT / DIAGNOSTIC-ONLY by default (AUDIT M1-1 remedy c): the
+        # confidence-lowering write is gated behind an EXPLICIT M1 activation flag
+        # (EIDETIC_M1_CONTRADICTION, default OFF), DECOUPLED from the shared
+        # EIDETIC_CONFIDENCE_EVENTS rail — so activating confidence events for the
+        # other rails NEVER auto-activates M1's risky writes. Until M1 is
+        # activated (after re-measuring FP on realistic negatives), a confirmed
+        # conflict is diagnostic-only: no event is written.
+        if not m1_write_enabled():
+            outcomes.append({"loser": loser["path"], "winner": winner["slug"],
+                             "action": "diagnostic"})
             continue
         wrote = _EV.append_event(loser["path"], "contradicted", actor=AUTOMATED_ACTOR,
                                  note=_note_for(winner))
