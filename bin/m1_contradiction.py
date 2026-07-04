@@ -282,37 +282,47 @@ def opposition(a_text, b_text):
     a_set, b_set = set(a_only), set(b_only)
     frame = set(shared)
 
-    # 1. antonym pair — the two opposite members sit in the localized slot.
+    def _only_opposing(consumed):
+        """A GENUINE minimal pair differs ONLY in the opposing slot (AUDIT M1-3):
+        after removing the opposing tokens, the localized difference on each side
+        must be empty or pure DETAIL — no SECOND distinguishing content token
+        (orders/sessions, read/write) and no SECOND opposition (skip/run) that would
+        make the two statements compatible."""
+        return _all_detail(a_set - consumed) and _all_detail(b_set - consumed)
+
+    # 1. antonym pair — the two opposite members sit in the SAME localized slot.
     for pair in _ANTONYMS:
         a_mem, b_mem = a_set & pair, b_set & pair
         if (a_mem - b_mem) and (b_mem - a_mem):
             # CANCELLATION guard: an EXTRA negation cue (not the pair members) on
             # one side flips its clause into agreement ("not required" == "optional").
-            extra_neg = ((a_set | b_set) & _NEG_CUES) - pair
-            if extra_neg:
+            if ((a_set | b_set) & _NEG_CUES) - pair:
+                return None
+            # SAME-SLOT guard: the opposing members must be the ONLY difference; a
+            # second distinguishing token means a different qualifier (enabled for
+            # READS vs disabled for WRITES) → compatible, not a contradiction.
+            if not _only_opposing(pair):
                 return None
             return f"antonym:{sorted(pair)}"
 
-    # 2. mutually-exclusive set — different members in the localized slot.
+    # 2. mutually-exclusive set — different members in the SAME localized slot.
     for st in _EXCLUSIVE_SETS:
         a_mem, b_mem = a_set & st, b_set & st
         if a_mem and b_mem and not (a_mem & b_mem):
+            # SAME-SLOT guard: reject two-facts-both-true (ORDERS in postgres vs
+            # SESSIONS in mysql) — the second distinguishing token (orders/sessions)
+            # makes them different objects, both true.
+            if not _only_opposing(st):
+                return None
             return f"exclusive:{sorted(a_mem)}!={sorted(b_mem)}"
 
     # 3. negation asymmetry — exactly one side negates the shared clause, and the
-    #    localized difference is ESSENTIALLY that negation (no other content swap
-    #    that could be the real difference).
+    #    localized difference is ESSENTIALLY that negation. Requires the SAME-SLOT
+    #    residual to be empty/detail on BOTH sides, so a second content swap (or a
+    #    second opposition like skip/run in negation-of-negation) is rejected.
     a_neg, b_neg = a_set & _NEG_CUES, b_set & _NEG_CUES
     if bool(a_neg) != bool(b_neg):
-        neg_side = a_set if a_neg else b_set
-        other_side = b_set if a_neg else a_set
-        # The negating side adds ONLY negation cues (it negates a shared term), and
-        # the non-negating side's extra tokens are all DETAIL (numbers/units/temporal
-        # elaboration like "after 24 hours") — not a different predicate. This keeps
-        # "expire after 24h" ↔ "never expire" while the minimal-pair gate already
-        # blocks different-predicate pairs.
-        if (neg_side - _NEG_CUES) <= (other_side | frame) and \
-                _all_detail((other_side - _NEG_CUES) - frame):
+        if _only_opposing(_NEG_CUES):
             return "negation_asymmetry"
 
     # 4. numeric-slot conflict — same slot, different numeric value, EXCLUDING
@@ -322,8 +332,8 @@ def opposition(a_text, b_text):
     if a_num and b_num and a_num != b_num:
         if any(_is_update_number(t, frame) for t in (a_num | b_num)):
             return None
-        # the ONLY localized difference must be the numbers themselves (same slot).
-        if not (a_set - a_num) and not (b_set - b_num):
+        # SAME-SLOT: the ONLY localized difference must be the numbers themselves.
+        if _only_opposing(a_num | b_num):
             return "numeric_conflict"
     return None
 
