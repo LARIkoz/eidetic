@@ -21,6 +21,7 @@ try:
     from constants import (
         EVIDENCE_WEIGHTS, SOURCE_WEIGHTS,
         MEMORY_CHUNK_MIGRATIONS, RELATION_EXPLICIT_COLUMNS, FORCED_REREAD_ON_ADD,
+        MAX_CHUNK_CHARS,
     )
 except ImportError:
     EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
@@ -41,6 +42,7 @@ except ImportError:
     }
     RELATION_EXPLICIT_COLUMNS = {"superseded_by_explicit", "contradicted_by_explicit"}
     FORCED_REREAD_ON_ADD = RELATION_EXPLICIT_COLUMNS | {"status_explicit"}
+    MAX_CHUNK_CHARS = 6000
 
 # Pure confidence-lifecycle algebra (spec §4–§5). Literal-import fallback keeps
 # index_impl runnable if confidence.py is somehow unavailable (degrades to no
@@ -267,8 +269,10 @@ def file_mtime(filepath):
     return os.stat(filepath).st_mtime_ns
 
 
-def split_sections(body, filepath):
-    """Split markdown body by ## headings into chunks."""
+def _split_h2(body, filepath):
+    """The historical H2-only split (fence-aware, dedup counter). Preserved
+    verbatim so the common case (every section ≤ MAX_CHUNK_CHARS) is byte-
+    identical (spec-chunker FR-4)."""
     sections = []
     heading_counts = {}
     current_heading = os.path.basename(filepath).replace(".md", "")
@@ -318,6 +322,172 @@ def split_sections(body, filepath):
         sections.append((os.path.basename(filepath).replace(".md", ""), body.strip()))
 
     return sections
+
+
+def _split_at_heading(content, prefix):
+    """Fence-aware split at lines starting with `prefix` (e.g. '## ', '### ',
+    '#### '). Returns [(heading_text_or_None, stripped_content), …] with
+    empty-content segments dropped. A heading line inside a code fence is never a
+    boundary (reuses the `in_fence` discipline). The leading None-heading segment
+    is the prose before the first `prefix` heading."""
+    segments = []
+    cur_heading = None
+    cur_lines = []
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
+
+    for line in content.split("\n"):
+        fm = re.match(r"^\s*(`{3,}|~{3,})", line)
+        if fm:
+            mc = fm.group(1)[0]
+            ml = len(fm.group(1))
+            if in_fence and mc == fence_char and ml >= fence_len:
+                in_fence = False
+                fence_char = ""
+                fence_len = 0
+            elif not in_fence:
+                in_fence = True
+                fence_char = mc
+                fence_len = ml
+            cur_lines.append(line)
+            continue
+        if not in_fence and line.startswith(prefix):
+            segments.append((cur_heading, "\n".join(cur_lines).strip()))
+            cur_heading = line[len(prefix):].strip()
+            cur_lines = []
+        else:
+            cur_lines.append(line)
+    segments.append((cur_heading, "\n".join(cur_lines).strip()))
+    return [(h, t) for (h, t) in segments if t]
+
+
+def _atomic_blocks(content):
+    """Split content into atomic units that must not be broken: each paragraph
+    (a run between blank lines) and each whole code fence is ONE unit — so a
+    paragraph window never lands inside a fence or mid-paragraph (FR-3/AC-5)."""
+    blocks = []
+    cur = []
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
+
+    def flush():
+        text = "\n".join(cur).strip()
+        if text:
+            blocks.append(text)
+
+    for line in content.split("\n"):
+        fm = re.match(r"^\s*(`{3,}|~{3,})", line)
+        if fm:
+            mc = fm.group(1)[0]
+            ml = len(fm.group(1))
+            if not in_fence:
+                flush()
+                cur = [line]
+                in_fence = True
+                fence_char = mc
+                fence_len = ml
+            elif mc == fence_char and ml >= fence_len:
+                cur.append(line)
+                in_fence = False
+                fence_char = ""
+                fence_len = 0
+                flush()
+                cur = []
+            else:
+                cur.append(line)
+            continue
+        if in_fence:
+            cur.append(line)
+        elif line.strip() == "":
+            flush()
+            cur = []
+        else:
+            cur.append(line)
+    flush()
+    return blocks
+
+
+def _paragraph_windows(breadcrumb, content):
+    """FR-3 leaf-overflow fallback: pack atomic blocks into windows ≤
+    MAX_CHUNK_CHARS, headed `<breadcrumb> (part N)`. A single unbreakable block
+    larger than the ceiling becomes its own (bounded) oversized window."""
+    blocks = _atomic_blocks(content)
+    windows = []
+    cur = []
+    for block in blocks:
+        if cur:
+            if len("\n\n".join(cur + [block])) > MAX_CHUNK_CHARS:
+                windows.append("\n\n".join(cur))
+                cur = [block]
+            else:
+                cur.append(block)
+        elif len(block) > MAX_CHUNK_CHARS:
+            windows.append(block)  # unbreakable oversized block → its own window
+        else:
+            cur = [block]
+    if cur:
+        windows.append("\n\n".join(cur))
+    return [(f"{breadcrumb} (part {i + 1})", w) for i, w in enumerate(windows)]
+
+
+def _recursive_split(breadcrumb, content, current_level):
+    """FR-1/FR-2: if `content` exceeds the ceiling, split at the SHALLOWEST
+    heading level present that is deeper than `current_level` (H2→H3→H4, skipping
+    absent levels), joining ancestor headings with ` › ` (depth ≤ 3). A leaf that
+    is still oversized falls back to paragraph windows (FR-3)."""
+    if len(content) <= MAX_CHUNK_CHARS:
+        return [(breadcrumb, content)]
+    for lvl in range(current_level + 1, 5):  # try H3 then H4 (H4 is the structural max)
+        segs = _split_at_heading(content, "#" * lvl + " ")
+        if any(h is not None for h, _ in segs):
+            out = []
+            for h, seg in segs:
+                if h is None:  # leading prose before the first sub-heading
+                    out.extend(_recursive_split(breadcrumb, seg, current_level))
+                else:
+                    out.extend(_recursive_split(breadcrumb + " › " + h, seg, lvl))
+            return out
+    return _paragraph_windows(breadcrumb, content)
+
+
+def _apply_dedup(pairs):
+    """Duplicate-heading counter applied AFTER breadcrumb construction (FR-2),
+    preserving UNIQUE(path, section_heading)."""
+    seen = {}
+    out = []
+    for heading, content in pairs:
+        n = seen.get(heading, 0) + 1
+        seen[heading] = n
+        out.append((heading if n == 1 else f"{heading} ({n})", content))
+    return out
+
+
+def split_sections(body, filepath):
+    """Split a markdown body into chunks, size-aware and recursive (spec-chunker).
+
+    FR-4 fast path: when every H2 section is ≤ MAX_CHUNK_CHARS the output is
+    byte-identical to the historical H2-only chunker. Otherwise each oversized
+    section is split recursively (H2→H3→H4) with ` › ` breadcrumb headings, then
+    paragraph-window fallback for an oversized leaf; a final dedup counter keeps
+    section_heading unique per file.
+    """
+    base = _split_h2(body, filepath)
+    if all(len(content) <= MAX_CHUNK_CHARS for _h, content in base):
+        return base  # FR-4: common case unchanged, byte-for-byte
+
+    basename = os.path.basename(filepath).replace(".md", "")
+    pieces = []
+    for heading, content in _split_at_heading(body, "## ") or [(None, body.strip())]:
+        breadcrumb = heading if heading is not None else basename
+        if len(content) <= MAX_CHUNK_CHARS:
+            pieces.append((breadcrumb, content))
+        else:
+            pieces.extend(_recursive_split(breadcrumb, content, 2))
+    if not pieces:
+        pieces = [(basename, body.strip())]
+    return _apply_dedup(pieces)
 
 
 def detect_project(filepath):
