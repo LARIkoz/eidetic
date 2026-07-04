@@ -241,6 +241,18 @@ class M1Test(unittest.TestCase):
         # add/remove over the SAME object (changelog history, not a contradiction).
         ("add/remove changelog", "Added dark mode to the settings screen.",
          "Removed dark mode from the settings screen."),
+        # M1-5: version/date-scoped oppositions = temporal EVOLUTION (M2 supersession),
+        # NOT M1 contradictions. Antonym/exclusive/negation all spanning a version/date.
+        ("antonym across v1/v2", "The response cache is enabled for reads in v1.",
+         "The response cache is disabled for reads in v2."),
+        ("exclusive across years", "The datastore is postgres in the 2023 release.",
+         "The datastore is mysql in the 2024 release."),
+        ("allow/deny across v1/v2", "Guest access is allowed in v1.", "Guest access is denied in v2."),
+        ("valid/invalid across v1/v2", "The token is valid in v1 format.", "The token is invalid in v2 format."),
+        ("negation across v1/v2", "Tokens expire in v1.", "Tokens never expire in v2."),
+        ("antonym across release N", "The flag is enabled in release 1.", "The flag is disabled in release 2."),
+        ("antonym across dotted ver", "The gateway api is synchronous in version 1.0.",
+         "The gateway api is asynchronous in version 2.0."),
         ("near-duplicate", "The primary datastore is postgres.", "The primary datastore is postgres."),
         ("same-num diff-unit", "The gateway timeout is 30s today.", "The gateway timeout is 30m today."),
         ("synonym paraphrase", "Access is permitted for authenticated guests.", "Access is allowed for authenticated guests."),

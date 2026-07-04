@@ -208,9 +208,20 @@ _TEMPORAL_FRAME = frozenset(
     "delay latency age retention window period schedule version revision release "
     "size limit quota timestamp uptime".split())
 
+# EXPLICIT version/release qualifier WORDS (a strict subset of _TEMPORAL_FRAME —
+# NOT the general temporal words like "expire"/"timeout"). When one of these scopes
+# an opposition together with a differing number, the two statements are a temporal
+# EVOLUTION across versions (both true at their version), i.e. an M2/superseded_by
+# UPDATE, not an M1 contradiction (AUDIT M1-5).
+_VERSION_WORDS = frozenset(
+    "version versions release releases revision revisions rev build builds".split())
+
 
 def _toks(s):
-    return _re.findall(r"[a-z0-9]+", (s or "").lower())
+    # Keep dotted alphanumeric runs together (1.0, 1.2.0, v2.3) so dotted version/
+    # decimal tokens survive for the version-update guard (AUDIT M1-5); a trailing
+    # sentence dot is followed by a space, so sentences never merge.
+    return _re.findall(r"[a-z0-9]+(?:\.[a-z0-9]+)*", (s or "").lower())
 
 
 def _content(toks):
@@ -247,6 +258,25 @@ def _is_update_number(tok, frame):
     return bool(frame & _TEMPORAL_FRAME)
 
 
+def _spans_version_update(a_set, b_set, frame):
+    """True when the opposition is SCOPED BY A VERSION/DATE (AUDIT M1-5) — a
+    temporal EVOLUTION, not a contradiction — so it must not fire on ANY branch
+    (antonym/exclusive/negation/numeric alike). Signal, over the localized diff AND
+    the shared frame: an explicit version token (`v1`,`v2`,`1.2.0`), a 4-digit year
+    (`2023`), a unit-bearing number, OR a version/release WORD qualifier
+    (version/release/revision/build) co-located with a differing number. Uses only
+    version-specific words — NOT general temporal words like `expire`/`timeout` — so
+    'expire after 24 hours' ↔ 'never expire' (a genuine conflict) is preserved."""
+    alltok = a_set | b_set | frame
+    for t in alltok:
+        if _VERSION_RE.match(t) or _YEAR_RE.match(t) or _UNIT_NUM_RE.match(t):
+            return True
+    if alltok & _VERSION_WORDS:
+        if any(any(c.isdigit() for c in t) for t in (a_set | b_set)):
+            return True
+    return False
+
+
 def _minimal_pair(ca, cb):
     """Return (a_only, b_only, shared) content Counters IFF (a, b) is a MINIMAL
     PAIR — mostly the same tokens, differing in a small LOCALIZED slot — else None.
@@ -281,6 +311,13 @@ def opposition(a_text, b_text):
     a_only, b_only, shared = mp
     a_set, b_set = set(a_only), set(b_only)
     frame = set(shared)
+
+    # AUDIT M1-5: a version/date-scoped opposition ("enabled in v1" ↔ "disabled in
+    # v2", "postgres in the 2023 release" ↔ "mysql in the 2024 release") is a
+    # temporal EVOLUTION / supersession (M2), not an M1 contradiction. Applied to
+    # ALL branches, not just numeric_conflict.
+    if _spans_version_update(a_set, b_set, frame):
+        return None
 
     def _only_opposing(consumed):
         """A GENUINE minimal pair differs ONLY in the opposing slot (AUDIT M1-3):
