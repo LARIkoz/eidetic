@@ -18,6 +18,13 @@ import confidence as C  # noqa: E402
 import index_impl  # noqa: E402
 import m1_contradiction as m1  # noqa: E402
 
+def _fastembed_available():
+    import importlib.util
+    return importlib.util.find_spec("fastembed") is not None
+
+
+VECTORED_ONLY = "vectored-mode e2e: requires fastembed (Leg A)"
+
 NEW = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 OLD = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
 
@@ -182,40 +189,143 @@ class M1Test(unittest.TestCase):
         self.assertEqual([x["action"] for x in again], ["skip_idempotent"])
         self.assertEqual(len(self._events(o)), 1)  # exactly one contradicted, not two
 
-    # --- FR-1/FR-7 ingest hook (dormant until confirmer) end-to-end ------
-    def test_ingest_hook_dormant_by_default(self):
-        # No confirmer registered → run_on_ingest is a pure no-op even with the
-        # flag on and a neighbor available (would-be conflict never evaluated).
+    # --- FR-3 production confirmer (deterministic opposition; both legs) --
+    def test_production_confirmer_recall_and_zero_fp(self):
+        # AC-1 precision + AC-1b confirmer FP, on the labeled set. Model-free.
+        def v(a, b):
+            return m1.production_confirmer({"text": a}, {"text": b})
+        contra = [
+            ("The primary datastore is PostgreSQL.", "The primary datastore is MySQL."),
+            ("Feature flags are enabled by default.", "Feature flags are disabled by default."),
+            ("Retries are capped at 3 attempts.", "Retries are capped at 10 attempts."),
+            ("Auth tokens expire after 24 hours.", "Auth tokens never expire."),
+            ("The API is synchronous.", "The API is asynchronous."),
+            ("Access is allowed for guests.", "Access is denied for guests."),
+        ]
+        noncontra = [
+            ("The primary datastore is PostgreSQL.", "PostgreSQL supports JSON columns."),
+            ("Feature flags are enabled by default.", "Feature flags are read from config."),
+            ("Retries are capped at 3 attempts.", "Retries use exponential backoff."),
+            ("The API is synchronous.", "The API returns JSON."),
+            ("The primary datastore is PostgreSQL.", "Kubernetes ingress certificate renewal timed out."),
+            ("Retries are capped at 3 attempts.", "The office coffee machine is broken again."),
+            ("Access is allowed for guests.", "The deployment pipeline runs on Fridays."),
+        ]
+        self.assertTrue(all(v(a, b) == "contradiction" for a, b in contra), "recall < 6/6")
+        self.assertEqual([v(a, b) for a, b in noncontra].count("contradiction"), 0, "FP > 0")
+
+    def test_production_confirmer_fail_closed_on_error(self):
+        # A record without "text" (or any raising access) → no_contradiction.
+        class Boom(dict):
+            def get(self, *a):
+                raise RuntimeError("boom")
+        self.assertEqual(m1.production_confirmer(Boom(), {"text": "x"}), "no_contradiction")
+
+    # --- FR-1/FR-7 ingest hook end-to-end (production confirmer, both legs)
+    def test_ingest_hook_active_but_precise(self):
+        # Hook is ACTIVE by default (production confirmer), but two NON-conflicting
+        # cards produce NO event — the active hook does not false-positive.
         self._saved_nvd = m1.neighbors_via_door
-        o = self._write("rule-o.md", _card("rule-o", source="agent-extracted", last_verified=OLD))
-        nfile = self._write("rule-n.md", _card("rule-n", source="user-explicit"))
+        o = self._write("db-a.md", _card("db-a", source="agent-extracted", last_verified=OLD,
+                                          body="PostgreSQL supports JSON columns."))
+        nfile = self._write("db-b.md", _card("db-b", source="user-explicit",
+                                              body="The primary datastore is PostgreSQL."))
         m1.neighbors_via_door = lambda db, probe, exclude_paths=(): (
             [] if o in exclude_paths else [{"score": 0.9, "path": o}])
-        index_impl.init_db(self.db)  # ensure dir
         conn = index_impl.init_db(self.db)
-        index_impl.run_incremental(conn, [o, nfile])  # confirmer is None → dormant
+        index_impl.run_incremental(conn, [o, nfile])
         conn.close()
         self.assertNotIn("## Evidence", open(o, encoding="utf-8").read())
 
-    def test_ingest_hook_end_to_end_with_confirmer(self):
+    def test_ingest_hook_end_to_end_production_confirmer(self):
+        # Real conflict via the DEFAULT production confirmer (no injection): the
+        # exclusive-set opposition Postgres↔MySQL fires → event on the loser O.
         self._saved_nvd = m1.neighbors_via_door
-        o = self._write("rule-o.md", _card("rule-o", source="agent-extracted", last_verified=OLD))
-        nfile = self._write("rule-n.md", _card("rule-n", source="user-explicit"))
-        m1.register_confirmer(YES)
+        o = self._write("store-o.md", _card("store-o", source="agent-extracted", last_verified=OLD,
+                                             body="The primary datastore is MySQL."))
+        nfile = self._write("store-n.md", _card("store-n", source="user-explicit",
+                                                body="The primary datastore is PostgreSQL."))
         m1.neighbors_via_door = lambda db, probe, exclude_paths=(): (
             [] if o in exclude_paths else [{"score": 0.9, "path": o}])
         conn = index_impl.init_db(self.db)
-        index_impl.run_incremental(conn, [o, nfile])  # hook fires for rule-n → event on O
+        index_impl.run_incremental(conn, [o, nfile])  # hook fires for store-n → event on O
         conn.close()
         evs = self._events(o)
         self.assertEqual([e["event_type"] for e in evs], ["contradicted"])
-        self.assertIn("rule-n", evs[0]["note"])
-        # second pass materializes O's folded confidence and stays idempotent.
+        self.assertEqual(evs[0]["actor_tier"], 2)
+        self.assertIn("store-n", evs[0]["note"])
         conn = index_impl.init_db(self.db)
         index_impl.run_incremental(conn, [o, nfile])
-        self.assertAlmostEqual(self._conf(conn, "rule-o"), 0.10)
-        self.assertEqual(len(self._events(o)), 1)  # no duplicate on re-ingest
+        self.assertAlmostEqual(self._conf(conn, "store-o"), 0.10)
+        self.assertEqual(len(self._events(o)), 1)  # idempotent on re-ingest
         conn.close()
+
+    # --- FR-4/§4.4 relation_claim DURABLE persistence --------------------
+    def test_ac5_relation_claim_persisted_to_drift(self):
+        import drift_check
+        u1 = self._write("user-a.md", _card("user-a", source="user-explicit", last_verified=OLD,
+                                             body="The primary datastore is MySQL."))
+        u2 = self._write("user-b.md", _card("user-b", source="user-explicit",
+                                             body="The primary datastore is PostgreSQL."))
+        self._index([u1, u2]).close()
+        m2_, b2 = self._meta_body(u2)
+        out = m1.process_card(u2, m2_, b2, neighbors=[{"score": 0.9, "path": u1}],
+                              confirmer=YES, index_db_path=self.db)
+        self.assertEqual([o["action"] for o in out], ["relation_claim"])
+        self.assertTrue(out[0]["persisted"])
+        # a durable relation_claim finding sits on the LOSER, penalty-1.0 diagnostic.
+        drift_db = drift_check.get_drift_db_path(self.db)
+        dconn = drift_check.init_drift_db(drift_db)
+        rows = dconn.execute(
+            "SELECT path, drift_type, detail FROM drift_findings WHERE drift_type='relation_claim'"
+        ).fetchall()
+        dconn.close()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], u1)  # the capped loser (older user card)
+        self.assertIn("user-b", rows[0][2])
+        # and NO confidence event was written on either user card.
+        self.assertNotIn("## Evidence", open(u1, encoding="utf-8").read())
+
+    def test_ac5_relation_claim_dark_safe(self):
+        # flag OFF → no drift finding persisted (dark-safe).
+        os.environ.pop("EIDETIC_CONFIDENCE_EVENTS", None)
+        import drift_check
+        u1 = self._write("user-a.md", _card("user-a", source="user-explicit", last_verified=OLD,
+                                             body="The primary datastore is MySQL."))
+        u2 = self._write("user-b.md", _card("user-b", source="user-explicit",
+                                             body="The primary datastore is PostgreSQL."))
+        self._index([u1, u2]).close()
+        m2_, b2 = self._meta_body(u2)
+        out = m1.process_card(u2, m2_, b2, neighbors=[{"score": 0.9, "path": u1}],
+                              confirmer=YES, index_db_path=self.db)
+        self.assertFalse(out[0]["persisted"])
+        drift_db = drift_check.get_drift_db_path(self.db)
+        self.assertFalse(os.path.exists(drift_db), "no drift db written when flag OFF")
+
+    # --- Leg-A full vectored e2e: real vectors.db + production confirmer -
+    @unittest.skipUnless(_fastembed_available(), VECTORED_ONLY)
+    def test_leg_a_full_e2e_real_vectors_and_confirmer(self):
+        import engine
+        engine.configure(provider="cpu", threads=8)
+        o = self._write("store-o.md", _card("store-o", source="agent-extracted", last_verified=OLD,
+                                             body="The primary datastore is MySQL."))
+        nfile = self._write("store-n.md", _card("store-n", source="user-explicit",
+                                                body="The primary datastore is PostgreSQL."))
+        self._index([o, nfile]).close()
+        # Build a REAL vectors.db from the index (the actual private builder).
+        vectors_db = self.db.replace("index.db", "vectors.db")
+        engine._embed().run_full(self.db, vectors_db)
+        # Whole vectored path: door neighbor retrieval → candidate gate →
+        # production confirmer (exclusive-set Postgres↔MySQL) → event on the loser.
+        conn = index_impl.init_db(self.db)
+        m1.run_on_ingest(conn, self.db, [o, nfile])
+        conn.close()
+        evs = self._events(o)
+        self.assertEqual([e["event_type"] for e in evs], ["contradicted"])
+        self.assertEqual(evs[0]["actor_tier"], 2)
+        self.assertIn("store-n", evs[0]["note"])
+        # the winner (higher-authority user card) is untouched.
+        self.assertNotIn("## Evidence", open(nfile, encoding="utf-8").read())
 
     # --- AC-7 dark-safe --------------------------------------------------
     def test_ac7_events_off_writes_nothing(self):

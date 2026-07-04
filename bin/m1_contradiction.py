@@ -124,21 +124,191 @@ def _note_for(winner):
     return f"conflicts with {winner['slug']}"
 
 
-def _default_confirmer(a, b):
-    """Fail-closed default (FR-3): with no wired NLI/LLM judge, never claim a
-    contradiction. A real deterministic NLI/rerank confirmer is a turn-2 wiring;
-    tests inject a deterministic confirmer. ANY doubt → no_contradiction."""
-    return "no_contradiction"
+def _persist_relation_claim(index_db_path, loser, winner):
+    """Durably record an authority-capped conflict as a `relation_claim` finding in
+    the drift store (drift_type penalty 1.0 — visible in drift/lint, NEVER applied
+    to ranking), the SAME surface as an authority-refused declared relation. Best-
+    effort + dark-safe: no-op if EIDETIC_CONFIDENCE_EVENTS is off or no db path.
+    Returns True iff a finding was written. Never raises into the pipeline."""
+    if not index_db_path or not _EV.events_enabled():
+        return False
+    try:
+        import drift_check
+        drift_db = drift_check.get_drift_db_path(index_db_path)
+        conn = drift_check.init_drift_db(drift_db)
+        try:
+            detail = (f"contradicted-claim by={winner['slug']} "
+                      f"(m1; below authority; not penalized)")
+            drift_check.write_findings(
+                conn, [(loser["path"], loser.get("type") or None,
+                        "relation_claim", detail)])
+        finally:
+            conn.close()
+        return True
+    except Exception as e:
+        print(f"WARN: M1 relation_claim persist skipped: {e}",
+              file=__import__("sys").stderr)
+        return False
 
 
-def process_card(card_path, meta, body, *, neighbors, confirmer=None):
+# --- FR-3 production confirmer -----------------------------------------------
+# The confirmer OWNS precision (the candidate gate is deliberately permissive,
+# ROADMAP risk #1 = false-positive poison). No NLI model / LLM is installable on
+# this host (no torch/transformers/ollama; the S5 reranker's ONNX is absent →
+# engine.rerank is SOFT-unavailable here), so precision rests on a HIGH-PRECISION
+# deterministic opposition detector: it fires ONLY on an explicit opposing signal
+# over a SHARED FRAME (same subject) — never on mere topical overlap. The S5
+# cross-encoder is wired as an optional same-topic corroboration (deploy-gated,
+# threshold to be calibrated when the reranker is provisioned); a stronger
+# NLI/LLM judge can be registered via register_confirmer(). Fail-closed at every
+# edge: no signal / any error / model doubt → no_contradiction.
+import re as _re
+
+_STOP = frozenset(
+    "the a an is are was were be been to of in on for and or by with as at from that this "
+    "it its their our your we use uses using should must will would can may per via than then "
+    "default now always set sets get gets has have had do does not-a".split())
+
+# One side explicitly negates a shared clause the other asserts.
+_NEG_CUES = frozenset(
+    "not no never without none cannot cant dont doesnt isnt arent wasnt werent wont neither "
+    "nor stop stopped disable disabled off false removed remove deprecated".split())
+
+# Unambiguous antonym pairs (opposite members ⇒ opposing claim on a shared frame).
+_ANTONYMS = [
+    {"enabled", "disabled"}, {"enable", "disable"}, {"true", "false"}, {"on", "off"},
+    {"allow", "deny"}, {"allowed", "denied"}, {"required", "optional"}, {"always", "never"},
+    {"increase", "decrease"}, {"increased", "decreased"}, {"add", "remove"},
+    {"added", "removed"}, {"include", "exclude"}, {"included", "excluded"},
+    {"valid", "invalid"}, {"active", "inactive"}, {"present", "absent"},
+    {"accept", "reject"}, {"grant", "revoke"}, {"granted", "revoked"}, {"open", "closed"},
+    {"success", "failure"}, {"sync", "async"}, {"synchronous", "asynchronous"},
+    {"public", "private"}, {"ascending", "descending"}, {"before", "after"},
+]
+
+# Curated mutually-exclusive term sets: two DIFFERENT members on a shared frame is
+# an opposing claim (a "primary datastore is X" can be exactly one). Deliberately
+# small + high-confidence (the flagship Postgres↔MySQL case); extend at deploy.
+_EXCLUSIVE_SETS = [
+    {"postgres", "postgresql", "mysql", "mariadb", "sqlite", "mongodb", "mongo",
+     "oracle", "mssql", "cassandra", "dynamodb", "cockroachdb"},
+]
+
+
+def _toks(s):
+    return _re.findall(r"[a-z0-9]+", (s or "").lower())
+
+
+def _content(toks):
+    return {t for t in toks if t not in _STOP}
+
+
+def _nums(toks):
+    return {t for t in toks if any(ch.isdigit() for ch in t)}
+
+
+def _frame_overlap(sa, sb, *, strong=False, ignore=frozenset()):
+    """Jaccard of the two content-token frames ≥ threshold — the two statements
+    are about the SAME subject, so the opposing token is a real conflict, not two
+    unrelated sentences that happen to share one polarity word."""
+    sa = set(sa) - ignore
+    sb = set(sb) - ignore
+    if not sa or not sb:
+        return False
+    return len(sa & sb) / len(sa | sb) >= (0.5 if strong else 0.34)
+
+
+def opposition(a_text, b_text):
+    """Return a reason string if (a, b) is an explicit 'same entity, opposite
+    claim' pair, else None. HIGH PRECISION: every branch requires a shared frame
+    plus a distinct opposing signal on each side."""
+    ta, tb = _toks(a_text), _toks(b_text)
+    ca, cb = _content(ta), _content(tb)
+    if not ca or not cb:
+        return None
+    # 1. antonym pair — each side carries a DISTINCT member of the pair.
+    for pair in _ANTONYMS:
+        a_side, b_side = ca & pair, cb & pair
+        if (a_side - b_side) and (b_side - a_side) and \
+                _frame_overlap(ca - pair, cb - pair):
+            return f"antonym:{sorted(pair)}"
+    # 2. mutually-exclusive set — different, non-overlapping members on a frame.
+    for st in _EXCLUSIVE_SETS:
+        a_mem, b_mem = ca & st, cb & st
+        if a_mem and b_mem and not (a_mem & b_mem) and \
+                _frame_overlap(ca - st, cb - st):
+            return f"exclusive:{sorted(a_mem)}!={sorted(b_mem)}"
+    # 3. negation asymmetry — exactly one side negates a strongly-shared frame.
+    na, nb = bool(set(ta) & _NEG_CUES), bool(set(tb) & _NEG_CUES)
+    if na != nb and _frame_overlap(ca - _NEG_CUES, cb - _NEG_CUES, strong=True):
+        return "negation_asymmetry"
+    # 4. numeric-slot conflict — same frame, different numeric value.
+    numa, numb = _nums(ta), _nums(tb)
+    if numa and numb and numa != numb and \
+            _frame_overlap(ca, cb, strong=True, ignore=numa | numb):
+        return "numeric_conflict"
+    return None
+
+
+# Cross-encoder corroboration is OFF by default: the S5 reranker is not provisioned
+# on this host and its same-topic threshold is uncalibrated, so shipping it active
+# would risk SUPPRESSING true contradictions on an unmeasured cut. Enable at deploy
+# (with the reranker installed) via EIDETIC_M1_CROSS_ENCODER=on after calibrating
+# _CE_SAME_TOPIC_MIN. It can only DOWNGRADE a verdict (never create one).
+_CE_SAME_TOPIC_MIN = 0.0  # deploy-calibrate; jina-reranker-v2 relevance logit
+
+
+def _cross_encoder_enabled():
+    return (os.environ.get("EIDETIC_M1_CROSS_ENCODER", "").strip().lower()
+            in ("1", "on", "true", "yes"))
+
+
+def _ce_same_topic(a_text, b_text):
+    """Optional same-topic corroboration via the S5 door. None if unavailable/
+    disabled (→ skip corroboration); True/False if the reranker scored the pair."""
+    if not _cross_encoder_enabled():
+        return None
+    try:
+        import engine
+        s = engine.rerank(a_text, [b_text])
+    except Exception:
+        return None
+    if not s:  # SOFT-unavailable (no model) → cannot corroborate
+        return None
+    return s[0] >= _CE_SAME_TOPIC_MIN
+
+
+def production_confirmer(a, b):
+    """FR-3 confirmer: contradiction ONLY on an explicit deterministic opposition
+    over a shared frame, optionally corroborated (never created) by the S5
+    cross-encoder. Fail-closed: no opposition / any error / CE says off-topic →
+    no_contradiction (via `uncertain`). Deterministic ⇒ reproducible AC fixtures."""
+    try:
+        reason = opposition(a.get("text", ""), b.get("text", ""))
+    except Exception:
+        return "no_contradiction"
+    if not reason:
+        return "no_contradiction"
+    if _ce_same_topic(a.get("text", ""), b.get("text", "")) is False:
+        return "uncertain"  # topically apart despite lexical opposition → NC upstream
+    return "contradiction"
+
+
+# Backward-compatible alias (turn-1 name); the fail-closed default is now the real
+# production confirmer, not a stub.
+_default_confirmer = production_confirmer
+
+
+def process_card(card_path, meta, body, *, neighbors, confirmer=None, index_db_path=None):
     """Run M1 for one ingested card C against its `neighbors` (a list of hit dicts
     with at least {score, path}). `confirmer(a_record, b_record) ->
-    {contradiction|no_contradiction|uncertain}` (default fail-closed). Returns a
-    list of outcome dicts for diagnostics/tests. Writes a `contradicted` event on
-    the loser ONLY on a confirmed conflict with a demotable loser AND when
-    EIDETIC_CONFIDENCE_EVENTS is on (the write is gated inside append_event)."""
-    confirmer = confirmer or _default_confirmer
+    {contradiction|no_contradiction|uncertain}` (default = production_confirmer).
+    Returns a list of outcome dicts for diagnostics/tests. Writes a `contradicted`
+    event on the loser ONLY on a confirmed conflict with a demotable loser AND when
+    EIDETIC_CONFIDENCE_EVENTS is on (gated inside append_event). An authority-capped
+    conflict persists a durable `relation_claim` diagnostic instead (when
+    index_db_path is given)."""
+    confirmer = confirmer or production_confirmer
     c = _record(card_path, meta, body)
     outcomes = []
 
@@ -180,9 +350,14 @@ def process_card(card_path, meta, body, *, neighbors, confirmer=None):
             continue
         if not _would_lower(loser):
             # authority cap: a tier-2 event cannot lower the loser below its
-            # tier-3 hwm → surface a relation_claim, emit NO event (spec §4.4).
+            # tier-3 hwm → emit NO confidence event; persist a DURABLE
+            # relation_claim diagnostic instead so the dispute stays visible
+            # (penalty 1.0, never ranks — the same surface as an authority-refused
+            # declared relation, spec §4.4).
+            persisted = _persist_relation_claim(index_db_path, loser, winner)
             outcomes.append({"loser": loser["path"], "winner": winner["slug"],
-                             "action": "relation_claim"})
+                             "action": "relation_claim",
+                             "persisted": persisted})
             continue
         wrote = _EV.append_event(loser["path"], "contradicted", actor=AUTOMATED_ACTOR,
                                  note=_note_for(winner))
@@ -207,28 +382,36 @@ def _profile_hint():
     return _profile_cache
 
 
-# --- ingest wiring (dormant until a real confirmer is registered) -----------
-# M1's production confirmer (a deterministic NLI/rerank pass and/or a local
-# LLM-judge, FR-3) is a turn-2 wiring. Until one is registered here, the ingest
-# hook is a PURE NO-OP: it performs NO neighbor retrieval and NO writes, so
-# enabling EIDETIC_CONFIDENCE_EVENTS alone incurs zero M1 cost and cannot change
-# any card. Tests exercise process_card() directly with an injected confirmer.
+# --- ingest wiring (ACTIVE: production confirmer registered by default) ------
+# Turn-2 activates the hook: the M1 pipeline runs on ingest with the
+# production_confirmer, gated ONLY by EIDETIC_CONFIDENCE_EVENTS (default OFF, the
+# single dark-safe off-switch) + a vectors.db. Deploy may register a STRONGER
+# judge (NLI/LLM) via register_confirmer(); register_confirmer(None) restores the
+# built-in production confirmer (NOT a no-op — precision now lives in the
+# deterministic detector). With the flag OFF the hook returns immediately: zero
+# retrieval, zero writes, zero diff.
 _ACTIVE_CONFIRMER = None
 
 
 def register_confirmer(fn):
-    """Install the production confirmer (turn-2). None → dormant hook."""
+    """Register a stronger deploy-time judge, or None to use the built-in
+    production_confirmer. Either way the hook is ACTIVE (gated by the flag)."""
     global _ACTIVE_CONFIRMER
     _ACTIVE_CONFIRMER = fn
 
 
+def active_confirmer():
+    return _ACTIVE_CONFIRMER or production_confirmer
+
+
 def run_on_ingest(conn, index_db_path, changed_paths):
     """Ingest hook (spec FR-1/FR-7). Dark-safe: no-op unless
-    EIDETIC_CONFIDENCE_EVENTS is on AND a real confirmer is registered AND a
-    vectors.db exists. For each just-(re)indexed card, probe neighbors through
-    the v1.1 door and run the M1 pipeline. Never raises into the indexer."""
-    if _ACTIVE_CONFIRMER is None or not _EV.events_enabled():
-        return  # dormant / dark → zero cost, zero writes
+    EIDETIC_CONFIDENCE_EVENTS is on. For each just-(re)indexed card, probe
+    neighbors through the v1.1 door (SOFT [] on an FTS-only install ⇒ no-op) and
+    run the M1 pipeline with the active confirmer. Never raises into the indexer."""
+    if not _EV.events_enabled():
+        return  # dark → zero cost, zero writes
+    confirmer = active_confirmer()
     for path in changed_paths:
         try:
             rec = _record_from_file(path)
@@ -244,7 +427,8 @@ def run_on_ingest(conn, index_db_path, changed_paths):
                 process_card(path, {"name": rec["name"], "type": rec["type"],
                                     "source": rec["source"],
                                     "last_verified": rec["last_verified"]},
-                             rec["text"], neighbors=hits, confirmer=_ACTIVE_CONFIRMER)
+                             rec["text"], neighbors=hits, confirmer=confirmer,
+                             index_db_path=index_db_path)
         except Exception as e:  # never break ingest on an M1 hiccup (fail-closed)
             print(f"WARN: M1 skipped {path}: {e}", file=__import__("sys").stderr)
 

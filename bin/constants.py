@@ -107,9 +107,17 @@ MAX_CHUNK_CHARS = 6000
 # e5-large compresses short-sentence cosine into a high, narrow band (even
 # unrelated controls scored 0.69–0.72), so the gate is deliberately PERMISSIVE:
 # it drops only the far tail, the top-K=8 neighbor bound caps confirmer cost, and
-# the confirmer (FR-3) owns precision. Confirmer FP rate is measured with the real
-# NLI/LLM confirmer (turn-2). The english floor is the documented lower band, not
-# yet calibrated (no english-profile box on this host).
+# the confirmer (FR-3) owns precision.
+#
+# AC-1b confirmer FP (turn-2, m1_contradiction.production_confirmer — a
+# deterministic shared-frame opposition detector: antonym / mutually-exclusive-set
+# / negation-asymmetry / numeric-slot): on a labeled set of 6 contradictions
+# (Postgres↔MySQL, enabled↔disabled, 3↔10 retries, expire↔never, sync↔async,
+# allow↔deny) and 7 non-contradictions (4 related-non-conflicting + 3 unrelated
+# controls in the 0.69–0.72 band) → confirmer RECALL 6/6, FALSE-POSITIVES 0/7
+# (FP-rate 0.000). Both halves of the owner-signed F4 calibration now hold:
+# candidate-gate recall 4/4 @ 0.58, confirmer FP 0.000. The english floor is the
+# documented lower band, not yet calibrated (no english-profile box on this host).
 M1_NEIGHBORS = 8
 M1_CANDIDATE_MIN = {"multilingual": 0.58, "english": 0.38}
 M1_CANDIDATE_MIN_DEFAULT = 0.58
