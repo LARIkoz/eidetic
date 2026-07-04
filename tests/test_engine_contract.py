@@ -41,18 +41,22 @@ class SurfaceAndVersionTest(unittest.TestCase):
             "ENGINE_API", "EngineUnavailable", "require", "model_info", "configure",
             "embedding_text", "content_hash", "embed_passages", "embed_query",
             "acquire_build_lock", "open_index", "Index", "rerank",
+            "embed_query_batch", "profile",  # v1.1 (S1, S3)
         ):
             self.assertTrue(hasattr(engine, name), f"missing public export {name!r}")
 
-        self.assertEqual(engine.ENGINE_API, "1.0")
-        engine.require("1")  # no-op
+        self.assertEqual(engine.ENGINE_API, "1.1")
+        engine.require("1")  # v1.1: major still "1" → no-op
         with self.assertRaises(engine.EngineUnavailable):
             engine.require("2")
 
         info = engine.model_info()  # must never load the model / raise
-        self.assertEqual(set(info), {"model", "dim", "hash_scheme", "fastembed", "engine_api"})
+        # AC-9: "profile" is additively added in v1.1 — the golden set extends.
+        self.assertEqual(set(info),
+                         {"model", "dim", "hash_scheme", "fastembed", "engine_api", "profile"})
         self.assertIsInstance(info["dim"], int)
-        self.assertEqual(info["engine_api"], "1.0")
+        self.assertEqual(info["engine_api"], "1.1")
+        self.assertEqual(info["profile"], engine.profile())
         # content_hash / embedding_text are model-free and must work on both legs.
         h = engine.content_hash("n", "d", "body", "sec")
         self.assertEqual(h, engine.content_hash("n", "d", "body", "sec"))
@@ -120,6 +124,39 @@ class VectoredContractTest(unittest.TestCase):
         idx2.close()
         self.assertEqual(drifted, [], "drifted stamp must return no hits")
         self.assertTrue(err.getvalue().strip(), "drift must print a stderr reason")
+
+    @unittest.skipUnless(_fastembed_available(), VECTORED_ONLY)
+    def test_ac8_embed_query_batch_and_neighbors(self):
+        # S1: query-batch → aligned float32 blobs.
+        qb = engine.embed_query_batch(["alpha probe", "beta probe"])
+        self.assertEqual(len(qb), 2)
+        self.assertEqual(len(qb[0]) // 4, engine.model_info()["dim"])
+
+        # Build a tiny store and probe S2 neighbors.
+        passages = ["use postgres for the primary store",
+                    "use mysql for the primary store",
+                    "kubernetes ingress certificate renewal"]
+        blobs = engine.embed_passages(passages)
+        idx = engine.open_index(self.db)
+        idx.upsert([
+            {"chunk_id": i + 1, "path": f"/mem/c{i}.md", "name": f"c{i}",
+             "section_heading": f"c{i}",
+             "content_hash": engine.content_hash(f"c{i}", "", passages[i], f"c{i}"),
+             "embedding": blobs[i]}
+            for i in range(3)])
+        idx.stamp()
+        # neighbors of the stored card-0 EXCLUDE self, share search()'s hit shape.
+        hits = idx.neighbors(probe_chunk_id=1, limit=5)
+        self.assertTrue(hits)
+        self.assertNotIn(1, [h["chunk_id"] for h in hits], "neighbors must exclude self")
+        self.assertEqual(set(hits[0]),
+                         {"score", "chunk_id", "path", "name", "section_heading", "content_hash"})
+        # the mysql card is the nearest neighbor of the postgres card (moderate cos).
+        self.assertEqual(hits[0]["chunk_id"], 2)
+        # probe by text also works and excludes the given path.
+        thits = idx.neighbors(probe_text="use postgres", exclude_paths={"/mem/c0.md"}, limit=5)
+        self.assertNotIn("/mem/c0.md", [h["path"] for h in thits])
+        idx.close()
 
 
 class ForcedDegradeTest(unittest.TestCase):

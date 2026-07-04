@@ -24,7 +24,10 @@ import importlib.util
 import os
 import sys
 
-ENGINE_API = "1.0"  # MAJOR.MINOR — see docs/engine.md breaking-change rules.
+ENGINE_API = "1.1"  # MAJOR.MINOR — see docs/engine.md breaking-change rules.
+# v1.1 (additive, M1 build-step-1): + embed_query_batch (S1), Index.neighbors
+# (S2), model_info()["profile"] / profile() (S3). Every v1 name/signature is
+# byte-stable; require("1") still passes; embed.py/rerank.py stay unforked.
 
 
 class EngineUnavailable(RuntimeError):
@@ -83,7 +86,7 @@ def model_info():
     """Pure metadata; never loads the model; never raises.
 
     {"model": str, "dim": int, "hash_scheme": str, "fastembed": str|None,
-     "engine_api": str}
+     "engine_api": str, "profile": str}   # "profile" added in v1.1 (S3)
     """
     emb = _embed()
     return {
@@ -92,7 +95,14 @@ def model_info():
         "hash_scheme": emb.HASH_SCHEME,
         "fastembed": emb._fastembed_version(),
         "engine_api": ENGINE_API,
+        "profile": emb.EMBED_PROFILE,
     }
+
+
+def profile():
+    """The active embed profile string ("multilingual"/"english"/…). v1.1 (S3);
+    model-free, never raises. Mirrors model_info()["profile"]."""
+    return _embed().EMBED_PROFILE
 
 
 def configure(provider=None, threads=None):
@@ -163,6 +173,19 @@ def embed_query(text):
         raise
     except Exception as exc:
         raise EngineUnavailable(f"embed_query: model/runtime unavailable ({exc})")
+
+
+def embed_query_batch(texts):
+    """Query-side BATCH embedding (query prefix inside) → little-endian float32
+    blobs, one per text (v1.1, S1; mirrors embed_passages but query-side).
+    RAISES EngineUnavailable when the model/runtime is absent — a build path.
+    Retires compound.py's back-door embed.embed_query_texts([...])."""
+    try:
+        return _embed().embed_query_texts(list(texts))
+    except EngineUnavailable:
+        raise
+    except Exception as exc:
+        raise EngineUnavailable(f"embed_query_batch: model/runtime unavailable ({exc})")
 
 
 # --- build lock (never raises) -----------------------------------------------
@@ -291,6 +314,65 @@ class Index:
             }
             for (sim, chunk_id, path, name, heading, digest) in hits
         ]
+
+    def neighbors(self, probe_text=None, probe_chunk_id=None, limit=8,
+                 exclude_chunk_ids=(), exclude_paths=()):
+        """Top-K cosine neighbors of a probe card (v1.1, S2). Embeds `probe_text`
+        QUERY-side, or reuses the stored vector for `probe_chunk_id`; EXCLUDES the
+        probe itself (its chunk_id and path) plus any `exclude_*`. SOFT: returns
+        [] + one stderr line on any unavailability (missing model / stamp drift /
+        no probe), like Index.search. Hit dicts match search():
+        {score, chunk_id, path, name, section_heading, content_hash}."""
+        try:
+            import numpy as np
+
+            emb = _embed()
+            if not emb._vector_meta_ok(self._conn):
+                return []  # stamp drift already warned by _vector_meta_ok
+            excl_ids = set(exclude_chunk_ids)
+            excl_paths = set(exclude_paths)
+            if probe_chunk_id is not None:
+                row = self._conn.execute(
+                    "SELECT embedding, path FROM vectors WHERE chunk_id = ?",
+                    (probe_chunk_id,)).fetchone()
+                if not row:
+                    return []
+                q_vec = np.frombuffer(row[0], dtype=np.float32)
+                excl_ids.add(probe_chunk_id)
+                if row[1]:
+                    excl_paths.add(row[1])
+            elif probe_text is not None:
+                blobs = emb.embed_query_texts([probe_text])
+                if not blobs:
+                    return []
+                q_vec = np.frombuffer(blobs[0], dtype=np.float32)
+            else:
+                return []
+            q_norm = float(np.linalg.norm(q_vec))
+            if q_norm == 0.0:
+                return []
+            rows = self._conn.execute(
+                "SELECT chunk_id, path, name, section_heading, content_hash, embedding "
+                "FROM vectors").fetchall()
+            scored = []
+            for chunk_id, path, name, heading, digest, blob in rows:
+                if chunk_id in excl_ids or path in excl_paths:
+                    continue
+                vec = np.frombuffer(blob, dtype=np.float32)
+                if vec.shape != q_vec.shape:
+                    continue
+                sim = float(np.dot(q_vec, vec) / (q_norm * np.linalg.norm(vec) + 1e-8))
+                scored.append((sim, chunk_id, path, name or "", heading or "", digest or ""))
+            scored.sort(reverse=True)
+            return [
+                {"score": s, "chunk_id": cid, "path": p, "name": n,
+                 "section_heading": h, "content_hash": d}
+                for (s, cid, p, n, h, d) in scored[:limit]
+            ]
+        except Exception as exc:
+            print(f"eidetic-engine: neighbors unavailable ({type(exc).__name__}: {exc})",
+                  file=sys.stderr)
+            return []
 
     def stats(self):
         """{"vectors": int, "by_kind": {section_heading: count}, "stamps": {...}}
