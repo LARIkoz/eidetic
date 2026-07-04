@@ -84,3 +84,11 @@ MEMORY_CHUNK_MIGRATIONS = {**READER_SAFE_MIGRATIONS, **WRITER_BACKFILL_MIGRATION
 # to the writer-back-fill set by construction.
 RELATION_EXPLICIT_COLUMNS = {"superseded_by_explicit", "contradicted_by_explicit"}
 FORCED_REREAD_ON_ADD = set(WRITER_BACKFILL_MIGRATIONS)
+
+# Size-aware recursive chunking (spec-chunker FR-6). A markdown section (at any
+# heading level) larger than this is split further — H2→H3→H4 recursively, then
+# paragraph-window fallback — so a catalog "monster" section becomes precise
+# per-field chunks instead of one 59 KB blob. Chosen so typical memory-card
+# sections (< 4 KB) never split (zero-churn, FR-4) while catalog monsters die.
+# A FIXED constant (not env): chunk determinism per store, no config surface.
+MAX_CHUNK_CHARS = 6000

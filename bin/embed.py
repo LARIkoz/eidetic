@@ -70,7 +70,7 @@ FASTEMBED_CACHE = os.environ.get("FASTEMBED_CACHE_PATH") or os.path.expanduser("
 # by run_full; the search-time guard treats a model-stamped db whose hash_scheme
 # is missing or different as "stale hashes" and degrades LOUDLY to FTS (suggest
 # reindex) instead of silently dropping every vector on a hash mismatch.
-HASH_SCHEME = "trunc500-v2"
+HASH_SCHEME = "trunc1500-v3"
 
 # The exact fastembed release the vectors were built with. A fastembed bump can
 # silently change a model's pooling (e5 switched CLS->mean in 0.6+), producing a
@@ -211,19 +211,29 @@ def _vector_meta_ok(vec_conn):
     return True
 
 
+# Embedded-content window (spec-chunker FR-5). Raised 500 → 1500 so the vector
+# represents a real slice of the chunk (~375 EN tokens, within e5's 512-token
+# window after name/desc/breadcrumb overhead; RU may exceed it → the model's own
+# tokenizer truncation handles the tail). embedding_text() and content_hash()
+# MUST cut at the SAME length (the file's own invariant) or the query-time guard
+# drops otherwise-valid vectors. A FIXED constant, never env-overridable — an env
+# override would desync content_hash across boxes sharing vectors.db semantics.
+EMBED_CONTENT_CHARS = 1500
+
+
 def embedding_text(name, desc, content, heading):
     parts = [name or "", desc or "", heading or ""]
-    body = (content or "")[:500]
+    body = (content or "")[:EMBED_CONTENT_CHARS]
     return " ".join(p for p in parts + [body] if p).strip() or "empty"
 
 
 def content_hash(name, desc, content, heading):
     # Hash exactly what embedding_text() feeds the model (content truncated to
-    # 500) — NOT the full content. Otherwise an edit BEYOND char 500, which does
-    # not change the embedding, changes the hash and the query-time guard
-    # (search_impl) silently drops an otherwise-valid vector. Keep [:500] in sync
-    # with embedding_text(). Formula version is tracked by HASH_SCHEME.
-    body = (content or "")[:500]
+    # EMBED_CONTENT_CHARS) — NOT the full content. Otherwise an edit BEYOND that
+    # cut, which does not change the embedding, changes the hash and the
+    # query-time guard (search_impl) silently drops an otherwise-valid vector.
+    # Keep this in lockstep with embedding_text(). Version tracked by HASH_SCHEME.
+    body = (content or "")[:EMBED_CONTENT_CHARS]
     payload = "\0".join([name or "", desc or "", heading or "", body])
     return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()
 
