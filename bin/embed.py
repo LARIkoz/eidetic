@@ -92,6 +92,45 @@ def _fastembed_version():
 
 
 _model = None
+_swept_coreml = False
+
+
+def _sweep_orphan_coreml_caches(max_age_s=7200, cap=500):
+    """Self-heal the CoreML EP temp leak.
+
+    onnxruntime's CoreMLExecutionProvider compiles the model to a
+    ~1 GB `$TMPDIR/onnxruntime-*.mlmodelc` bundle on every process and never
+    removes it — a killed embed (OOM on --full) leaks it for sure, and macOS's
+    own tmp-reaper only runs on reboot after 3 idle days. On a box that embeds
+    per-prompt this piled up to tens of thousands of dirs / hundreds of GB.
+
+    Sweep orphans (not touched for >max_age_s, so an in-flight compile in a
+    sibling worker is never hit) once per process, best-effort — embedding must
+    never fail because cleanup did. Capped so a large backlog drains over
+    several runs instead of blocking one embed on hundreds of rmtrees."""
+    import shutil
+    import tempfile
+    now = time.time()
+    removed = 0
+    try:
+        for entry in os.scandir(tempfile.gettempdir()):
+            if removed >= cap:
+                break
+            name = entry.name
+            if not (name.startswith("onnxruntime-") and name.endswith(".mlmodelc")):
+                continue
+            try:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                if now - entry.stat().st_mtime <= max_age_s:
+                    continue
+                shutil.rmtree(entry.path, ignore_errors=True)
+                removed += 1
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return removed
 
 
 def _embed_providers():
@@ -111,8 +150,11 @@ def _embed_providers():
 
 
 def get_model():
-    global _model
+    global _model, _swept_coreml
     if _model is None:
+        if not _swept_coreml:
+            _swept_coreml = True
+            _sweep_orphan_coreml_caches()
         from fastembed import TextEmbedding
         providers = _embed_providers()
         try:
