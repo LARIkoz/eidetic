@@ -1328,6 +1328,7 @@ def run_incremental(conn, files):
     skip_existing = {} if force_backfill else existing
 
     current_paths = set()
+    changed_cards = []
     indexed = 0
     skipped = 0
 
@@ -1345,6 +1346,7 @@ def run_incremental(conn, files):
             meta, body = parse_frontmatter(text)
             if body.strip():
                 index_file(conn, filepath, meta, body)
+                changed_cards.append(filepath)
                 indexed += 1
             else:
                 clear_indexed_file(conn, filepath, mtime)
@@ -1372,6 +1374,22 @@ def run_incremental(conn, files):
     # re-index on stores that use propagated relations).
     set_backfill_stamp(conn)
     conn.commit()
+
+    # M1 semantic contradiction detection (spec-m1-contradiction FR-1/FR-7). This
+    # is DARK-SAFE and DORMANT: run_on_ingest is a pure no-op unless
+    # EIDETIC_CONFIDENCE_EVENTS is on AND a production confirmer is registered
+    # (a turn-2 wiring) AND a vectors.db exists — so it adds zero cost and cannot
+    # change any card here. It never raises into the indexer.
+    if changed_cards:
+        try:
+            import m1_contradiction
+            row = conn.execute("PRAGMA database_list").fetchone()
+            db_file = row[2] if row else ""
+            if db_file:
+                m1_contradiction.run_on_ingest(conn, db_file, changed_cards)
+        except Exception as e:
+            print(f"WARN: M1 hook skipped: {e}", file=sys.stderr)
+
     if force_backfill:
         print("Lifecycle metadata backfill: reindexed existing memory files")
     return indexed, skipped, removed

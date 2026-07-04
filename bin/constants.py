@@ -92,3 +92,24 @@ FORCED_REREAD_ON_ADD = set(WRITER_BACKFILL_MIGRATIONS)
 # sections (< 4 KB) never split (zero-churn, FR-4) while catalog monsters die.
 # A FIXED constant (not env): chunk determinism per store, no config surface.
 MAX_CHUNK_CHARS = 6000
+
+# M1 semantic contradiction detection (spec-m1-contradiction FR-1, FR-2). K
+# vector-neighbors probed per ingested card, and the candidate-gate cosine floor
+# — a DISTINCT constant, DECOUPLED from compound's near-duplicate line (0.85/0.60)
+# and deliberately RECALL-oriented (below the duplicate line), because a
+# contradiction ("same entity, opposite claim") lands in a moderate-similarity
+# band; the fail-closed confirmer (FR-3) provides precision. Profile-aware (S3);
+# unknown profile → the stricter (multilingual) end.
+#
+# AC-1b build calibration (Leg A, profile=multilingual, e5-large): on a labeled
+# contradiction set (Postgres↔MySQL, enabled↔disabled, 3↔10 retries, expiry↔never)
+# query→passage cosine sat at 0.80–0.85 → RECALL 4/4 admitted at the 0.58 floor.
+# e5-large compresses short-sentence cosine into a high, narrow band (even
+# unrelated controls scored 0.69–0.72), so the gate is deliberately PERMISSIVE:
+# it drops only the far tail, the top-K=8 neighbor bound caps confirmer cost, and
+# the confirmer (FR-3) owns precision. Confirmer FP rate is measured with the real
+# NLI/LLM confirmer (turn-2). The english floor is the documented lower band, not
+# yet calibrated (no english-profile box on this host).
+M1_NEIGHBORS = 8
+M1_CANDIDATE_MIN = {"multilingual": 0.58, "english": 0.38}
+M1_CANDIDATE_MIN_DEFAULT = 0.58
