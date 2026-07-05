@@ -281,37 +281,143 @@ def _provenance_line(trigger, score):
             f"· {_iso_date()} · score={score:.3f}_")
 
 
+def _salient_claim(rec, limit=100):
+    """The card's first meaningful line (its salient claim/title), stripped of
+    markdown heading/list punctuation, sentinels and evidence — deterministic, so
+    the consolidation body is deterministic (⇒ FR-8 idempotence)."""
+    for raw in (rec.get("text") or "").splitlines():
+        s = raw.strip()
+        if not s or s.startswith("<!--") or s.startswith("|"):
+            continue
+        s = s.lstrip("#").strip().lstrip("-*> ").strip().strip("_*`")
+        low = s.lower()
+        if not s or low.startswith("## evidence") or low.startswith("m2 synthesis"):
+            continue
+        return " ".join(s.split())[:limit]
+    return rec.get("slug") or "(no summary)"
+
+
 def _default_synthesis_body(trigger, target, provenance):
-    """The default (LLM-free) region body: a provenance-stamped consolidation
-    pointer. REPLACES the region (convergence, not accretion) — a new trigger
-    rewrites this body rather than appending under it."""
-    return (f"{provenance}\n\n"
-            f"This page's synthesis region reflects the latest related update from "
-            f"**{trigger['slug']}**.")
+    """D1 — the DEFAULT (LLM-free, 0-API-token) DETERMINISTIC consolidation writer.
+    Gathers the trigger + the co-related MANAGED pages' salient claim lines
+    (`target["related"]`), dedups by slug, and writes a bounded provenance-stamped
+    consolidation of `[[link]] — one-liner` rows in a deterministic (slug) order.
+    REPLACES the region each synthesis (convergence, not accretion) → identical
+    inputs ⇒ identical body ⇒ FR-8 skips the edit + the event; bounded by K rows so
+    the region does not grow with M re-syntheses. Optional LLM path stays behind the
+    `synth_body_fn` seam, OFF by default; if ever wired it still writes ONLY here and
+    still ≤ one `observed`."""
+    entries, seen = [], set()
+    rows = [{"slug": trigger["slug"], "salient": _salient_claim(trigger)}]
+    rows += list(target.get("related") or [])
+    for item in rows:
+        s = item.get("slug")
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        entries.append((s, item.get("salient") or ""))
+    lines = [provenance, "", "Consolidated related context (auto-synthesized):"]
+    for s, salient in sorted(entries):  # deterministic slug order
+        lines.append(f"- [[{s}]] — {salient}" if salient else f"- [[{s}]]")
+    return "\n".join(lines)
 
 
-def _oplog(op, title, detail):
-    if _OPLOG is None:
+# D4 — op-log schema. Canonical M2 op verbs (greppable, stable vocabulary).
+OP_SYNTHESIS_EDIT = "synthesis_edit"
+OP_SUPERSESSION = "supersession"
+OP_SUPERSESSION_SUGGESTION = "supersession_suggestion"
+OP_CONTRADICTION_DEFERRAL = "contradiction_deferral"
+
+
+def _log_path_for(index_db_path):
+    """The op-log lives at the memory-system root (`<root>/log.md`); the index db is
+    `<root>/db/index.db`. Deriving it from index_db_path keeps tests HERMETIC (temp
+    log) and never touches the live global log. None ⇒ no db path ⇒ skip the op-log
+    (never fall back to the global default — that would write to the live store)."""
+    if not index_db_path:
+        return None
+    return os.path.join(os.path.dirname(os.path.dirname(index_db_path)), "log.md")
+
+
+def _oplog(index_db_path, op, target_slug, *, trigger=None, score=None, extra=None):
+    """Mirror an M2 operation to the op-log with the D4 schema:
+    op ∈ {synthesis_edit, supersession, supersession_suggestion, contradiction_deferral},
+    trigger id/source, ISO date, score, target slug. Written ONLY on an actual
+    op (not idempotent skips), so re-runs add no duplicate rows. Best-effort; the
+    durable provenance is the in-file region line (survives reindex, AC-7)."""
+    log_path = _log_path_for(index_db_path)
+    if _OPLOG is None or log_path is None:
         return
+    bits = [f"op={op}", f"target={target_slug}", f"date={_iso_date()}"]
+    if trigger is not None:
+        bits.append(f"trigger={trigger.get('slug')}")
+        bits.append(f"source={trigger.get('source')}")
+    if score is not None:
+        bits.append(f"score={score:.3f}")
+    if extra:
+        bits.append(extra)
     try:
-        _OPLOG.append_op(op, title, detail=detail)
+        _OPLOG.append_op(op, target_slug, detail=" ".join(bits), log_path=log_path)
     except Exception:
         pass
 
 
 # --- supersession (FR-7) -----------------------------------------------------
+_SHIPPED = ("shipped", "released", "launched", "completed", "done", "landed", "ga", "live")
+_PLANNED = ("plan", "planned", "will ", "todo", "proposed", "intend", "going to",
+            "upcoming", "roadmap", "draft", "wip")
+_VER_RE = re.compile(r"\bv?(\d+(?:\.\d+)*)\b")
+_YEAR_RE2 = re.compile(r"\b(19|20)\d{2}\b")
+
+
+def _max_version(text):
+    best = None
+    for m in _VER_RE.finditer(text or ""):
+        tup = tuple(int(x) for x in m.group(1).split("."))
+        if best is None or tup > best:
+            best = tup
+    return best
+
+
+def _max_year(text):
+    yrs = [int(m.group(0)) for m in _YEAR_RE2.finditer(text or "")]
+    return max(yrs) if yrs else None
+
+
+def _shared_subject(trigger, target):
+    """The pair is about the SAME topic: the trigger slug stem appears in the target
+    text (or vice-versa). Prevents a version/date bump on an UNRELATED page from
+    reading as a supersession."""
+    p = (target.get("text") or "").lower()
+    t = (trigger.get("text") or "").lower()
+    stem = (trigger.get("slug") or "").split("-")[0]
+    tstem = (target.get("slug") or "").split("-")[0]
+    return bool(stem) and (stem in p or (bool(tstem) and tstem in t))
+
+
 def _default_supersedes(trigger, target):
-    """Conservative, LLM-free temporal-supersession detector. Returns True only on
-    a clear plan→shipped evolution over a shared subject; else False (fail-closed —
-    a missed supersession is safe, an FP retires a page)."""
+    """LLM-free temporal-EVOLUTION classifier (§8 dual-purpose: the confirmer emits a
+    conflict XOR M2 proposes a supersession). Returns True on a clear evolution over
+    a SHARED subject — plan→shipped, a higher version (v1→v2), or a later year —
+    else False (fail-closed: a missed supersession is safe, an FP retires a page).
+    Only PROPOSES; the FR-7 authority gate still disposes. A true semantic opposition
+    never reaches here — M1's confirmer classifies it `contradiction` first (XOR)."""
     t = (trigger.get("text") or "").lower()
     p = (target.get("text") or "").lower()
-    shipped = any(w in t for w in ("shipped", "released", "launched", "completed", "done", "landed"))
-    planned = any(w in p for w in ("plan", "planned", "will ", "todo", "proposed", "intend", "going to"))
-    # shared subject: the trigger slug stem appears in the target (same topic)
-    stem = (trigger.get("slug") or "").split("-")[0]
-    shared = bool(stem) and stem in p
-    return shipped and planned and shared
+    if not _shared_subject(trigger, target):
+        return False
+    # plan → shipped
+    if any(w in t for w in _SHIPPED) and any(w in p for w in _PLANNED):
+        return True
+    # version bump: trigger carries a strictly HIGHER version than the target
+    tv, pv = _max_version(t), _max_version(p)
+    if tv is not None and pv is not None and tv > pv:
+        return True
+    # date evolution: trigger carries a strictly LATER year than the target
+    ty, py = _max_year(t), _max_year(p)
+    if ty is not None and py is not None and ty > py:
+        return True
+    return False
 
 
 def _authority_dominates(trigger, target):
@@ -329,21 +435,27 @@ def _apply_supersession(index_db_path, trigger, target):
     SUPERSESSION so the §8 truth-slice join disambiguates it from an M1 semantic
     contradiction). Returns 'superseded' or 'supersession_suggested'."""
     if not _authority_dominates(trigger, target):
-        _oplog("m2-supersede-suggest", target["slug"],
-               f"suggested superseded_by={trigger['slug']} (lower authority — not applied)")
+        _oplog(index_db_path, OP_SUPERSESSION_SUGGESTION, target["slug"], trigger=trigger,
+               extra="reason=non-dominating-authority")
         return "supersession_suggested"
-    try:
-        with open(target["path"], "r", encoding="utf-8") as f:
-            content = f.read()
-    except OSError:
-        return "supersession_suggested"
-    if _read_frontmatter_key(content, "superseded_by") == trigger["slug"]:
-        return "idempotent_skip"  # already superseded by this trigger
-    new_content = _set_frontmatter_key(content, "superseded_by", trigger["slug"])
-    _atomic_write(target["path"], new_content)
-    _EV.append_event(target["path"], "contradicted", actor=AUTOMATED_ACTOR,
-                     note=f"superseded by {trigger['slug']} (m2 supersession terminal)")
-    _oplog("m2-supersede", target["slug"], f"superseded_by={trigger['slug']}")
+    path = target["path"]
+    with _EV.card_lock(path) as held:  # D3: spool-under-lock (read-modify-write atomic)
+        if not held:
+            print(f"WARN: M2 could not lock {path}; supersession skipped (no lost update)",
+                  file=sys.stderr)
+            return "lock_contended"
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except OSError:
+            return "supersession_suggested"
+        if _read_frontmatter_key(content, "superseded_by") == trigger["slug"]:
+            return "idempotent_skip"  # already superseded by this trigger
+        _atomic_write(path, _set_frontmatter_key(content, "superseded_by", trigger["slug"]))
+        _EV.append_event(path, "contradicted", actor=AUTOMATED_ACTOR,
+                         note=f"superseded by {trigger['slug']} (m2 supersession terminal)",
+                         _locked=True)
+    _oplog(index_db_path, OP_SUPERSESSION, target["slug"], trigger=trigger)
     return "superseded"
 
 
@@ -374,10 +486,18 @@ def process_trigger(index_db_path, trigger_path, meta, body, *, neighbors,
     T = _M1._record(trigger_path, meta, body)
     outcomes = []
 
+    # Resolve the selected set once, classify editability (FR-2), and precompute the
+    # editable pages' salient claims so each page's consolidation can reference the
+    # co-related set (D1). Deterministic order preserved from select_related.
+    selected = []
     for path, score in select_related(trigger_path, neighbors):
         P = _M1._record_from_file(path)
-        if P is None:
-            continue
+        if P is not None:
+            selected.append((path, score, P))
+    editable_claims = [{"slug": P["slug"], "salient": _salient_claim(P)}
+                       for _p, _s, P in selected if is_editable(P)]
+
+    for path, score, P in selected:
         if not is_editable(P):
             outcomes.append({"path": path, "action": "read_only_context"})
             continue  # FR-2: user/exempt never edited, never event'd
@@ -392,6 +512,7 @@ def process_trigger(index_db_path, trigger_path, meta, body, *, neighbors,
             _M1.process_card(trigger_path, meta, body,
                              neighbors=[{"score": score, "path": path}],
                              confirmer=confirmer, index_db_path=index_db_path)
+            _oplog(index_db_path, OP_CONTRADICTION_DEFERRAL, P["slug"], trigger=T, score=score)
             outcomes.append({"path": path, "action": "deferred_to_m1"})
             continue
 
@@ -405,38 +526,49 @@ def process_trigger(index_db_path, trigger_path, meta, body, *, neighbors,
             outcomes.append({"path": path, "action": act})
             continue
 
-        # FR-4/FR-5/FR-6: revise the synthesis region + one `observed` event.
-        outcomes.append(_edit_page(path, T, score, synth_body_fn))
+        # FR-4/FR-5/FR-6: revise the synthesis region + one `observed` event. The
+        # consolidation references the co-related editable pages (exclude self).
+        related = [e for e in editable_claims if e["slug"] != P["slug"]]
+        outcomes.append(_edit_page(index_db_path, path, T, P["slug"], score,
+                                   synth_body_fn, related))
     return outcomes
 
 
-def _edit_page(path, trigger, score, synth_body_fn):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            content = f.read()
-    except OSError:
-        return {"path": path, "action": "unreadable"}
+def _edit_page(index_db_path, path, trigger, target_slug, score, synth_body_fn, related):
+    """FR-4/5/6 under D3 spool-under-lock: the whole region read-modify-write AND the
+    `observed` event happen inside ONE hold of the card's persistent flock, so two
+    concurrent M2 edits to the same card serialize losslessly (no interleave, no
+    lost update). A stuck holder → fail LOUD, never a silent drop."""
+    with _EV.card_lock(path) as held:
+        if not held:
+            print(f"WARN: M2 could not lock {path}; edit skipped (no lost update)",
+                  file=sys.stderr)
+            return {"path": path, "action": "lock_contended"}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except OSError:
+            return {"path": path, "action": "unreadable"}
 
-    provenance = _provenance_line(trigger, score)
-    region_body = synth_body_fn(trigger, {"slug": _slug_of(path)}, provenance)
-
-    # FR-8 idempotence: deterministic body → if the current region already equals
-    # what we would write, skip the edit AND the event (append_event stamps a fresh
-    # ts, so the PK cannot dedup — this explicit content guard must).
-    cur = current_region_body(content)
-    if cur is not None and cur.strip() == region_body.rstrip():
-        return {"path": path, "action": "idempotent_skip"}
-
-    new_content, rid, op = apply_region(content, region_body)
-    if new_content == content:
-        return {"path": path, "action": "idempotent_skip"}
-    _atomic_write(path, new_content)
-    # FR-6 NO-LAUNDER: at most ONE tier-1 `observed` (+0.05, capped) — never
-    # confirmed/verified_by_test. Provably cannot lift a page across the 0.55 gate.
-    _EV.append_event(path, "observed", actor="agent-extracted",
-                     note=f"m2 synthesis from {trigger['slug']}")
-    _oplog("m2-synthesize", _slug_of(path),
-           f"region {op} from trigger={trigger['slug']} score={score:.3f}")
+        provenance = _provenance_line(trigger, score)
+        region_body = synth_body_fn(trigger, {"slug": target_slug, "related": related},
+                                    provenance)
+        # FR-8 idempotence: deterministic body → if the region already equals what we
+        # would write, skip the edit AND the event (append_event stamps a fresh ts, so
+        # the PK cannot dedup — this explicit content guard must).
+        cur = current_region_body(content)
+        if cur is not None and cur.strip() == region_body.rstrip():
+            return {"path": path, "action": "idempotent_skip"}
+        new_content, rid, op = apply_region(content, region_body)
+        if new_content == content:
+            return {"path": path, "action": "idempotent_skip"}
+        _atomic_write(path, new_content)
+        # FR-6 NO-LAUNDER: at most ONE tier-1 `observed` (+0.05, capped) — never
+        # confirmed/verified_by_test. _locked: we already hold this card's flock.
+        _EV.append_event(path, "observed", actor="agent-extracted",
+                         note=f"m2 synthesis from {trigger['slug']}", _locked=True)
+    _oplog(index_db_path, OP_SYNTHESIS_EDIT, target_slug, trigger=trigger, score=score,
+           extra=f"region={op}")
     return {"path": path, "action": "edited", "op": op, "region_id": rid}
 
 

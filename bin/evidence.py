@@ -151,12 +151,39 @@ def _insert_into_evidence(content, line):
     return prefix + new_block + rest
 
 
+import contextlib as _contextlib
+
+
+@_contextlib.contextmanager
+def card_lock(card_path):
+    """Acquire the SAME persistent per-card flock `append_event` uses, for a caller
+    that needs its own read-modify-write of the card FILE to be atomic w.r.t. event
+    appends and other writers (M2's region byte-splice). Yields True if held, False
+    if the retry budget was exhausted (a stuck holder — the caller must fail LOUD,
+    never silently drop the write). The lock FILE persists (NEW-1); flock auto-
+    releases on close/process death (no deadlock, stale-lock-loud-recovery)."""
+    lock_path = _lock_path_for(card_path)
+    lock_fd = None
+    try:
+        lock_fd = open(lock_path, "a")
+        held = _acquire_under_retry(lock_fd)
+        yield held
+    finally:
+        if lock_fd is not None:
+            lock_fd.close()
+
+
 def append_event(card_path, event_type, actor=None, session_id=None, note="",
-                 ts=None, delta=None):
+                 ts=None, delta=None, _locked=False):
     """Append one typed event to a card's `## Evidence` under an exclusive lock.
 
     Returns True if a line was written, False on a no-op (unknown type, missing
     file, lock contention, or a de-duped identical event). Never raises.
+
+    `_locked=True` skips acquiring the flock — the CALLER already holds this card's
+    `card_lock` (M2's spool-under-lock). flock is per-open-file-description, so a
+    second acquisition from the same process on a different fd would EWOULDBLOCK and
+    the event would be silently dropped; `_locked` avoids that self-deadlock.
     """
     # Phase-A gate (F1a): default install writes nothing to user files.
     if not events_enabled():
@@ -176,9 +203,10 @@ def append_event(card_path, event_type, actor=None, session_id=None, note="",
         # PERSISTENT lock file (never unlinked) at a stable path → one inode →
         # TRUE mutual exclusion (audit NEW-1). "a" doesn't truncate a concurrent
         # holder's file. flock still auto-releases on close/process death.
-        lock_fd = open(lock_path, "a")
-        if not _acquire_under_retry(lock_fd):
-            return False  # a stuck holder — bounded wait, no lost line under it
+        if not _locked:
+            lock_fd = open(lock_path, "a")
+            if not _acquire_under_retry(lock_fd):
+                return False  # a stuck holder — bounded wait, no lost line under it
         with open(card_path, "r", encoding="utf-8") as f:
             content = f.read()
         new_content = _insert_into_evidence(content, line)

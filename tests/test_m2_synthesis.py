@@ -28,6 +28,11 @@ YES = lambda a, b: "contradiction"        # noqa: E731
 NOSUP = lambda t, p: False                # noqa: E731
 SUP = lambda t, p: True                   # noqa: E731
 
+
+def _fastembed_available():
+    import importlib.util
+    return importlib.util.find_spec("fastembed") is not None
+
 NEW = "2026-06-01"
 OLD = "2024-01-01"
 
@@ -481,6 +486,281 @@ def _string_only_bounds(content):
     if b and e and e.start() > b.end():
         return b.end(), e.start()
     return None
+
+
+# =========================== TURN 2 (D1..D5) ================================
+class TriggerMixin:
+    def _trig(self):
+        return self._write("trigger.md", _card("trigger-card", source="user-explicit")), \
+            {"name": "trigger-card", "type": "project", "source": "user-explicit", "last_verified": NEW}
+
+
+# --- D1: real deterministic consolidation body -------------------------------
+class D1BodyTest(M2Base, TriggerMixin):
+    def test_default_body_is_deterministic_consolidation(self):
+        # trigger + two co-related managed pages → the region on each consolidates
+        # the related set as [[link]] — one-liner rows (deterministic slug order).
+        a = self._write("page-a.md", _card("page-a", source="agent-extracted",
+                                            body="Alpha claim about the auth service."))
+        b = self._write("page-b.md", _card("page-b", source="agent-extracted",
+                                            body="Beta claim about the auth service."))
+        tp, tm = self._trig()
+        out = m2.process_trigger(self.db, tp, tm, "auth service trigger claim",
+                                 neighbors=[{"score": 0.9, "path": a}, {"score": 0.88, "path": b}],
+                                 confirmer=NO, supersedes=NOSUP)
+        self.assertEqual([o["action"] for o in out], ["edited", "edited"])
+        body_a = m2.current_region_body(self._read(a))
+        # page-a's region references the trigger AND the co-related page-b (not itself)
+        self.assertIn("[[trigger-card]]", body_a)
+        self.assertIn("[[page-b]]", body_a)
+        self.assertNotIn("[[page-a]]", body_a)
+        self.assertIn("Consolidated related context", body_a)
+        # deterministic: identical inputs → identical body
+        c1 = self._read(a)
+        m2.process_trigger(self.db, tp, tm, "auth service trigger claim",
+                           neighbors=[{"score": 0.9, "path": a}, {"score": 0.88, "path": b}],
+                           confirmer=NO, supersedes=NOSUP)
+        self.assertEqual(self._read(a), c1)  # FR-8: re-run no-op with the real body
+
+    def test_real_body_preserves_ac2_dual_invariant(self):
+        # the real (non-trivial) body still leaves every user byte before the region
+        # byte-identical, and appends only the FR-6 observed event after it.
+        page = _card("proj-x", body="User A.\n\n## Notes\nUser B.\n")
+        p = self._write("x.md", page)
+        n = self._write("page-n.md", _card("page-n", source="agent-extracted",
+                                            body="Neighbor salient claim."))
+        tp, tm = self._trig()
+        before = self._read(p)
+        m2.process_trigger(self.db, tp, tm, "t",
+                           neighbors=[{"score": 0.9, "path": p}, {"score": 0.85, "path": n}],
+                           confirmer=NO, supersedes=NOSUP)
+        after = self._read(p)
+        # user body (frontmatter aside) is byte-identical; the region is a fresh
+        # append after all user bytes; the only tail change is the ## Evidence event.
+        _mb, body_before = index_impl.parse_frontmatter(before)
+        user_part = after.split("<!-- eidetic:synthesis:begin")[0]
+        self.assertIn(body_before.rstrip(), after)
+        self.assertIn("User A.", user_part)
+        self.assertIn("User B.", user_part)
+        self.assertIn("[[trigger-card]]", m2.current_region_body(after))
+
+    def test_bounded_growth_real_body(self):
+        p = self._write("g.md", _card("g-page", source="agent-extracted", body="User body."))
+        n = self._write("gn.md", _card("gn-page", source="agent-extracted", body="Neighbor."))
+        tp, tm = self._trig()
+        sizes = []
+        for i in range(5):
+            m2.process_trigger(self.db, tp, tm, f"trig {i}",
+                               neighbors=[{"score": 0.9, "path": p}, {"score": 0.85, "path": n}],
+                               confirmer=NO, supersedes=NOSUP)
+            sizes.append(len(self._read(p)))
+        self.assertLessEqual(max(sizes) - min(sizes), 3, f"unbounded growth {sizes}")
+
+
+# --- D2: supersession classifier ---------------------------------------------
+class D2SupersedesTest(M2Base, TriggerMixin):
+    def _run(self, target_body, trig_body, trig_src="user-explicit"):
+        p = self._write("target.md", _card("t2-page", source="agent-extracted", body=target_body))
+        self._index([p]).close()
+        trig = self._write("s2.md", _card("t2-page-src", source=trig_src))
+        tm = {"name": "t2-page-src", "type": "project", "source": trig_src, "last_verified": NEW}
+        out = m2.process_trigger(self.db, trig, tm, trig_body,
+                                 neighbors=[{"score": 0.9, "path": p}],
+                                 confirmer=NO)  # default supersedes classifier
+        return p, out
+
+    def test_plan_to_shipped_supersedes(self):
+        p, out = self._run("the plan to ship t2 page is drafted", "shipped t2 page to production")
+        self.assertEqual(out[0]["action"], "superseded")
+        self.assertEqual(m2._read_frontmatter_key(self._read(p), "superseded_by"), "t2-page-src")
+
+    def test_version_bump_supersedes(self):
+        p, out = self._run("t2 page API is v1", "t2 page API is now v2")
+        self.assertEqual(out[0]["action"], "superseded")
+
+    def test_year_evolution_supersedes(self):
+        p, out = self._run("t2 page report for 2023", "t2 page report for 2024")
+        self.assertEqual(out[0]["action"], "superseded")
+
+    def test_true_opposition_stays_m1_not_supersession(self):
+        # enabled↔disabled is a semantic contradiction → M1 owns it, M2 never supersedes
+        os.environ["EIDETIC_M1_CONTRADICTION"] = "on"
+        try:
+            p = self._write("c2.md", _card("c2-page", source="agent-extracted",
+                                            body="Feature flags are enabled by default."))
+            self._index([p]).close()
+            trig = self._write("c2t.md", _card("c2-page-src", source="user-explicit"))
+            tm = {"name": "c2-page-src", "type": "project", "source": "user-explicit", "last_verified": NEW}
+            out = m2.process_trigger(self.db, trig, tm, "Feature flags are disabled by default.",
+                                     neighbors=[{"score": 0.9, "path": p}],
+                                     confirmer=m1.production_confirmer)  # real confirmer
+            self.assertEqual(out[0]["action"], "deferred_to_m1")
+            evs = self._events(p)
+            self.assertEqual([e["event_type"] for e in evs], ["contradicted"])
+            self.assertNotIn("superseded", evs[0]["note"] or "")  # NOT an M2 terminal
+            self.assertIsNone(m2._read_frontmatter_key(self._read(p), "superseded_by"))
+        finally:
+            os.environ.pop("EIDETIC_M1_CONTRADICTION", None)
+
+    def test_revert_verify_authority_gate(self):
+        # a NON-dominating trigger must NOT set superseded_by — with the gate it's a
+        # suggestion; disabling the gate (revert) lets it set → RED-on-break.
+        p = self._write("hp.md", _card("hp-page", source="agent-extracted", body="the plan for hp"))
+        self._index([p]).close()
+        trig = self._write("lp.md", _card("hp-page-src", source="agent-extracted"))
+        tm = {"name": "hp-page-src", "type": "project", "source": "agent-extracted", "last_verified": OLD}
+        out = m2.process_trigger(self.db, trig, tm, "shipped hp",
+                                 neighbors=[{"score": 0.9, "path": p}], confirmer=NO)
+        self.assertEqual(out[0]["action"], "supersession_suggested")
+        self.assertIsNone(m2._read_frontmatter_key(self._read(p), "superseded_by"))
+        # revert: bypass the authority gate → non-dominating source sets it (the bug)
+        orig = m2._authority_dominates
+        m2._authority_dominates = lambda t, x: True
+        try:
+            p2 = self._write("hp2.md", _card("hp2-page", source="agent-extracted", body="the plan for hp2"))
+            self._index([p2]).close()
+            tm2 = {"name": "hp2-page-src", "type": "project", "source": "agent-extracted", "last_verified": OLD}
+            trig2 = self._write("lp2.md", _card("hp2-page-src", source="agent-extracted"))
+            m2.process_trigger(self.db, trig2, tm2, "shipped hp2",
+                               neighbors=[{"score": 0.9, "path": p2}], confirmer=NO)
+            self.assertEqual(m2._read_frontmatter_key(self._read(p2), "superseded_by"), "hp2-page-src",
+                             "revert-verify: without the authority gate a non-dominating source sets it")
+        finally:
+            m2._authority_dominates = orig
+
+
+# --- D3: spool-under-lock ----------------------------------------------------
+class D3ConcurrencyTest(M2Base, TriggerMixin):
+    def _counter_race(self, use_lock):
+        """Classic lost-update probe on the SAME lock primitive M2's _edit_page uses
+        (evidence.card_lock). With the lock two increments serialize → 2; without it,
+        a forced-interleave barrier makes both read 0 then write 1 → 1 (lost update)."""
+        import threading, contextlib
+        cf = self._write("cnt.txt", "0")
+        barrier = None if use_lock else threading.Barrier(2)
+
+        def inc():
+            if use_lock:
+                with EV.card_lock(cf) as held:
+                    self.assertTrue(held)
+                    v = int(open(cf).read().strip()) + 1
+                    with open(cf, "w") as f:
+                        f.write(str(v))
+            else:
+                v = int(open(cf).read().strip())
+                barrier.wait(timeout=3)  # both read 0 before either writes
+                with open(cf, "w") as f:
+                    f.write(str(v + 1))
+        ts = [threading.Thread(target=inc) for _ in range(2)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(timeout=5)
+        return int(open(cf).read().strip())
+
+    def test_card_lock_serializes_no_lost_update(self):
+        self.assertEqual(self._counter_race(use_lock=True), 2)
+
+    def test_revert_verify_no_lock_loses_update(self):
+        # REVERT-VERIFY: remove the lock (no-op) → the forced race loses an update.
+        self.assertEqual(self._counter_race(use_lock=False), 1)
+
+    def test_concurrent_m2_edits_leave_file_consistent(self):
+        # two concurrent M2 edits (distinct triggers) to the same card under the REAL
+        # spool-under-lock → the file stays CONSISTENT: exactly one well-formed region
+        # whose id matches the frontmatter, user bytes intact, no torn/interleaved
+        # write. (The region is replaced → last-writer-wins content; the invariant is
+        # no corruption / no id↔region desync, which the lock guarantees.)
+        import threading
+        p = self._write("shared.md", _card("shared", source="agent-extracted",
+                                            body="User content stays.\n\n## Sec\nMore user."))
+
+        def edit(slug):
+            trig = self._write(f"{slug}.md", _card(slug, source="user-explicit"))
+            tm = {"name": slug, "type": "project", "source": "user-explicit", "last_verified": NEW}
+            m2.process_trigger(self.db, trig, tm, f"claim from {slug}",
+                               neighbors=[{"score": 0.9, "path": p}], confirmer=NO, supersedes=NOSUP)
+        ts = [threading.Thread(target=edit, args=(f"trig-{i}",)) for i in range(2)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(timeout=5)
+        after = self._read(p)
+        self.assertEqual(after.count("eidetic:synthesis:begin"), 1)  # exactly one region
+        self.assertEqual(after.count("eidetic:synthesis:end"), 1)
+        rid = m2.read_region_id(after)
+        self.assertIsNotNone(m2._synthesis_region_bounds(after, rid),
+                             "frontmatter id ↔ region desynced (corruption under contention)")
+        self.assertIn("User content stays.", after)   # user bytes intact
+        self.assertIn("More user.", after)
+
+
+# --- D4: op-log schema + reindex survival ------------------------------------
+class D4OplogTest(M2Base, TriggerMixin):
+    def _wire(self, tgt):
+        self._saved_nvd = m1.neighbors_via_door
+        m1.neighbors_via_door = lambda db, probe, exclude_paths=(): (
+            [] if tgt in exclude_paths else [{"score": 0.9, "path": tgt}])
+
+    def _oplog_rows(self):
+        log = os.path.join(os.path.dirname(os.path.dirname(self.db)), "log.md")
+        if not os.path.exists(log):
+            return []
+        return [ln for ln in open(log, encoding="utf-8").read().splitlines()
+                if "op=synthesis_edit" in ln or "op=supersession" in ln]
+
+    def test_oplog_schema_and_reindex_survival(self):
+        tgt = self._write("t.md", _card("t-page", source="agent-extracted", body="target body"))
+        trg = self._write("s.md", _card("s-page", source="user-explicit", body="signal body"))
+        self._wire(tgt)
+        conn = index_impl.init_db(self.db); index_impl.run_incremental(conn, [tgt, trg]); conn.close()
+        rows = self._oplog_rows()
+        self.assertTrue(rows, "no op-log row written")
+        row = rows[0]
+        for field in ("op=synthesis_edit", "target=", "date=", "trigger=s-page", "source=user-explicit", "score="):
+            self.assertIn(field, row)
+        # survives a --full rebuild of the index (op-log is at the memory-system root)
+        conn = index_impl.init_db(self.db); index_impl.run_full(conn, [tgt, trg]); conn.close()
+        self.assertTrue(self._oplog_rows(), "op-log did not survive --full reindex")
+        # idempotent: re-ingest with no change adds NO duplicate op row
+        n_before = len(self._oplog_rows())
+        conn = index_impl.init_db(self.db); index_impl.run_incremental(conn, [tgt, trg]); conn.close()
+        self.assertEqual(len(self._oplog_rows()), n_before, "duplicate op rows on idempotent re-run")
+
+    def test_oplog_never_touches_global_log(self):
+        # with no index_db_path the op-log is skipped entirely (never the live global).
+        self.assertIsNone(m2._log_path_for(None))
+
+
+# --- D5: Leg-A e2e with a real vectors.db ------------------------------------
+class D5LegATest(M2Base, TriggerMixin):
+    @unittest.skipUnless(_fastembed_available(), "Leg-A e2e requires fastembed")
+    def test_real_vectors_end_to_end(self):
+        import engine
+        engine.configure(provider="cpu", threads=8)
+        # three managed pages on ONE topic + a trigger on the same topic
+        a = self._write("auth-tokens.md", _card("auth-tokens", source="agent-extracted",
+                        body="The auth service issues JWT access tokens for sessions."))
+        b = self._write("auth-refresh.md", _card("auth-refresh", source="agent-extracted",
+                        body="Refresh tokens rotate the JWT session for the auth service daily."))
+        far = self._write("coffee.md", _card("coffee", source="agent-extracted",
+                          body="The office coffee machine broke again on Friday."))
+        trg = self._write("auth-trigger.md", _card("auth-trigger", source="user-explicit",
+                          body="The auth service JWT token lifetime and session policy."))
+        conn = self._index([a, b, far, trg]); conn.close()
+        vectors_db = self.db.replace("index.db", "vectors.db")
+        engine._embed().run_full(self.db, vectors_db)
+        # run the REAL hook: door → Index.neighbors → M2_FANOUT → M2_RELATED_MIN → edit
+        conn = index_impl.init_db(self.db)
+        m2.run_on_ingest(conn, self.db, [trg], confirmer=NO, supersedes=NOSUP)
+        conn.close()
+        # the on-topic auth pages get a synthesis region; the far coffee page does not
+        self.assertIn("eidetic:synthesis:begin", self._read(a))
+        self.assertIn("eidetic:synthesis:begin", self._read(b))
+        self.assertNotIn("eidetic:synthesis:begin", self._read(far))
+        # provenance + consolidation present, user bytes intact
+        self.assertIn("[[auth-trigger]]", m2.current_region_body(self._read(a)))
+        self.assertIn("The auth service issues JWT access tokens", self._read(a))
 
 
 if __name__ == "__main__":
