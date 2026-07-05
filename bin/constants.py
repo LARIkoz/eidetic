@@ -132,3 +132,24 @@ MAX_CHUNK_CHARS = 6000
 M1_NEIGHBORS = 8
 M1_CANDIDATE_MIN = {"multilingual": 0.58, "english": 0.38}
 M1_CANDIDATE_MIN_DEFAULT = 0.58
+
+# M2 multi-page synthesis (spec-m2-synthesis FR-1). M2_FANOUT = the bounded number
+# of related pages an ingest may touch (≤ Karpathy's 10–15, blast-radius limited).
+# M2_RELATED_MIN = the profile-aware cosine floor for the EDIT set — a DISTINCT
+# constant, calibrated PRECISION-first (spec §8 Breaks-when: a loose floor spreads
+# noise edits). It sits ABOVE M1's recall-oriented contradiction-candidate gate
+# (0.58) because a synthesis EDIT is higher-consequence than a contradiction
+# CANDIDATE (M1 has the fail-closed confirmer behind it; an M2 edit mutates page
+# bytes), and above e5-large's ~0.69–0.72 unrelated-noise band (M1 AC-1b evidence)
+# so weakly-related pages are never edited. Unknown profile → the stricter end.
+#
+# AC calibration (Leg A, profile=multilingual, e5-large): labeled related vs
+# unrelated card pairs (query→passage). Measured: related cos 0.769–0.803 (min
+# 0.769), unrelated cos 0.625–0.741 (max 0.741). The 0.78 floor sits in the
+# separation window → FALSE-ADMIT 0/4 (precision-first; M2 has no confirmer gating
+# the EDIT itself, so this floor IS the edit precision gate) with related recall
+# 3/4 (the one 0.769 near-miss is a distant paraphrase — a missed synthesis is
+# safe, a noise edit is not). english floor uncalibrated (no english-profile host).
+M2_FANOUT = 8
+M2_RELATED_MIN = {"multilingual": 0.78, "english": 0.62}
+M2_RELATED_MIN_DEFAULT = 0.78

@@ -1390,6 +1390,20 @@ def run_incremental(conn, files):
         except Exception as e:
             print(f"WARN: M1 hook skipped: {e}", file=sys.stderr)
 
+    # M2 multi-page synthesis (spec-m2-synthesis FR-1/FR-9). DARK-SAFE: a complete
+    # no-op unless EIDETIC_CONFIDENCE_EVENTS is on. Runs AFTER M1 so M1 owns
+    # contradictions and M2 defers to it; M2 revises only its own sentinel-delimited
+    # synthesis region on managed neighbors. Never raises into the indexer.
+    if changed_cards:
+        try:
+            import m2_synthesis
+            row = conn.execute("PRAGMA database_list").fetchone()
+            db_file = row[2] if row else ""
+            if db_file:
+                m2_synthesis.run_on_ingest(conn, db_file, changed_cards)
+        except Exception as e:
+            print(f"WARN: M2 hook skipped: {e}", file=sys.stderr)
+
     if force_backfill:
         print("Lifecycle metadata backfill: reindexed existing memory files")
     return indexed, skipped, removed
