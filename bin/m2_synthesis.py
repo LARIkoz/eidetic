@@ -38,8 +38,8 @@ try:
     from constants import M2_FANOUT, M2_RELATED_MIN, M2_RELATED_MIN_DEFAULT
 except ImportError:  # pragma: no cover
     M2_FANOUT = 8
-    M2_RELATED_MIN = {"multilingual": 0.80, "english": 0.62}
-    M2_RELATED_MIN_DEFAULT = 0.80
+    M2_RELATED_MIN = {"multilingual": 0.78, "english": 0.62}
+    M2_RELATED_MIN_DEFAULT = 0.78
 
 AUTOMATED_ACTOR = "test"  # tier-2 for the supersession terminal (like M1)
 
@@ -327,6 +327,7 @@ OP_SYNTHESIS_EDIT = "synthesis_edit"
 OP_SUPERSESSION = "supersession"
 OP_SUPERSESSION_SUGGESTION = "supersession_suggestion"
 OP_CONTRADICTION_DEFERRAL = "contradiction_deferral"
+OP_REGION_BROKEN = "region_broken"  # F1: user-broken region skipped (surfaced once)
 
 
 def _log_path_for(index_db_path):
@@ -356,6 +357,30 @@ def _oplog(index_db_path, op, target_slug, *, trigger=None, score=None, extra=No
         bits.append(f"score={score:.3f}")
     if extra:
         bits.append(extra)
+    try:
+        _OPLOG.append_op(op, target_slug, detail=" ".join(bits), log_path=log_path)
+    except Exception:
+        pass
+
+
+def _oplog_once(index_db_path, op, target_slug, *, trigger=None):
+    """Like `_oplog`, but DEDUPED by (op, target): if the log already carries an
+    `op=<op> target=<slug>` entry it is NOT re-appended. Used for the F1
+    broken-region suggestion so a user-corrupted region is surfaced exactly once,
+    not re-logged every ingest (no op-log growth). Best-effort; hermetic."""
+    log_path = _log_path_for(index_db_path)
+    if _OPLOG is None or log_path is None:
+        return
+    key = f"op={op} target={target_slug}"
+    try:
+        if os.path.exists(log_path) and key in open(log_path, encoding="utf-8").read():
+            return  # already surfaced — dedup, no op-log growth
+    except OSError:
+        pass
+    bits = [key, f"date={_iso_date()}"]
+    if trigger is not None:
+        bits.append(f"trigger={trigger.get('slug')}")
+        bits.append(f"source={trigger.get('source')}")
     try:
         _OPLOG.append_op(op, target_slug, detail=" ".join(bits), log_path=log_path)
     except Exception:
@@ -539,6 +564,7 @@ def _edit_page(index_db_path, path, trigger, target_slug, score, synth_body_fn, 
     `observed` event happen inside ONE hold of the card's persistent flock, so two
     concurrent M2 edits to the same card serialize losslessly (no interleave, no
     lost update). A stuck holder → fail LOUD, never a silent drop."""
+    outcome = None
     with _EV.card_lock(path) as held:
         if not held:
             print(f"WARN: M2 could not lock {path}; edit skipped (no lost update)",
@@ -550,26 +576,43 @@ def _edit_page(index_db_path, path, trigger, target_slug, score, synth_body_fn, 
         except OSError:
             return {"path": path, "action": "unreadable"}
 
-        provenance = _provenance_line(trigger, score)
-        region_body = synth_body_fn(trigger, {"slug": target_slug, "related": related},
-                                    provenance)
-        # FR-8 idempotence: deterministic body → if the region already equals what we
-        # would write, skip the edit AND the event (append_event stamps a fresh ts, so
-        # the PK cannot dedup — this explicit content guard must).
-        cur = current_region_body(content)
-        if cur is not None and cur.strip() == region_body.rstrip():
-            return {"path": path, "action": "idempotent_skip"}
-        new_content, rid, op = apply_region(content, region_body)
-        if new_content == content:
-            return {"path": path, "action": "idempotent_skip"}
-        _atomic_write(path, new_content)
-        # FR-6 NO-LAUNDER: at most ONE tier-1 `observed` (+0.05, capped) — never
-        # confirmed/verified_by_test. _locked: we already hold this card's flock.
-        _EV.append_event(path, "observed", actor="agent-extracted",
-                         note=f"m2 synthesis from {trigger['slug']}", _locked=True)
-    _oplog(index_db_path, OP_SYNTHESIS_EDIT, target_slug, trigger=trigger, score=score,
-           extra=f"region={op}")
-    return {"path": path, "action": "edited", "op": op, "region_id": rid}
+        # F1 (A1.7): the frontmatter `synthesis_region_id` IS present but the locator
+        # cannot resolve it to a clean region (the user hand-broke it — e.g. deleted
+        # the end sentinel, or a duplicate). Do NOT append a fresh region (that grows
+        # the page unboundedly every ingest) and do NOT guess a boundary / self-heal
+        # (that reintroduces the ambiguity fail-closed exists to avoid). SKIP: no
+        # mutation, no new region, no growth; surface ONCE via a deduped op-log
+        # suggestion. (An ABSENT id — first synthesis, or a forged pair with no
+        # matching id (AC-2e) — still falls through to a fresh create.)
+        rid = read_region_id(content)
+        if rid and _synthesis_region_bounds(content, rid) is None:
+            outcome = {"path": path, "action": "broken_region_skipped"}
+        else:
+            provenance = _provenance_line(trigger, score)
+            region_body = synth_body_fn(trigger, {"slug": target_slug, "related": related},
+                                        provenance)
+            # FR-8 idempotence: deterministic body → if the region already equals what
+            # we would write, skip the edit AND the event (append_event stamps a fresh
+            # ts, so the PK cannot dedup — this explicit content guard must).
+            cur = current_region_body(content)
+            if cur is not None and cur.strip() == region_body.rstrip():
+                return {"path": path, "action": "idempotent_skip"}
+            new_content, new_rid, op = apply_region(content, region_body)
+            if new_content == content:
+                return {"path": path, "action": "idempotent_skip"}
+            _atomic_write(path, new_content)
+            # FR-6 NO-LAUNDER: at most ONE tier-1 `observed` (+0.05, capped) — never
+            # confirmed/verified_by_test. _locked: we already hold this card's flock.
+            _EV.append_event(path, "observed", actor="agent-extracted",
+                             note=f"m2 synthesis from {trigger['slug']}", _locked=True)
+            outcome = {"path": path, "action": "edited", "op": op, "region_id": new_rid}
+    # lock released → mirror to the op-log (its own flock).
+    if outcome["action"] == "broken_region_skipped":
+        _oplog_once(index_db_path, OP_REGION_BROKEN, target_slug, trigger=trigger)
+    else:
+        _oplog(index_db_path, OP_SYNTHESIS_EDIT, target_slug, trigger=trigger, score=score,
+               extra=f"region={outcome['op']}")
+    return outcome
 
 
 # --- ingest hook (FR-1/FR-9) -------------------------------------------------

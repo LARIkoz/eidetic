@@ -763,5 +763,73 @@ class D5LegATest(M2Base, TriggerMixin):
         self.assertIn("The auth service issues JWT access tokens", self._read(a))
 
 
+# --- FIX §R1 / F1: user-broken region → bounded skip (A1.7) ------------------
+class R1BrokenRegionTest(M2Base, TriggerMixin):
+    def _oplog_count(self, verb):
+        log = os.path.join(os.path.dirname(os.path.dirname(self.db)), "log.md")
+        if not os.path.exists(log):
+            return 0
+        return open(log, encoding="utf-8").read().count(f"op={verb}")
+
+    def _broken_page(self, rid="RID123"):
+        # frontmatter id present, begin sentinel present, END sentinel DELETED
+        return ("---\nname: broke\ntype: project\nsource: agent-extracted\n"
+                f"synthesis_region_id: {rid}\n---\n\nUser paragraph stays.\n\n"
+                f"{m2._begin_sentinel(rid)}\norphan begin, no end sentinel\n")
+
+    def test_f1_broken_region_bounded_and_deduped(self):
+        p = self._write("broke.md", self._broken_page())
+        tp, tm = self._trig()
+        sizes, begins = [], []
+        for _ in range(5):
+            out = m2.process_trigger(self.db, tp, tm, "trigger body",
+                                     neighbors=[{"score": 0.9, "path": p}],
+                                     confirmer=NO, supersedes=NOSUP)
+            self.assertEqual(out[0]["action"], "broken_region_skipped")  # SKIP, no create
+            c = self._read(p)
+            sizes.append(len(c))
+            begins.append(c.count("eidetic:synthesis:begin"))
+        # BOUNDED: page bytes constant across ingests (NOT +264 each)
+        self.assertEqual(len(set(sizes)), 1, f"page grew on a broken region: {sizes}")
+        # begin-sentinel count does NOT grow (stays the single orphan)
+        self.assertEqual(set(begins), {1}, f"begin sentinels grew: {begins}")
+        # zero user-byte loss
+        self.assertIn("User paragraph stays.", self._read(p))
+        # exactly ONE op-log suggestion (deduped, not re-emitted every ingest)
+        self.assertEqual(self._oplog_count("region_broken"), 1)
+
+    def test_f1_preserves_first_create_and_forged(self):
+        # (i) first-ever synthesis — NO frontmatter id → still CREATES a fresh region
+        first = self._write("first.md", _card("first-page", source="agent-extracted", body="Body."))
+        tp, tm = self._trig()
+        out = m2.process_trigger(self.db, tp, tm, "t", neighbors=[{"score": 0.9, "path": first}],
+                                 confirmer=NO, supersedes=NOSUP)
+        self.assertEqual(out[0]["action"], "edited")
+        self.assertIn("eidetic:synthesis:begin", self._read(first))
+        # (ii) AC-2e casual-forge — forged pair, NO matching frontmatter id → fresh region
+        forged = self._write("forged.md", _card("forged-page", source="agent-extracted",
+                             body="Intro.\n\n" + m2._begin_sentinel("forged99")
+                             + "\nMY OWN BYTES\n" + m2._END_SENTINEL + "\n\nOutro.\n"))
+        out = m2.process_trigger(self.db, tp, tm, "t", neighbors=[{"score": 0.9, "path": forged}],
+                                 confirmer=NO, supersedes=NOSUP)
+        self.assertEqual(out[0]["action"], "edited")
+        after = self._read(forged)
+        self.assertIn("MY OWN BYTES", after)  # forged bytes preserved
+        fresh = m2.read_region_id(after)
+        self.assertNotEqual(fresh, "forged99")
+
+    def test_f1_dark_safe(self):
+        # with M2 off the broken-region path is also a no-op (no mutation, no op-log)
+        os.environ.pop("EIDETIC_M2_SYNTHESIS", None)
+        p = self._write("broke.md", self._broken_page())
+        before = self._read(p)
+        tp, tm = self._trig()
+        out = m2.process_trigger(self.db, tp, tm, "t", neighbors=[{"score": 0.9, "path": p}],
+                                 confirmer=NO, supersedes=NOSUP)
+        self.assertEqual(out, [])
+        self.assertEqual(self._read(p), before)
+        self.assertEqual(self._oplog_count("region_broken"), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
