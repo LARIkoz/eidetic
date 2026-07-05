@@ -558,6 +558,37 @@ def handle_request(request):
             })
 
 
+# ---------------------------------------------------------------- mlx interpreter route
+# The mlx embed engine lives ONLY in the py3.12 `eidetic-mlx` venv. This server is
+# registered as `… -- python3 mcp_server.py` (system interpreter, no mlx) and it
+# subprocesses search_impl.py via sys.executable — so under system python the vector lane
+# silently degrades to FTS-only at QUERY time (one stderr line: "vector search
+# unavailable … No module named 'mlx'"). When mlx is the selected engine, re-exec under
+# the venv interpreter FIRST — then sys.executable (and every subprocess below) is the
+# venv python. Mirrors base.py's guard + the six shell entrypoints; makes every attached
+# base self-heal without hardcoding the venv path into each .mcp.json. No-ops off-mlx or
+# without the venv. Opt out with EIDETIC_NO_MLX_REEXEC=1. Reversible: delete fn + its call.
+def _reexec_under_mlx_venv():
+    if os.environ.get("EIDETIC_MLX_REEXEC") or os.environ.get("EIDETIC_NO_MLX_REEXEC"):
+        return  # already re-exec'd (loop guard) or explicitly opted out
+    engine = os.environ.get("EIDETIC_EMBED_ENGINE", "").strip()  # same order as embed.py
+    if not engine:
+        try:
+            # .embed_engine lives at the memory-system root = this file's own dir
+            root = os.path.dirname(os.path.abspath(__file__))
+            with open(os.path.join(root, ".embed_engine"), encoding="utf-8") as f:
+                engine = f.read().strip()
+        except OSError:
+            return  # no engine file → default (fastembed/CPU); nothing to route
+    if engine != "mlx":
+        return
+    venv_py = os.path.expanduser("~/.venvs/eidetic-mlx/bin/python3")
+    if not os.path.exists(venv_py) or os.path.realpath(venv_py) == os.path.realpath(sys.executable):
+        return  # venv absent (other machines) or already running the venv interpreter
+    os.environ["EIDETIC_MLX_REEXEC"] = "1"
+    os.execv(venv_py, [venv_py, os.path.abspath(__file__), *sys.argv[1:]])
+
+
 def main():
     for line in sys.stdin:
         line = line.strip()
@@ -574,4 +605,5 @@ def main():
 
 
 if __name__ == "__main__":
+    _reexec_under_mlx_venv()
     main()
