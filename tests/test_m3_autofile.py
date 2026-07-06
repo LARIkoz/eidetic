@@ -941,5 +941,77 @@ class LS4VerboseAntonymTest(R2Base):
             "rejected")
 
 
+# ===================== FIX R5 (re-audit NS-B — relatedness flat-strip bug) ==
+class NSBLexiconAnchorTest(R2Base):
+    """The antonym relatedness test must subtract only the PAIR UNDER TEST, not the
+    FLAT lexicon union — else a shared anchor that is itself a lexicon term (from any
+    pair) is stripped, the span is judged 'unrelated', the veto skips, and the
+    antonym-opposite files (NS-B)."""
+
+    def test_read_access_enabled_vs_disabled_rejected(self):
+        # anchor "read access" — both lexicon forms; must still count as related
+        out = self._file("Read access is enabled.", ["Read access is disabled."])
+        self.assertEqual(out["action"], "rejected")
+        self.assertEqual(os.listdir(self.mem), [])
+
+    def test_primary_access_enabled_vs_disabled_rejected(self):
+        out = self._file("Primary access is enabled.", ["Primary access is disabled."])
+        self.assertEqual(out["action"], "rejected")
+
+    def test_revert_verify_flat_union_strip_launders(self):
+        # REVERT-VERIFY: a relatedness test that strips the FLAT _ANTONYM_FORMS union
+        # (the R4 bug) FILES "Read access is enabled." vs "…disabled."; the pair-scoped
+        # default REJECTS it.
+        def _flat_strip_scorer(claim, spans):
+            cw = m3._word_set(claim)
+            ccs = set(m3._content_tokens(claim))
+            spans_tok = [(m3._word_set(s), set(m3._content_tokens(s))) for s in spans or []]
+            for side_a, side_b in m3._ANTONYM_PAIRS:
+                ca, cb = bool(cw & side_a), bool(cw & side_b)
+                if ca == cb:
+                    continue
+                claim_side, opp = (side_a, side_b) if ca else (side_b, side_a)
+                agree = oppose = False
+                for sw, sc in spans_tok:
+                    if not ((ccs & sc) - m3._ANTONYM_FORMS):   # FLAT strip (the bug)
+                        continue
+                    if sw & claim_side:
+                        agree = True
+                    if sw & opp:
+                        oppose = True
+                if oppose and not agree:
+                    return 0.0
+            return 1.0
+        m3.register_support(_flat_strip_scorer)
+        try:
+            out = self._file("Read access is enabled.", ["Read access is disabled."])
+        finally:
+            m3.register_support(None)
+        self.assertEqual(out["action"], "filed", "revert-verify: flat-union strip launders the opposite")
+        self.assertEqual(self._file("Read access is enabled.", ["Read access is disabled."])["action"],
+                         "rejected")
+
+    # --- NS-A over-rejection kept: all legitimate cases still FILE ---
+    def test_dual_antonym_legit_files(self):
+        out = self._file("The old cache was disabled but the new cache is enabled by default.",
+                         ["The new cache is enabled by default for all clients."])
+        self.assertEqual(out["action"], "filed")
+
+    def test_agreement_mention_files(self):
+        out = self._file("Read access is enabled by default.",
+                         ["Read access is enabled by default for all clients."])
+        self.assertEqual(out["action"], "filed")
+
+    def test_corroborated_plus_unrelated_opposite_files(self):
+        # same-side corroborating (related) span + an UNRELATED opposite-side span → files
+        out = m3.file_recalled_answer(
+            self.db, {"answer_text": "The request cache is enabled by default.",
+                      "sources": [{"card_id": "c0", "span": "The request cache is enabled by default in test."},
+                                  {"card_id": "c1", "span": "The door lock is disabled for maintenance."}],
+                      "recall_query": "cache default", "session_id": "s"},
+            memory_dir=self.mem, neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "filed")
+
+
 if __name__ == "__main__":
     unittest.main()

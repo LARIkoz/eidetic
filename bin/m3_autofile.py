@@ -299,7 +299,9 @@ def _antonym_contradicts(claim_words, claim_content_set, spans_tok):
     """COVERAGE-FREE, corroboration-aware antonym veto (LS4) — the antonym analog of
     the coverage-free negation veto, verbose-span-proof (a long cited chunk cannot
     dilute it). For each lexicon pair where the CLAIM asserts exactly ONE side: veto
-    iff a TOPICALLY-RELATED cited span (shares non-antonym content with the claim)
+    iff a TOPICALLY-RELATED cited span (shares content OTHER than THIS pair's own
+    forms with the claim — NS-B: subtract only the pair under test, NOT the flat
+    lexicon union, so a shared anchor that is itself a lexicon term still counts)
     carries the OPPOSITE side AND no related span carries the SAME side. The
     same-side corroboration keeps the legitimate multi-span case ("access" sentence
     with its access span + "refresh" sentence with its refresh span) filing; the
@@ -311,9 +313,10 @@ def _antonym_contradicts(claim_words, claim_content_set, spans_tok):
         if ca == cb:
             continue  # claim carries NEITHER or BOTH sides → no single-sided assertion
         claim_side, opp_side = (side_a, side_b) if ca else (side_b, side_a)
+        pair_forms = side_a | side_b  # subtract ONLY this pair (NS-B), not the flat union
         agree = oppose = False
         for sw, sc in spans_tok:
-            if not ((claim_content_set & sc) - _ANTONYM_FORMS):
+            if not ((claim_content_set & sc) - pair_forms):
                 continue  # topically unrelated cited span — never counts
             if sw & claim_side:
                 agree = True
