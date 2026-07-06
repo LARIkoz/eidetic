@@ -196,11 +196,23 @@ _ANTONYM_FORMS = frozenset().union(*[a | b for a, b in _ANTONYM_PAIRS]) if _ANTO
 _THOUSANDS_RE = re.compile(r"(?<=\d),(?=\d)")     # N1a: 9,999 → 9999
 _CODEISH_SPLIT_RE = re.compile(r"[/._+\-]")        # N1c: 8080/tcp → {8080, tcp}
 
-# A contradiction (polarity/antonym) veto fires only when the span covers ≥ this
-# fraction of the claim's non-antonym content — i.e. the span is the SAME statement
-# with the key word flipped, not merely a topical neighbor (avoids false-vetoing a
-# different claim's cited span in a multi-span answer, e.g. "access" vs "refresh").
+# The ANTONYM veto fires only when the CITED SPAN (ground truth, NOT attacker-
+# controlled) is otherwise the SAME statement — i.e. the claim covers ≥ this fraction
+# of the SPAN's non-antonym content. Keyed on SPAN coverage (not CLAIM coverage) so
+# padding the attacker-controlled claim with non-shared words CANNOT disarm the veto
+# (NS4): padding adds claim tokens absent from the span, leaving span-coverage
+# unchanged. Still avoids false-vetoing a different claim's cited span in a multi-span
+# answer ("access" vs "refresh"), where span-coverage is low.
 _CONTRADICTION_MIN = 0.75
+
+# Clause boundaries for PRECISE negation scoping (N2): a `not` in a SUBORDINATE
+# clause on non-overlapping content ("if not expired") must not veto a claim whose
+# MAIN predicate agrees with the span. A negation vetoes only when it sits in a
+# clause that shares content with the span — padding-proof (padding cannot move the
+# negation out of the shared-predicate clause).
+_CLAUSE_SPLIT_RE = re.compile(
+    r"[,;:]|\b(?:if|when|unless|while|because|although|though|since|whenever|"
+    r"whereas|provided|assuming|until|before|after)\b", re.I)
 
 # A1b — directive-imperative verbs: a claim whose FIRST word is one of these is a
 # short factual directive ("Delete all data.") and MUST be gated, not skipped.
@@ -292,6 +304,19 @@ def _antonym_cross(claim_words, span_words):
     return False
 
 
+def _negation_on_shared(text, shared_tokens):
+    """PRECISE negation scoping (N2): True iff a negation marker sits in a clause of
+    `text` that contains a content token SHARED with the span. A subclause negation on
+    non-overlapping content ("if not expired") returns False and does not veto;
+    padding cannot move the negation out of the shared-predicate clause (NS4)."""
+    if not shared_tokens:
+        return False
+    for clause in _CLAUSE_SPLIT_RE.split(text or ""):
+        if clause and _has_negation(clause) and (set(_content_tokens(clause)) & shared_tokens):
+            return True
+    return False
+
+
 def _coverage_pool(union_words):
     """N1c: the set a claim salient token may be covered by — each span word plus
     its code-ish sub-tokens (8080/tcp → {8080, tcp}), all thousands-normalized."""
@@ -312,10 +337,12 @@ def _overlap_support(claim, spans):
     token gate and need the OPT-IN cross-encoder (`register_support`). Bias to
     REJECT throughout.
 
-    Two phases:
-      1. CONTRADICTION (safety) — vs EVERY cited span that shares non-antonym
-         content: a polarity mismatch (`_has_negation` differs) OR an antonym cross
-         ⇒ support = 0 (the claim must not contradict ANY cited span).
+    Two phases — the CONTRADICTION veto is DECOUPLED from the SUPPORT decision so
+    attacker-controlled claim padding can never disarm it (NS4):
+      1. CONTRADICTION (safety) — per cited span: a NEGATION polarity mismatch that
+         scopes SHARED content (clause-precise, ungated) OR an ANTONYM cross where the
+         SPAN is otherwise the same statement (span-side coverage ≥ _CONTRADICTION_MIN,
+         non-paddable) ⇒ support = 0. The claim must not contradict ANY cited span.
       2. SUPPORT — salient-token coverage vs the UNION of ALL cited spans (N1b: a
          claim synthesized from several cited spans is the normal RAG case, so a
          salient token is covered if it appears in ANY span), then the content-word
@@ -328,24 +355,31 @@ def _overlap_support(claim, spans):
         return 1.0
     claim_neg = _has_negation(claim)
     claim_words = _word_set(claim)
+    claim_content_set = set(claim_tokens)
     claim_salient = _salient_set(claim)
-    # the claim's NON-antonym content — a contradiction veto only fires when a span
-    # is the SAME statement (covers most of this) with the polarity/antonym flipped,
-    # so a span that merely shares a few words (a different claim's source in a
-    # multi-span answer) never false-vetoes.
-    claim_nonanto = [t for t in claim_tokens if t not in _ANTONYM_FORMS]
 
-    # 1. CONTRADICTION vs any cited span that is otherwise the SAME statement.
+    # 1. CONTRADICTION veto — DECOUPLED from the (claim-controlled) support coverage
+    # so attacker padding cannot disarm it (NS4). Per cited span:
+    #   * NEGATION: unconditional + precise — a polarity mismatch vetoes iff the claim's
+    #     (or span's) negation scopes content SHARED with the span (clause-scoped),
+    #     never gated by claim coverage.
+    #   * ANTONYM: an antonym cross vetoes when the SPAN is otherwise the same statement
+    #     (span-side coverage ≥ _CONTRADICTION_MIN) — span-coverage is not paddable by
+    #     the claim, and stays precise against a different claim's span (multi-span).
     for span in spans:
         span_content = set(_content_tokens(span))
-        if not span_content or not claim_nonanto:
+        if not span_content:
             continue
-        cov = sum(1 for t in claim_nonanto if t in span_content) / len(claim_nonanto)
-        if cov < _CONTRADICTION_MIN:
-            continue  # not the same statement → not a contradiction
+        shared_nonanto = (claim_content_set & span_content) - _ANTONYM_FORMS
+        # NEGATION (precise, ungated) — maximally safe, padding-proof.
         if _has_negation(span) != claim_neg:
-            return 0.0
-        if _antonym_cross(claim_words, _word_set(span)):
+            neg_text = claim if claim_neg else span
+            if _negation_on_shared(neg_text, shared_nonanto):
+                return 0.0
+        # ANTONYM (span-side coverage gate — non-paddable, blocks multi-span FP).
+        span_nonanto = {t for t in span_content if t not in _ANTONYM_FORMS}
+        span_cov = (len(shared_nonanto) / len(span_nonanto)) if span_nonanto else 0.0
+        if span_cov >= _CONTRADICTION_MIN and _antonym_cross(claim_words, _word_set(span)):
             return 0.0
 
     # 2. SUPPORT — salient coverage vs the UNION, then best-of-span overlap.

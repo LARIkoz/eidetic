@@ -780,5 +780,76 @@ class N2SubclauseTest(R2Base):
         self.assertEqual(out["action"], "filed")
 
 
+# ===================== FIX R3 (re-audit NS4 HIGH regression) ================
+class NS4PaddingDisarmTest(R2Base):
+    """The contradiction/antonym veto must NEVER be disarmable by attacker-controlled
+    claim padding (NS4 reopened R1 A1a). Padding the claim with non-shared words must
+    not flip reject→file."""
+
+    PAD_NEG = ("The internal backend auth service does not issue access tokens "
+               "for authenticated user sessions.")
+    BARE_NEG = "The auth service does not issue access tokens for authenticated user sessions."
+    NEG_SPAN = "The auth service issues access tokens for authenticated user sessions."
+
+    PAD_ANTO = "The request cache is disabled by default in this deployment configuration."
+    ANTO_SPAN = "The request cache is enabled by default."
+
+    def test_padded_negation_rejected(self):
+        out = self._file(self.PAD_NEG, [self.NEG_SPAN])
+        self.assertEqual(out["action"], "rejected")
+        self.assertEqual(os.listdir(self.mem), [])
+
+    def test_bare_negation_still_rejected(self):
+        out = self._file(self.BARE_NEG, [self.NEG_SPAN])
+        self.assertEqual(out["action"], "rejected")
+
+    def test_padded_antonym_rejected(self):
+        out = self._file(self.PAD_ANTO, [self.ANTO_SPAN])
+        self.assertEqual(out["action"], "rejected")
+
+    def test_padding_does_not_flip_reject_to_file(self):
+        # both padded and un-padded reject → padding is inert against the veto
+        self.assertEqual(self._file(self.BARE_NEG, [self.NEG_SPAN])["action"], "rejected")
+        self.assertEqual(self._file(self.PAD_NEG, [self.NEG_SPAN])["action"], "rejected")
+
+    def test_revert_verify_claim_coverage_gate_launders_padded(self):
+        # REVERT-VERIFY: a scorer that gates the veto on CLAIM coverage (the R2 bug)
+        # FILES the padded negation (padding drops claim coverage below 0.75, disarming
+        # the veto); the unconditional/precise default REJECTS it.
+        def _claim_coverage_gated(claim, spans):
+            ct = [t for t in m3._content_tokens(claim) if t not in m3._ANTONYM_FORMS]
+            cw, cneg = m3._word_set(claim), m3._has_negation(claim)
+            for s in spans or []:
+                sc = set(m3._content_tokens(s))
+                if not ct:
+                    continue
+                cov = sum(1 for t in ct if t in sc) / len(ct)  # CLAIM coverage (paddable)
+                if cov < 0.75:
+                    continue
+                if m3._has_negation(s) != cneg or m3._antonym_cross(cw, m3._word_set(s)):
+                    return 0.0
+            return 1.0  # support assumed for the revert-verify
+        m3.register_support(_claim_coverage_gated)
+        try:
+            out = self._file(self.PAD_NEG, [self.NEG_SPAN])
+        finally:
+            m3.register_support(None)
+        self.assertEqual(out["action"], "filed", "revert-verify: claim-coverage gate launders padding")
+        # the real default rejects the same padded claim
+        self.assertEqual(self._file(self.PAD_NEG, [self.NEG_SPAN])["action"], "rejected")
+
+    def test_multi_span_answer_still_files(self):
+        # the legitimate multi-span answer (access sentence + refresh sentence, each
+        # with its own cited span) must STILL file — the veto is precise, not blanket.
+        out = m3.file_recalled_answer(
+            self.db, {"answer_text": "The auth service issues JWT access tokens for user sessions. "
+                                     "Refresh tokens rotate the JWT session daily.",
+                      "sources": [{"card_id": "c0", "span": "The auth service issues JWT access tokens for sessions."},
+                                  {"card_id": "c1", "span": "Refresh tokens rotate the JWT session for the auth service daily."}],
+                      "recall_query": "token policy", "session_id": "s"},
+            memory_dir=self.mem, neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "filed")
+
+
 if __name__ == "__main__":
     unittest.main()
