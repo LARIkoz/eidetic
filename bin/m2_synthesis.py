@@ -35,11 +35,14 @@ except Exception:  # pragma: no cover
     _OPLOG = None
 
 try:
-    from constants import M2_FANOUT, M2_RELATED_MIN, M2_RELATED_MIN_DEFAULT
+    from constants import (M2_FANOUT, M2_RELATED_MIN, M2_RELATED_MIN_DEFAULT,
+                           M2_RELEVANCE_MIN, M2_RELEVANCE_MIN_DEFAULT)
 except ImportError:  # pragma: no cover
     M2_FANOUT = 8
     M2_RELATED_MIN = {"multilingual": 0.78, "english": 0.62}
     M2_RELATED_MIN_DEFAULT = 0.78
+    M2_RELEVANCE_MIN = {"multilingual": 0.0, "english": 0.0}
+    M2_RELEVANCE_MIN_DEFAULT = 0.0
 
 AUTOMATED_ACTOR = "test"  # tier-2 for the supersession terminal (like M1)
 
@@ -228,11 +231,23 @@ def current_region_body(content):
 
 
 # --- editability / selection (FR-1, FR-2) ------------------------------------
+# M2.1 F2: cards M2 must NEVER edit even though they are "managed" for the
+# confidence lifecycle — `feedback` behavioral rules inject into EVERY session's
+# context, and `todo`/`handoff` are transient session state. M2 only revises DURABLE
+# knowledge (project/finding/synthesis). This is STRICTER than confidence.is_managed
+# (which stays as-is — feedback still carries a lifecycle), applied at M2's edit gate.
+_M2_TRANSIENT_KINDS = frozenset({"todo", "handoff"})
+
+
 def is_editable(rec):
-    """A page is editable ONLY if it is a MANAGED page (§2.3): feedback, or
-    agent-extracted non-exempt project/finding/synthesis. user + exempt
-    (reference/concept/entity/imported) are read-only context (FR-2)."""
-    if (rec.get("type") or "").strip().lower() == "user":
+    """A page is editable ONLY if it is a MANAGED, DURABLE page: agent-extracted
+    non-exempt project/finding/synthesis. user + exempt (reference/concept/entity/
+    imported, FR-2) are read-only context; and — M2.1 — `feedback` (behavioral rule,
+    injected every session) and `todo`/`handoff` (transient) are ALSO never edited."""
+    t = (rec.get("type") or "").strip().lower()
+    if t in ("user", "feedback"):
+        return False
+    if (rec.get("card_kind") or "").strip().lower() in _M2_TRANSIENT_KINDS:
         return False
     return _C.is_managed(rec.get("type"), rec.get("source"), rec.get("card_kind"))
 
@@ -247,6 +262,43 @@ def _profile():
 
 def related_min():
     return M2_RELATED_MIN.get((_profile() or "").strip().lower(), M2_RELATED_MIN_DEFAULT)
+
+
+def relevance_min():
+    return M2_RELEVANCE_MIN.get((_profile() or "").strip().lower(), M2_RELEVANCE_MIN_DEFAULT)
+
+
+# --- M2.1 F1: the relevance gate (cross-encoder confirmation on the EDIT) -----
+def _default_relevance(a_text, b_text):
+    """Default relevance scorer: the S5 cross-encoder logit `engine.rerank(a,[b])[0]`.
+    FAIL-CLOSED: returns None if the reranker is unavailable / SOFT-returns [] / errors
+    — the caller then SKIPS the edit (never cosine-only). Because the reranker is
+    absent on some hosts (ONNX missing), M2 is safe-by-default: no reranker ⇒ no edits."""
+    try:
+        import engine
+        s = engine.rerank(a_text or "", [b_text or ""])
+    except Exception:
+        return None
+    if not s:
+        return None
+    try:
+        return float(s[0])
+    except (TypeError, ValueError):
+        return None
+
+
+_ACTIVE_RELEVANCE = None
+
+
+def register_relevance(fn):
+    """Install a relevance scorer (e.g. a provisioned reranker, or a test mock).
+    None ⇒ the built-in `_default_relevance` (engine.rerank, fail-closed)."""
+    global _ACTIVE_RELEVANCE
+    _ACTIVE_RELEVANCE = fn
+
+
+def active_relevance():
+    return _ACTIVE_RELEVANCE or _default_relevance
 
 
 def select_related(card_path, neighbors):
@@ -281,20 +333,40 @@ def _provenance_line(trigger, score):
             f"· {_iso_date()} · score={score:.3f}_")
 
 
-def _salient_claim(rec, limit=100):
-    """The card's first meaningful line (its salient claim/title), stripped of
-    markdown heading/list punctuation, sentinels and evidence — deterministic, so
-    the consolidation body is deterministic (⇒ FR-8 idempotence)."""
+def _clean_oneliner(s, limit=90):
+    """Strip ALL markdown artifacts (bold/italic/code/strike, leading heading/list/
+    quote markers, wiki/link brackets), collapse whitespace, and cap at a WORD
+    boundary ≤ limit (never a mid-word cut, no trailing emphasis/punctuation)."""
+    s = re.sub(r"\*\*|__|~~|`", "", s or "")            # bold / code / strike
+    s = re.sub(r"(?<![A-Za-z0-9])[*_](?![A-Za-z0-9])", "", s)  # stray emphasis
+    s = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", s)     # [text](url) → text
+    s = s.replace("[[", "").replace("]]", "")           # wikilink brackets
+    s = re.sub(r"^\s*[#>\-*•\d.\)]+\s*", "", s)          # leading heading/list/quote
+    s = " ".join(s.split())                              # collapse whitespace
+    if len(s) <= limit:
+        return s.rstrip(" .,;:—-")
+    cut = s[:limit].rsplit(" ", 1)[0].rstrip(" .,;:—-")  # back off to a word boundary
+    return (cut or s[:limit]) + "…"
+
+
+def _salient_claim(rec, limit=90):
+    """The card's salient claim: the first meaningful body line, CLEANED of all
+    markdown; falls back to the card name/slug when the first line is noise. The
+    output is markdown-free, whitespace-collapsed, word-boundary-capped, and
+    deterministic (⇒ the consolidation body is deterministic, FR-8 idempotence)."""
     for raw in (rec.get("text") or "").splitlines():
         s = raw.strip()
-        if not s or s.startswith("<!--") or s.startswith("|"):
+        if not s or s.startswith("<!--") or s.startswith("|") or s.startswith("---"):
             continue
-        s = s.lstrip("#").strip().lstrip("-*> ").strip().strip("_*`")
-        low = s.lower()
-        if not s or low.startswith("## evidence") or low.startswith("m2 synthesis"):
+        low = s.lstrip("#").strip().lower()
+        if low.startswith("## evidence") or low.startswith("m2 synthesis"):
             continue
-        return " ".join(s.split())[:limit]
-    return rec.get("slug") or "(no summary)"
+        cleaned = _clean_oneliner(s, limit)
+        if len(cleaned) >= 3:
+            return cleaned
+    # first line was noise → prefer the card name, else slug
+    name = (rec.get("name") or "").strip()
+    return _clean_oneliner(name, limit) if name else (rec.get("slug") or "(no summary)")
 
 
 def _default_synthesis_body(trigger, target, provenance):
@@ -328,6 +400,7 @@ OP_SUPERSESSION = "supersession"
 OP_SUPERSESSION_SUGGESTION = "supersession_suggestion"
 OP_CONTRADICTION_DEFERRAL = "contradiction_deferral"
 OP_REGION_BROKEN = "region_broken"  # F1: user-broken region skipped (surfaced once)
+OP_RELEVANCE_SKIPPED = "relevance_skipped"  # M2.1: below the reranker relevance gate
 
 
 def _log_path_for(index_db_path):
@@ -499,7 +572,8 @@ def _atomic_write(path, content):
 
 # --- the pipeline (FR-1..FR-9) -----------------------------------------------
 def process_trigger(index_db_path, trigger_path, meta, body, *, neighbors,
-                    confirmer=None, supersedes=None, synth_body_fn=None):
+                    confirmer=None, supersedes=None, synth_body_fn=None,
+                    relevance_fn=None):
     """Run M2 for one trigger T against its `neighbors`. Returns outcome dicts.
     DARK-SAFE (FR-9): a complete no-op unless EIDETIC_CONFIDENCE_EVENTS is on AND
     the M2 activation flag is set (dormant by default)."""
@@ -508,24 +582,40 @@ def process_trigger(index_db_path, trigger_path, meta, body, *, neighbors,
     confirmer = confirmer or _M1.production_confirmer
     supersedes = supersedes or _default_supersedes
     synth_body_fn = synth_body_fn or _default_synthesis_body
+    relevance_fn = relevance_fn or active_relevance()
+    floor = relevance_min()
     T = _M1._record(trigger_path, meta, body)
     outcomes = []
 
-    # Resolve the selected set once, classify editability (FR-2), and precompute the
-    # editable pages' salient claims so each page's consolidation can reference the
-    # co-related set (D1). Deterministic order preserved from select_related.
+    # Resolve the selected set once and classify editability (FR-2).
     selected = []
     for path, score in select_related(trigger_path, neighbors):
         P = _M1._record_from_file(path)
         if P is not None:
             selected.append((path, score, P))
-    editable_claims = [{"slug": P["slug"], "salient": _salient_claim(P)}
-                       for _p, _s, P in selected if is_editable(P)]
+
+    # M2.1 F1: the RELEVANCE gate. The cosine gate (M2_RELATED_MIN) is recall-only;
+    # a cross-encoder must confirm P is GENUINELY related to T before M2 edits it.
+    # Compute per editable neighbor (fail-closed None) and admit only those ≥ floor;
+    # the consolidation body then references ONLY relevance-passed co-related pages.
+    def _rel(P):
+        try:
+            return relevance_fn(T.get("text", ""), P.get("text", ""))
+        except Exception:
+            return None
+    rel_by_slug = {}
+    editable_claims = []
+    for _p, _s, P in selected:
+        if is_editable(P):
+            r = _rel(P)
+            rel_by_slug[P["slug"]] = r
+            if r is not None and r >= floor:
+                editable_claims.append({"slug": P["slug"], "salient": _salient_claim(P)})
 
     for path, score, P in selected:
         if not is_editable(P):
             outcomes.append({"path": path, "action": "read_only_context"})
-            continue  # FR-2: user/exempt never edited, never event'd
+            continue  # FR-2: user/exempt/feedback/transient never edited, never event'd
 
         # FR-3: a true contradiction is NEVER resolved by overwriting text — hand
         # the pair to M1's contradicted path (idempotent; M1 owns the emit).
@@ -549,6 +639,14 @@ def process_trigger(index_db_path, trigger_path, meta, body, *, neighbors,
         if is_sup:
             act = _apply_supersession(index_db_path, T, P)
             outcomes.append({"path": path, "action": act})
+            continue
+
+        # M2.1 F1: relevance gate on the EDIT. FAIL-CLOSED — no reranker / None /
+        # below floor ⇒ SKIP (no synthesis, no event), surfaced once (deduped).
+        r = rel_by_slug.get(P["slug"])
+        if r is None or r < floor:
+            _oplog_once(index_db_path, OP_RELEVANCE_SKIPPED, P["slug"], trigger=T)
+            outcomes.append({"path": path, "action": "relevance_skipped", "rel": r})
             continue
 
         # FR-4/FR-5/FR-6: revise the synthesis region + one `observed` event. The
@@ -616,7 +714,8 @@ def _edit_page(index_db_path, path, trigger, target_slug, score, synth_body_fn, 
 
 
 # --- ingest hook (FR-1/FR-9) -------------------------------------------------
-def run_on_ingest(conn, index_db_path, changed_paths, confirmer=None, supersedes=None):
+def run_on_ingest(conn, index_db_path, changed_paths, confirmer=None, supersedes=None,
+                  relevance_fn=None):
     """Ingest hook. Dark-safe: no-op unless EIDETIC_CONFIDENCE_EVENTS is on. Runs
     AFTER M1 in run_incremental so M1 owns contradictions and M2 defers to it.
     Never raises into the indexer."""
@@ -639,6 +738,7 @@ def run_on_ingest(conn, index_db_path, changed_paths, confirmer=None, supersedes
                                  "source": rec["source"],
                                  "last_verified": rec["last_verified"]},
                                 rec["text"], neighbors=hits,
-                                confirmer=confirmer, supersedes=supersedes)
+                                confirmer=confirmer, supersedes=supersedes,
+                                relevance_fn=relevance_fn)
         except Exception as e:
             print(f"WARN: M2 skipped {path}: {e}", file=sys.stderr)

@@ -153,3 +153,19 @@ M1_CANDIDATE_MIN_DEFAULT = 0.58
 M2_FANOUT = 8
 M2_RELATED_MIN = {"multilingual": 0.78, "english": 0.62}
 M2_RELATED_MIN_DEFAULT = 0.78
+
+# M2.1 relevance gate (spec-m2-synthesis value fix). The bi-encoder cosine floor
+# (M2_RELATED_MIN) is a cheap RECALL gate — e5-large's cosine band is high+narrow,
+# so short, stylistically-similar-but-UNRELATED cards score spuriously high (real
+# dogfood: `feedback-no-clutter…` ↔ `never-suggest-topping-up…` cosine 0.868, yet
+# semantically unrelated). M1 is clean because a cross-encoder confirms; M2 had none
+# — that asymmetry was the bug. M2_RELEVANCE_MIN is the SECOND gate: the S5
+# cross-encoder (jina-reranker-v2) relevance logit, checked on the EDIT before M2
+# touches a page. Owner calibration (his box; reranker BROKEN on chabrec → ONNX
+# missing, so tests MOCK it): on 16 labeled real pairs the 0.0 threshold admits 0/8
+# spurious and 5/8 strong-related (the 3 dropped "related" are weak topic-tag
+# adjacency — correctly rejected). Precision-first: a missed synthesis is safe, a
+# spurious edit pollutes. Profile-aware like M2_RELATED_MIN. FAIL-CLOSED in code: no
+# reranker / None / below floor ⇒ NO edit (never cosine-only).
+M2_RELEVANCE_MIN = {"multilingual": 0.0, "english": 0.0}
+M2_RELEVANCE_MIN_DEFAULT = 0.0

@@ -53,10 +53,15 @@ class M2Base(unittest.TestCase):
         self.db = os.path.join(self.tmp, "db", "index.db")
         os.environ["EIDETIC_CONFIDENCE_EVENTS"] = "on"
         os.environ["EIDETIC_M2_SYNTHESIS"] = "on"  # M2 dormant-by-default; opt in
+        # M2.1: the relevance gate requires a reranker; the reranker is unprovisioned
+        # on this host, so MOCK it admit-all by default (the real quality dogfood runs
+        # on the owner's box). F1 tests override with explicit low/None scorers.
+        m2.register_relevance(lambda a, b: 1.0)
 
     def tearDown(self):
         os.environ.pop("EIDETIC_CONFIDENCE_EVENTS", None)
         os.environ.pop("EIDETIC_M2_SYNTHESIS", None)
+        m2.register_relevance(None)
         if hasattr(self, "_saved_nvd"):
             m1.neighbors_via_door = self._saved_nvd
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -761,6 +766,131 @@ class D5LegATest(M2Base, TriggerMixin):
         # provenance + consolidation present, user bytes intact
         self.assertIn("[[auth-trigger]]", m2.current_region_body(self._read(a)))
         self.assertIn("The auth service issues JWT access tokens", self._read(a))
+
+
+# ===================== M2.1 — relevance-gated synthesis =====================
+class M21RelevanceGateTest(M2Base, TriggerMixin):
+    def _run(self, relevance_fn):
+        p = self._write("target.md", _card("target-page", source="agent-extracted",
+                                            body="A managed durable knowledge page."))
+        tp, tm = self._trig()
+        out = m2.process_trigger(self.db, tp, tm, "trigger claim text",
+                                 neighbors=[{"score": 0.9, "path": p}],
+                                 confirmer=NO, supersedes=NOSUP, relevance_fn=relevance_fn)
+        return p, out
+
+    def _oplog_count(self, verb):
+        log = os.path.join(os.path.dirname(os.path.dirname(self.db)), "log.md")
+        return open(log, encoding="utf-8").read().count(f"op={verb}") if os.path.exists(log) else 0
+
+    def test_gate_admits_when_relevant(self):
+        p, out = self._run(lambda a, b: 0.5)   # ≥ 0.0 floor
+        self.assertEqual(out[0]["action"], "edited")
+        self.assertIn("eidetic:synthesis:begin", self._read(p))
+
+    def test_gate_rejects_when_irrelevant(self):
+        p, out = self._run(lambda a, b: -1.0)  # < 0.0 floor → spurious cross-link
+        self.assertEqual(out[0]["action"], "relevance_skipped")
+        self.assertNotIn("eidetic:synthesis:begin", self._read(p))  # NO edit
+        self.assertEqual(self._events(p), [])                       # NO event
+        self.assertEqual(self._oplog_count("relevance_skipped"), 1)  # surfaced once
+
+    def test_gate_dedups_relevance_skips(self):
+        p = self._write("t.md", _card("t-page", source="agent-extracted", body="body"))
+        tp, tm = self._trig()
+        for _ in range(4):
+            m2.process_trigger(self.db, tp, tm, "trig", neighbors=[{"score": 0.9, "path": p}],
+                               confirmer=NO, supersedes=NOSUP, relevance_fn=lambda a, b: -2.0)
+        self.assertEqual(self._oplog_count("relevance_skipped"), 1)  # deduped, no growth
+
+    def test_fail_closed_on_none(self):
+        # relevance_fn returns None (reranker unavailable) → NO edit (never cosine-only)
+        p, out = self._run(lambda a, b: None)
+        self.assertEqual(out[0]["action"], "relevance_skipped")
+        self.assertNotIn("eidetic:synthesis:begin", self._read(p))
+        self.assertEqual(self._events(p), [])
+
+    def test_default_reranker_absent_is_fail_closed(self):
+        # with the REAL default scorer (engine.rerank — unprovisioned here) M2 edits
+        # NOTHING: safe-by-default, no reranker ⇒ no synthesis.
+        m2.register_relevance(None)  # undo the M2Base admit-all mock
+        p = self._write("d.md", _card("d-page", source="agent-extracted", body="body"))
+        tp, tm = self._trig()
+        out = m2.process_trigger(self.db, tp, tm, "t", neighbors=[{"score": 0.9, "path": p}],
+                                 confirmer=NO, supersedes=NOSUP)
+        self.assertEqual(out[0]["action"], "relevance_skipped")
+        self.assertNotIn("eidetic:synthesis:begin", self._read(p))
+
+    def test_revert_verify_gate_dropped_edits_spurious(self):
+        # REVERT-VERIFY: neuter the gate → a below-floor pair gets edited → the guard
+        # is load-bearing. (Simulated by a scorer the real code would reject.)
+        p = self._write("s.md", _card("s-page", source="agent-extracted", body="body"))
+        tp, tm = self._trig()
+        # with the gate: -1.0 rejects
+        out = m2.process_trigger(self.db, tp, tm, "t", neighbors=[{"score": 0.9, "path": p}],
+                                 confirmer=NO, supersedes=NOSUP, relevance_fn=lambda a, b: -1.0)
+        self.assertEqual(out[0]["action"], "relevance_skipped")
+        # a cosine-only strawman (ignore the score) WOULD edit — proven live in the
+        # code revert-verify (see M2-PROGRESS §M2.1); here assert the gate discriminates.
+        out2 = m2.process_trigger(self.db, tp, tm, "t", neighbors=[{"score": 0.9, "path": p}],
+                                  confirmer=NO, supersedes=NOSUP, relevance_fn=lambda a, b: 0.01)
+        self.assertEqual(out2[0]["action"], "edited")
+
+
+# --- M2.1 F2: exempt behavioral + transient cards ----------------------------
+class M21ExemptTest(M2Base, TriggerMixin):
+    def _neighbor_out(self, card_text, supersedes=SUP):
+        p = self._write("n.md", card_text)
+        tp, tm = self._trig()
+        return m2.process_trigger(self.db, tp, tm, "t", neighbors=[{"score": 0.95, "path": p}],
+                                  confirmer=NO, supersedes=supersedes, relevance_fn=lambda a, b: 5.0)
+
+    def test_feedback_never_edited(self):
+        out = self._neighbor_out(_card("rule-x", type_="feedback", source="agent-extracted",
+                                       body="Always do the thing."))
+        self.assertEqual(out[0]["action"], "read_only_context")
+
+    def test_todo_never_edited(self):
+        out = self._neighbor_out(_card("todo-x", type_="project", source="agent-extracted",
+                                       body="Next: finish the thing.", extra_fm="card_kind: todo"))
+        self.assertEqual(out[0]["action"], "read_only_context")
+
+    def test_handoff_never_edited(self):
+        out = self._neighbor_out(_card("handoff-x", type_="project", source="agent-extracted",
+                                       body="Session handoff notes.", extra_fm="card_kind: handoff"))
+        self.assertEqual(out[0]["action"], "read_only_context")
+
+    def test_durable_project_still_editable(self):
+        out = self._neighbor_out(_card("proj-x", type_="project", source="agent-extracted",
+                                       body="Durable project knowledge."), supersedes=NOSUP)
+        self.assertEqual(out[0]["action"], "edited")
+
+
+# --- M2.1 F3: clean salient ---------------------------------------------------
+class M21SalientTest(M2Base):
+    def test_messy_line_cleaned(self):
+        msg = "`reddit_frontier.py` `novelty_pass` is O(N²) over ~1000 threads.** Found"
+        out = m2._salient_claim({"text": msg + "\n", "name": "finding-perf", "slug": "finding-perf"})
+        self.assertNotIn("**", out)
+        self.assertNotIn("`", out)
+        self.assertLessEqual(len(out), 90)
+        self.assertFalse(out.endswith("**"))
+        self.assertNotRegex(out, r"\w…\w")  # no mid-word ellipsis cut
+
+    def test_bold_wrapped_line(self):
+        out = m2._clean_oneliner("**Always run the gateway tests** before merge")
+        self.assertEqual(out, "Always run the gateway tests before merge")
+
+    def test_word_boundary_cap(self):
+        long = "word " * 40
+        out = m2._clean_oneliner(long, limit=30)
+        self.assertLessEqual(len(out), 31)          # ≤ limit + ellipsis
+        self.assertTrue(out.endswith("…"))
+        self.assertNotIn("wor…", out)               # never a mid-word cut
+
+    def test_noise_first_line_falls_back_to_name(self):
+        out = m2._salient_claim({"text": "|table|header|\n", "name": "the-card-name", "slug": "s"})
+        self.assertEqual(out, "the-card-name")
 
 
 # --- FIX §R1 / F1: user-broken region → bounded skip (A1.7) ------------------
