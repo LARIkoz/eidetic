@@ -598,19 +598,26 @@ def process_trigger(index_db_path, trigger_path, meta, body, *, neighbors,
     # a cross-encoder must confirm P is GENUINELY related to T before M2 edits it.
     # Compute per editable neighbor (fail-closed None) and admit only those ≥ floor;
     # the consolidation body then references ONLY relevance-passed co-related pages.
+    # M2.1-R1: the memo + the consolidation set are keyed by PATH (unique), NOT slug
+    # — `select_related` dedups by path but slugs collide (two distinct files can share
+    # a `name:`), so slug-keying would let a below-floor page borrow a same-slug page's
+    # score (a spurious edit) or wrongly skip a relevant one. The `[[slug]]` DISPLAY
+    # text stays slug-based (cosmetic); every relevance DECISION + body-inclusion is
+    # per-path.
     def _rel(P):
         try:
             return relevance_fn(T.get("text", ""), P.get("text", ""))
         except Exception:
             return None
-    rel_by_slug = {}
+    rel_by_path = {}
     editable_claims = []
-    for _p, _s, P in selected:
+    for p_path, _s, P in selected:
         if is_editable(P):
             r = _rel(P)
-            rel_by_slug[P["slug"]] = r
+            rel_by_path[p_path] = r
             if r is not None and r >= floor:
-                editable_claims.append({"slug": P["slug"], "salient": _salient_claim(P)})
+                editable_claims.append({"path": p_path, "slug": P["slug"],
+                                        "salient": _salient_claim(P)})
 
     for path, score, P in selected:
         if not is_editable(P):
@@ -643,15 +650,17 @@ def process_trigger(index_db_path, trigger_path, meta, body, *, neighbors,
 
         # M2.1 F1: relevance gate on the EDIT. FAIL-CLOSED — no reranker / None /
         # below floor ⇒ SKIP (no synthesis, no event), surfaced once (deduped).
-        r = rel_by_slug.get(P["slug"])
+        # M2.1-R1: look up THIS path's own reranker score (never a same-slug page's).
+        r = rel_by_path.get(path)
         if r is None or r < floor:
             _oplog_once(index_db_path, OP_RELEVANCE_SKIPPED, P["slug"], trigger=T)
             outcomes.append({"path": path, "action": "relevance_skipped", "rel": r})
             continue
 
         # FR-4/FR-5/FR-6: revise the synthesis region + one `observed` event. The
-        # consolidation references the co-related editable pages (exclude self).
-        related = [e for e in editable_claims if e["slug"] != P["slug"]]
+        # consolidation references the co-related relevance-passed pages (exclude self
+        # BY PATH, so a same-slug distinct page is handled independently).
+        related = [e for e in editable_claims if e["path"] != path]
         outcomes.append(_edit_page(index_db_path, path, T, P["slug"], score,
                                    synth_body_fn, related))
     return outcomes

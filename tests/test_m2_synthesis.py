@@ -893,6 +893,42 @@ class M21SalientTest(M2Base):
         self.assertEqual(out, "the-card-name")
 
 
+# --- M2.1-R1: relevance memo keyed by PATH, not slug -------------------------
+class M21R1PathKeyTest(M2Base, TriggerMixin):
+    ONTOPIC = lambda self, a, b: 5.0 if "ONTOPIC" in b else -5.0  # noqa: E731
+
+    def _run(self, irrelevant_first):
+        # two DISTINCT files sharing name: shared-name (⇒ same slug), one relevant
+        # (ONTOPIC, +5) and one irrelevant (OFFTOPIC, −5), both neighbors of a trigger.
+        irr = self._write("irr.md", _card("shared-name", source="agent-extracted",
+                                           body="OFFTOPIC filler text"))
+        rel = self._write("rel.md", _card("shared-name", source="agent-extracted",
+                                           body="ONTOPIC content here"))
+        tp, tm = self._trig()
+        si, sr = (0.95, 0.90) if irrelevant_first else (0.90, 0.95)  # controls sort order
+        out = m2.process_trigger(self.db, tp, tm, "trigger body",
+                                 neighbors=[{"score": si, "path": irr}, {"score": sr, "path": rel}],
+                                 confirmer=NO, supersedes=NOSUP, relevance_fn=self.ONTOPIC)
+        by = {o["path"]: o["action"] for o in out}
+        return irr, rel, by
+
+    def _assert_path_keyed(self, irr, rel, by):
+        # below-floor PATH is skipped (never borrows the same-slug page's score)
+        self.assertEqual(by[irr], "relevance_skipped")
+        self.assertNotIn("eidetic:synthesis:begin", self._read(irr))
+        # above-floor PATH is edited
+        self.assertEqual(by[rel], "edited")
+        self.assertIn("eidetic:synthesis:begin", self._read(rel))
+        # the below-floor page never appears in the edited page's consolidation body
+        self.assertNotIn("[[shared-name]]", m2.current_region_body(self._read(rel)))
+
+    def test_r1_irrelevant_first(self):
+        self._assert_path_keyed(*self._run(irrelevant_first=True))
+
+    def test_r1_relevant_first(self):
+        self._assert_path_keyed(*self._run(irrelevant_first=False))
+
+
 # --- FIX §R1 / F1: user-broken region → bounded skip (A1.7) ------------------
 class R1BrokenRegionTest(M2Base, TriggerMixin):
     def _oplog_count(self, verb):
