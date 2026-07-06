@@ -669,5 +669,116 @@ class A3EmptyAnswerOplogTest(M3Base):
         self.assertEqual(os.listdir(self.mem), [])
 
 
+# ===================== FIX R2 (re-audit N4 / N1 / N2) =======================
+class R2Base(M3Base):
+    def _file(self, answer, spans, query="q"):
+        return m3.file_recalled_answer(
+            self.db, _prov(answer, spans, query=query), memory_dir=self.mem,
+            neighbors_fn=self._no_neighbors)
+
+
+# --- N4 (MED): antonym-opposite claims still file → now REJECT ---------------
+class N4AntonymTest(R2Base):
+    def test_enabled_disabled_rejected(self):
+        out = self._file("The request cache is disabled by default for all clients.",
+                         ["The request cache is enabled by default for all clients."])
+        self.assertEqual(out["action"], "rejected")
+        self.assertEqual(os.listdir(self.mem), [])
+
+    def test_refresh_access_rejected(self):
+        out = self._file("The auth service issues refresh tokens for user sessions.",
+                         ["The auth service issues access tokens for user sessions."])
+        self.assertEqual(out["action"], "rejected")
+
+    def test_allow_deny_rejected(self):
+        out = self._file("The firewall rule allows inbound traffic on the subnet.",
+                         ["The firewall rule denies inbound traffic on the subnet."])
+        self.assertEqual(out["action"], "rejected")
+
+    def test_same_side_still_files(self):
+        # NOT an antonym cross (both "enabled") → supported paraphrase files
+        out = self._file("The request cache is enabled by default for all clients.",
+                         ["The request cache is enabled by default for every client."])
+        self.assertEqual(out["action"], "filed")
+
+    def test_revert_verify_drop_lexicon_files_the_opposite(self):
+        # REVERT-VERIFY: empty the antonym lexicon → the disabled/enabled opposite FILES
+        saved = m3._ANTONYM_PAIRS
+        m3._ANTONYM_PAIRS = []
+        try:
+            out = self._file("The request cache is disabled by default for all clients.",
+                             ["The request cache is enabled by default for all clients."])
+        finally:
+            m3._ANTONYM_PAIRS = saved
+        self.assertEqual(out["action"], "filed", "revert-verify: no lexicon launders the antonym")
+
+
+# --- N1b (MED): legitimately multi-span-supported answer now FILES -----------
+class N1bMultiSpanTest(R2Base):
+    TWO_SPANS = ["The configuration database is PostgreSQL for the app.",
+                 "It listens on port 5432 for all clients."]
+
+    def test_two_span_synthesis_files(self):
+        # entity in span 1, number in span 2, BOTH cited → union coverage → files
+        out = self._file("PostgreSQL listens on port 5432.", self.TWO_SPANS)
+        self.assertEqual(out["action"], "filed")
+
+    def test_salient_in_no_span_still_rejects(self):
+        # safety preserved: a salient token in NONE of the cited spans → reject
+        out = self._file("MongoDB listens on port 5432.", self.TWO_SPANS)
+        self.assertEqual(out["action"], "rejected")
+
+    def test_revert_verify_per_span_coverage_rejects_two_span(self):
+        # REVERT-VERIFY: a per-span (pre-R2) coverage scorer rejects the two-span answer;
+        # the union default files it → union coverage is the load-bearing change.
+        def _per_span(claim, spans):
+            ct = m3._content_tokens(claim)
+            if not ct:
+                return 1.0
+            csal = m3._salient_set(claim)
+            best = 0.0
+            for s in spans or []:
+                sw = {w.lower() for w in m3._WORD_RE.findall(s)}
+                if not csal.issubset(sw):
+                    continue
+                ss = set(m3._content_tokens(s))
+                best = max(best, sum(1 for t in ct if t in ss) / len(ct))
+            return best
+        m3.register_support(_per_span)
+        try:
+            out = self._file("PostgreSQL listens on port 5432.", self.TWO_SPANS)
+        finally:
+            m3.register_support(None)
+        self.assertEqual(out["action"], "rejected", "revert-verify: per-span coverage rejects RAG synthesis")
+
+
+# --- N1a/N1c (LOW): formatting-mismatch false-rejects fixed ------------------
+class N1FormattingTest(R2Base):
+    def test_thousands_separator_files(self):
+        out = self._file("The datastore listens on port 9999 for clients.",
+                         ["The datastore listens on port 9,999 for clients."])
+        self.assertEqual(out["action"], "filed")
+
+    def test_codeish_subtoken_files(self):
+        out = self._file("The datastore listens on port 8080 for clients.",
+                         ["The datastore listens on port 8080/tcp for clients."])
+        self.assertEqual(out["action"], "filed")
+
+
+# --- N2 (LOW): subordinate-clause negation — mitigated by the same-statement gate -
+class N2SubclauseTest(R2Base):
+    def test_subclause_negation_not_false_vetoed(self):
+        # The whole-sentence polarity read COULD over-reject a negation in a
+        # subordinate clause; the _CONTRADICTION_MIN "same-statement" coverage gate
+        # mitigates it — the span here is NOT the same statement (coverage < 0.75), so
+        # the polarity veto does not fire and this legitimately-supported answer FILES.
+        # DECLARED residual (M3-PROGRESS Fix R2): if a span WERE nearly identical to a
+        # subclause-negated claim it would still over-reject — bias-safe (a human can
+        # still promote), and we do NOT add a clause parser.
+        out = self._file("The token, if not expired, is accepted by the gateway.",
+                         ["The token is accepted by the gateway when valid."])
+        self.assertEqual(out["action"], "filed")
+
+
 if __name__ == "__main__":
     unittest.main()

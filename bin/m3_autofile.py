@@ -156,6 +156,52 @@ _WORD_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_./+-]*[A-Za-z0-9])?")
 # only faithful polarity read). `n't` catches doesn't/isn't/won't/can't/…
 _NEG_WORD_RE = re.compile(r"\b(not|no|never|without|cannot|none|neither|nor)\b", re.I)
 
+# N4 — curated lexicon of common TECHNICAL antonyms. A pure token gate CANNOT
+# catch arbitrary lexical-antonym contradictions (that needs the opt-in
+# cross-encoder); this catches the COMMON ones and the rest is a DECLARED residual
+# (see M3-PROGRESS Fix R2 Breaks-when). Each side lists surface forms so a claim
+# asserting one side over a span asserting the other (over otherwise-overlapping
+# content) fails-closed. NOT a frozenset so a test can revert-verify by emptying it.
+_ANTONYM_PAIRS = [
+    ({"enabled", "enable", "enables", "enabling"},
+     {"disabled", "disable", "disables", "disabling"}),
+    ({"allow", "allows", "allowed", "allowing"},
+     {"deny", "denies", "denied", "denying", "block", "blocks", "blocked", "blocking"}),
+    ({"access"}, {"refresh"}),
+    ({"read", "reads", "reading", "readonly"},
+     {"write", "writes", "writing", "writable"}),
+    ({"sync", "synchronous", "synchronously"},
+     {"async", "asynchronous", "asynchronously"}),
+    ({"primary"}, {"replica", "secondary", "standby"}),
+    ({"on"}, {"off"}),
+    ({"true"}, {"false"}),
+    ({"valid"}, {"invalid"}),
+    ({"accept", "accepts", "accepted", "accepting"},
+     {"reject", "rejects", "rejected", "rejecting"}),
+    ({"grant", "grants", "granted", "granting"},
+     {"revoke", "revokes", "revoked", "revoking"}),
+    ({"open", "opens", "opened"}, {"closed", "close", "closes"}),
+    ({"success", "succeeds", "succeeded", "successful"},
+     {"failure", "fails", "failed", "failing"}),
+    ({"inbound"}, {"outbound"}),
+    ({"encrypt", "encrypts", "encrypted", "encryption"},
+     {"decrypt", "decrypts", "decrypted", "decryption"}),
+]
+
+# The flat set of all antonym surface forms — excluded from "shared content" so the
+# overlap that licenses an antonym veto is OTHER (non-antonym) content (N4 "over
+# otherwise-overlapping content").
+_ANTONYM_FORMS = frozenset().union(*[a | b for a, b in _ANTONYM_PAIRS]) if _ANTONYM_PAIRS else frozenset()
+
+_THOUSANDS_RE = re.compile(r"(?<=\d),(?=\d)")     # N1a: 9,999 → 9999
+_CODEISH_SPLIT_RE = re.compile(r"[/._+\-]")        # N1c: 8080/tcp → {8080, tcp}
+
+# A contradiction (polarity/antonym) veto fires only when the span covers ≥ this
+# fraction of the claim's non-antonym content — i.e. the span is the SAME statement
+# with the key word flipped, not merely a topical neighbor (avoids false-vetoing a
+# different claim's cited span in a multi-span answer, e.g. "access" vs "refresh").
+_CONTRADICTION_MIN = 0.75
+
 # A1b — directive-imperative verbs: a claim whose FIRST word is one of these is a
 # short factual directive ("Delete all data.") and MUST be gated, not skipped.
 _DIRECTIVE_VERBS = frozenset("""
@@ -222,34 +268,97 @@ def _is_material(claim):
 
 
 # --- support scorer (LLM-free by default; a cross-encoder may be registered) --
+def _strip_thousands(text):
+    """N1a: drop thousands separators between digits (9,999 → 9999) so a formatting
+    difference on a number does not false-reject an otherwise-supported claim."""
+    return _THOUSANDS_RE.sub("", text or "")
+
+
+def _word_set(text):
+    """Lowercased identifier-preserving word set."""
+    return {m.group(0).lower() for m in _WORD_RE.finditer(text or "")}
+
+
+def _antonym_cross(claim_words, span_words):
+    """N4: the claim asserts one side of a curated antonym pair and the span the
+    OTHER side (and not both on either) — a lexical-antonym contradiction."""
+    for side_a, side_b in _ANTONYM_PAIRS:
+        ca, cb = claim_words & side_a, claim_words & side_b
+        sa, sb = span_words & side_a, span_words & side_b
+        if ca and not cb and sb and not sa:
+            return True
+        if cb and not ca and sa and not sb:
+            return True
+    return False
+
+
+def _coverage_pool(union_words):
+    """N1c: the set a claim salient token may be covered by — each span word plus
+    its code-ish sub-tokens (8080/tcp → {8080, tcp}), all thousands-normalized."""
+    pool = set()
+    for w in union_words:
+        pool.add(w)
+        for part in _CODEISH_SPLIT_RE.split(w):
+            if part:
+                pool.add(part)
+    return pool
+
+
 def _overlap_support(claim, spans):
-    """DEFAULT deterministic FACT-support scorer (NO LLM) — certifies the ASSERTED
-    FACT, not bag-of-words overlap (A1a). For a span to support the claim it must,
-    as HARD fail-closed gates:
-      (1) POLARITY match — `_has_negation(claim) == _has_negation(span)`; a negation
-          the span lacks (or vice-versa) ⇒ that span cannot support (fail-closed).
-      (2) SALIENT COVERAGE — every salient token of the claim (proper noun / number /
-          identifier) MUST appear in the span; an entity/number absent from the span
-          ⇒ that span cannot support.
-    A span passing both then contributes its content-word overlap; support is the
-    BEST qualifying span, floored at M3_SUPPORT_MIN. Bias to REJECT: a span that
-    fails either hard gate contributes 0. A claim with no content words returns 1.0
-    (non-material — the caller filters materiality). The cross-encoder stays OPT-IN
-    via register_support (the FTS-only leg has no model)."""
+    """DEFAULT deterministic support scorer (NO LLM). Honest property (N4): it
+    catches (a) explicit NEGATION markers, (b) salient-ENTITY/number changes, and
+    (c) a curated set of common technical ANTONYMS — it does NOT do general
+    entailment; ARBITRARY lexical-antonym contradictions are NOT detectable by this
+    token gate and need the OPT-IN cross-encoder (`register_support`). Bias to
+    REJECT throughout.
+
+    Two phases:
+      1. CONTRADICTION (safety) — vs EVERY cited span that shares non-antonym
+         content: a polarity mismatch (`_has_negation` differs) OR an antonym cross
+         ⇒ support = 0 (the claim must not contradict ANY cited span).
+      2. SUPPORT — salient-token coverage vs the UNION of ALL cited spans (N1b: a
+         claim synthesized from several cited spans is the normal RAG case, so a
+         salient token is covered if it appears in ANY span), then the content-word
+         overlap floor (best qualifying span). A salient token in NO cited span ⇒ 0.
+    A claim with no content words returns 1.0 (non-material — caller filters)."""
+    claim = _strip_thousands(claim)
+    spans = [_strip_thousands(s) for s in (spans or [])]
     claim_tokens = _content_tokens(claim)
     if not claim_tokens:
         return 1.0
     claim_neg = _has_negation(claim)
+    claim_words = _word_set(claim)
     claim_salient = _salient_set(claim)
+    # the claim's NON-antonym content — a contradiction veto only fires when a span
+    # is the SAME statement (covers most of this) with the polarity/antonym flipped,
+    # so a span that merely shares a few words (a different claim's source in a
+    # multi-span answer) never false-vetoes.
+    claim_nonanto = [t for t in claim_tokens if t not in _ANTONYM_FORMS]
+
+    # 1. CONTRADICTION vs any cited span that is otherwise the SAME statement.
+    for span in spans:
+        span_content = set(_content_tokens(span))
+        if not span_content or not claim_nonanto:
+            continue
+        cov = sum(1 for t in claim_nonanto if t in span_content) / len(claim_nonanto)
+        if cov < _CONTRADICTION_MIN:
+            continue  # not the same statement → not a contradiction
+        if _has_negation(span) != claim_neg:
+            return 0.0
+        if _antonym_cross(claim_words, _word_set(span)):
+            return 0.0
+
+    # 2. SUPPORT — salient coverage vs the UNION, then best-of-span overlap.
+    union_words = set()
+    for span in spans:
+        union_words |= _word_set(span)
+    pool = _coverage_pool(union_words)
+    if not claim_salient.issubset(pool):   # a salient token in NO cited span ⇒ fail
+        return 0.0
     best = 0.0
-    for span in spans or []:
+    for span in spans:
         span_set = set(_content_tokens(span))
         if not span_set:
-            continue
-        if _has_negation(span) != claim_neg:          # (1) polarity hard gate
-            continue
-        span_words = {m.group(0).lower() for m in _WORD_RE.finditer(span)}
-        if not claim_salient.issubset(span_words):    # (2) salient-coverage hard gate
             continue
         covered = sum(1 for t in claim_tokens if t in span_set)
         best = max(best, covered / len(claim_tokens))
