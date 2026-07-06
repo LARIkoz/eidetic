@@ -291,5 +291,253 @@ class DarkSafeTest(M3Base):
         self.assertEqual(engine.ENGINE_API, "1.1")
 
 
+# ======================= TURN 2 (FR-4/5/6/8 — ACs 3/5/6/7) =================
+# Supported, novel answer reused across the turn-2 ACs.
+_SUP_ANSWER = "The auth service issues JWT access tokens for user sessions."
+_SUP_SPANS = ["The auth service issues JWT access tokens for user sessions."]
+
+
+def _events(path):
+    return index_impl.parse_evidence_events(
+        index_impl.parse_frontmatter(open(path, encoding="utf-8").read())[1])
+
+
+# --- FR-4 promoting events (AC-3) --------------------------------------------
+class FR4AffirmationTest(M3Base):
+    def _file(self, query="auth token policy"):
+        return m3.file_recalled_answer(
+            self.db, _prov(_SUP_ANSWER, _SUP_SPANS, query=query), memory_dir=self.mem,
+            neighbors_fn=self._no_neighbors)
+
+    def _conf(self, path):
+        return self._index_conf(path)
+
+    def test_ac3_user_affirmation_lifts_to_0_60_injected(self):
+        out = self._file()
+        self.assertEqual(out["action"], "filed")
+        path = out["path"]
+        # filing ALONE mints nothing → still 0.40, un-injected (turn-1 invariant)
+        self.assertAlmostEqual(self._conf(path), 0.40, places=6)
+        self.assertEqual(_events(path), [])
+        # a GENUINE in-session user affirmation referencing THIS page
+        res = m3.affirm_filed_page(
+            self.db, path,
+            {"kind": "user_affirmation", "target": path, "session_id": "sess-1"})
+        self.assertEqual(res["promoted"], "confirmed")
+        evs = _events(path)
+        self.assertEqual([e["event_type"] for e in evs], ["confirmed"])
+        # fold: 0.40 + 0.20 = 0.60 ≥ 0.55 → INJECTED (the algebra working, not laundering)
+        conf = self._conf(path)
+        self.assertAlmostEqual(conf, 0.60, places=6)
+        self.assertTrue(C.injected(conf, managed=True))
+
+    def test_ac3_verified_by_test_lifts_tier2(self):
+        out = self._file(query="cache eviction policy")
+        res = m3.affirm_filed_page(
+            self.db, out["path"],
+            {"kind": "test_pass", "target": out["path"], "session_id": "sess-t"})
+        self.assertEqual(res["promoted"], "verified_by_test")
+        conf = self._conf(out["path"])
+        self.assertAlmostEqual(conf, 0.55, places=6)   # 0.40 + 0.15
+        self.assertTrue(C.injected(conf, managed=True))
+
+    def test_ac3_one_call_affirmation_via_recall_query(self):
+        # the ergonomic one-call form: affirmation targets the recall query identity
+        out = m3.file_recalled_answer(
+            self.db, _prov(_SUP_ANSWER, _SUP_SPANS, query="session timeout policy"),
+            memory_dir=self.mem, neighbors_fn=self._no_neighbors,
+            affirmation={"kind": "user_affirmation", "target": "session timeout policy",
+                         "session_id": "sess-1"})
+        self.assertEqual(out["action"], "filed")
+        self.assertEqual(out["promotion"]["promoted"], "confirmed")
+        self.assertAlmostEqual(self._conf(out["path"]), 0.60, places=6)
+
+    def test_ac3_misattributed_affirmation_does_not_lift(self):
+        # mis-attribution guard (§8 Breaks-when): an affirmation referencing a
+        # DIFFERENT page does NOT lift this one — it stays at 0.40, un-injected.
+        out = self._file(query="rate limit policy")
+        res = m3.affirm_filed_page(
+            self.db, out["path"],
+            {"kind": "user_affirmation", "target": "some-unrelated-other-topic",
+             "session_id": "sess-1"})
+        self.assertIsNone(res["promoted"])
+        self.assertEqual(res.get("reason"), "mis_attributed")
+        self.assertEqual(_events(out["path"]), [])                 # NO event
+        self.assertAlmostEqual(self._conf(out["path"]), 0.40, places=6)
+        self.assertFalse(C.injected(self._conf(out["path"]), managed=True))
+
+    def test_ac3_revert_verify_filing_act_never_mints_and_gate_is_load_bearing(self):
+        # REVERT-VERIFY: filing WITHOUT an affirmation reaches NO ≥0.55 path — the
+        # page is 0.40. A version that minted `confirmed` on the filing act would
+        # put it at 0.60 across the gate (laundering). Prove the delta is real: the
+        # SAME page only crosses 0.55 once a genuine tier-≥2 event is appended.
+        out = self._file(query="retry budget policy")
+        self.assertLess(self._conf(out["path"]), C.INJECT_GATE)     # 0.40 < 0.55
+        # simulate the (forbidden) mint-on-filing → it WOULD cross the gate
+        C_evs = [{"event_type": "confirmed"}]
+        self.assertGreaterEqual(C.fold_confidence(0.40, C_evs)[0], C.INJECT_GATE)
+
+    def test_ac3_dark_safe_affirmation_noop(self):
+        out = self._file(query="dark policy")
+        os.environ.pop("EIDETIC_CONFIDENCE_EVENTS", None)  # OFF
+        res = m3.affirm_filed_page(
+            self.db, out["path"],
+            {"kind": "user_affirmation", "target": out["path"], "session_id": "s"})
+        self.assertIsNone(res["promoted"])
+        self.assertEqual(_events(out["path"]), [])   # no event written in the dark
+
+
+# --- FR-5 provenance persistence + reindex survival (AC-5) -------------------
+class FR5ProvenanceTest(M3Base):
+    def test_ac5_provenance_recorded_survives_full_reindex_queryable(self):
+        prov = _prov(_SUP_ANSWER, _SUP_SPANS, query="token lifetime", session="sess-9")
+        out = m3.file_recalled_answer(self.db, prov, memory_dir=self.mem,
+                                      neighbors_fn=self._no_neighbors)
+        path = out["path"]
+        content = open(path, encoding="utf-8").read()
+        # every provenance field present: source card ids, cited SPANS, query, session, scores
+        self.assertIn("## Provenance", content)
+        self.assertIn("card-0", content)
+        self.assertIn(_SUP_SPANS[0], content)          # the cited span text
+        self.assertIn("token lifetime", content)       # recall query
+        self.assertIn("sess-9", content)               # session id
+        self.assertRegex(content, r"\d\.\d{3}")        # a per-claim support score
+        # queryable from the DERIVED index, and survives a --full reindex
+        conn = index_impl.init_db(self.db)
+        index_impl.run_full(conn, [path])   # run_full closes the passed conn
+        conn = index_impl.init_db(self.db)  # re-open to query the derived index
+        rows = conn.execute(
+            "SELECT content FROM memory_chunks WHERE path=? AND content LIKE '%card-0%'",
+            (path,)).fetchall()
+        conn.close()
+        self.assertTrue(rows, "provenance not queryable from the derived index after --full")
+        # provenance still in the file bytes post-reindex
+        self.assertIn("## Provenance", open(path, encoding="utf-8").read())
+
+    def test_ac5_oplog_row_survives_full_reindex(self):
+        prov = _prov(_SUP_ANSWER, _SUP_SPANS, query="oplog survives")
+        m3.file_recalled_answer(self.db, prov, memory_dir=self.mem,
+                                neighbors_fn=self._no_neighbors)
+        log = os.path.join(os.path.dirname(os.path.dirname(self.db)), "log.md")
+        self.assertTrue(os.path.exists(log))
+        self.assertIn("op=autofile_filed", open(log, encoding="utf-8").read())
+        conn = index_impl.init_db(self.db)
+        index_impl.run_full(conn, [])   # reindex does not touch the op-log
+        conn.close()
+        self.assertIn("op=autofile_filed", open(log, encoding="utf-8").read())
+
+
+# --- FR-6 identity/collision (AC-6) ------------------------------------------
+class FR6CollisionTest(M3Base):
+    def test_ac6_same_slug_same_project_routes_to_m2_no_clobber(self):
+        query = "auth service token policy"
+        slug = m3._REM.target_slug(query, "synthesis")
+        # an existing same-slug card in a SUBDIR (proves recursive find_same_slug_card,
+        # not just an exact-path check) with distinctive user bytes.
+        sub = os.path.join(self.mem, "sub")
+        os.makedirs(sub)
+        existing = os.path.join(sub, slug + ".md")
+        existing_page = ("---\nname: " + slug + "\ntype: project\nsource: agent-extracted\n"
+                         "last_verified: 2026-06-01\n---\n\nDISTINCTIVE USER BYTES.\n")
+        with open(existing, "w", encoding="utf-8") as f:
+            f.write(existing_page)
+        before = open(existing, encoding="utf-8").read()
+        routed = {}
+
+        def spy(db, prov, hits, top, **kw):
+            routed["top"] = top
+            return [{"action": "edited"}]
+
+        out = m3.file_recalled_answer(
+            self.db, _prov(_SUP_ANSWER, _SUP_SPANS, query=query), memory_dir=self.mem,
+            neighbors_fn=self._no_neighbors, m2_handoff=spy)
+        self.assertEqual(out["action"], "deduped_to_m2")
+        self.assertEqual(routed["top"]["path"], existing)   # routed at the existing card
+        self.assertFalse(os.path.exists(os.path.join(self.mem, slug + ".md")))  # NO new page
+        self.assertEqual(open(existing, encoding="utf-8").read(), before)  # never clobbered
+
+    def test_ac6_cross_project_same_slug_untouched(self):
+        query = "shared slug topic"
+        slug = m3._REM.target_slug(query, "synthesis")
+        # project B carries a same-slug card; filing into project A must not touch it.
+        memB = os.path.join(self.tmp, ".claude", "projects", "proj-b", "memory")
+        os.makedirs(memB)
+        pb = os.path.join(memB, slug + ".md")
+        pageB = ("---\nname: " + slug + "\ntype: project\nsource: agent-extracted\n"
+                 "last_verified: 2026-06-01\n---\n\nPROJECT B CONTENT.\n\n## Evidence\n\n"
+                 "- 2026-06-01T00:00:00 · confirmed · user-explicit · Δ+0.20\n")
+        with open(pb, "w", encoding="utf-8") as f:
+            f.write(pageB)
+        before_b = open(pb, encoding="utf-8").read()
+        before_evs_b = _events(pb)
+        out = m3.file_recalled_answer(
+            self.db, _prov(_SUP_ANSWER, _SUP_SPANS, query=query), memory_dir=self.mem,
+            neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "filed")                       # new page in A
+        self.assertTrue(os.path.exists(os.path.join(self.mem, slug + ".md")))
+        self.assertEqual(open(pb, encoding="utf-8").read(), before_b)  # B byte-identical
+        self.assertEqual(_events(pb), before_evs_b)                    # B event-identical
+
+
+# --- FR-8 idempotence (AC-7) -------------------------------------------------
+class FR8IdempotenceTest(M3Base):
+    def _card_events(self, path):
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, [path])
+        rows = conn.execute(
+            "SELECT event_type, session_id, delta FROM card_events WHERE path=? "
+            "ORDER BY ts, event_type", (path,)).fetchall()
+        conn.close()
+        return rows
+
+    def test_ac7_double_file_yields_one_page(self):
+        prov = _prov(_SUP_ANSWER, _SUP_SPANS, query="idempotent topic")
+        out1 = m3.file_recalled_answer(self.db, prov, memory_dir=self.mem,
+                                       neighbors_fn=self._no_neighbors)
+        self.assertEqual(out1["action"], "filed")
+        # 2nd identical file → same slug on disk → dedups to M2, NO 2nd page
+        out2 = m3.file_recalled_answer(self.db, prov, memory_dir=self.mem,
+                                       neighbors_fn=self._no_neighbors)
+        self.assertEqual(out2["action"], "deduped_to_m2")
+        slug = m3._REM.target_slug("idempotent topic", "synthesis")
+        pages = [f for f in os.listdir(self.mem) if f == slug + ".md"]
+        self.assertEqual(len(pages), 1)   # exactly one page
+
+    def test_ac7_affirmation_idempotent_explicit_same_source_guard(self):
+        out = m3.file_recalled_answer(
+            self.db, _prov(_SUP_ANSWER, _SUP_SPANS, query="idem affirm"),
+            memory_dir=self.mem, neighbors_fn=self._no_neighbors)
+        aff = {"kind": "user_affirmation", "target": out["path"], "session_id": "sess-x"}
+        r1 = m3.affirm_filed_page(self.db, out["path"], aff)
+        self.assertEqual(r1["promoted"], "confirmed")
+        # re-apply the SAME affirmation (same session) → explicit content guard skips
+        # (append_event stamps a fresh ts, so the PK cannot dedup — the guard must).
+        r2 = m3.affirm_filed_page(self.db, out["path"], aff)
+        self.assertIsNone(r2["promoted"])
+        self.assertEqual(r2.get("reason"), "idempotent_skip")
+        evs = [e["event_type"] for e in _events(out["path"])]
+        self.assertEqual(evs, ["confirmed"])   # exactly one, not two
+
+    def test_ac7_card_events_full_equals_incremental(self):
+        out = m3.file_recalled_answer(
+            self.db, _prov(_SUP_ANSWER, _SUP_SPANS, query="full eq incr"),
+            memory_dir=self.mem, neighbors_fn=self._no_neighbors)
+        m3.affirm_filed_page(
+            self.db, out["path"],
+            {"kind": "user_affirmation", "target": out["path"], "session_id": "s"})
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, [out["path"]])
+        inc = conn.execute("SELECT event_type, session_id, delta FROM card_events "
+                           "WHERE path=? ORDER BY ts, event_type", (out["path"],)).fetchall()
+        conn.close()
+        conn = index_impl.init_db(self.db)
+        index_impl.run_full(conn, [out["path"]])   # run_full closes the passed conn
+        conn = index_impl.init_db(self.db)          # re-open to query card_events
+        full = conn.execute("SELECT event_type, session_id, delta FROM card_events "
+                            "WHERE path=? ORDER BY ts, event_type", (out["path"],)).fetchall()
+        conn.close()
+        self.assertEqual(inc, full)   # --full == --incremental
+
+
 if __name__ == "__main__":
     unittest.main()

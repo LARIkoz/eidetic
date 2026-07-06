@@ -89,6 +89,14 @@ _FILE_EVIDENCE = "hypothesis"  # legacy evidence-weight (unverified); NOT a conf
 OP_FILED = "autofile_filed"
 OP_REJECTED = "autofile_rejected"
 OP_DEDUPED = "autofile_deduped"
+OP_PROMOTED = "autofile_promoted"
+
+# A genuine tier-≥2 promoting signal (FR-4). The affirmation `kind` → the typed
+# event; NEVER minted by the filing act — only by a REAL in-session signal.
+_AFFIRMATION_EVENT = {
+    "user_affirmation": "confirmed",       # tier-3, +0.20 (user explicitly affirmed)
+    "test_pass": "verified_by_test",       # tier-2, +0.15 (an in-session test passed)
+}
 
 
 # --- activation (dark-safe, FR-7) --------------------------------------------
@@ -246,21 +254,30 @@ def _resolve_dir(cwd):
     return cwd or os.getcwd()
 
 
+def _oneline(s, limit=240):
+    """Collapse a span to one audit line (no newlines that could forge a heading)."""
+    return " ".join((s or "").split())[:limit]
+
+
 def _provenance_block(provenance, scores):
     """A user-visible `## Provenance` section (NOT `## Evidence` — the confidence
     fold parses only `## Evidence`, so this never seeds a promoting event). Records
-    the recall query, session, cited sources, and per-claim support scores."""
+    the recall query, session, cited source ids + CITED SPANS, and per-claim support
+    scores (FR-5, AC-5). This is written ATOMICALLY as part of the page body, so a
+    filed page ALWAYS carries its provenance (durable-truth, survives reindex)."""
     lines = ["## Provenance", "",
              f"_M3 auto-file · query=\"{(provenance.get('recall_query') or '').strip()}\" "
              f"· session={provenance.get('session_id') or ''} · {_iso_date()}_", "",
              "Cited sources:"]
     for s in provenance.get("sources") or []:
         cid = (s.get("card_id") or "").strip()
-        lines.append(f"- {cid}" if cid else "- (unattributed span)")
+        span = _oneline(s.get("span") or "")
+        label = cid or "(unattributed)"
+        lines.append(f"- {label}: \"{span}\"" if span else f"- {label}")
     lines.append("")
     lines.append("Claim support (deterministic span-overlap):")
     for claim, sc in scores.items():
-        lines.append(f"- {sc:.3f} · {claim[:80]}")
+        lines.append(f"- {sc:.3f} · {_oneline(claim, 80)}")
     return "\n".join(lines)
 
 
@@ -293,17 +310,28 @@ def _file_new_page(index_db_path, provenance, title, scores, *, memory_dir=None,
     mdir = memory_dir or _resolve_dir(cwd)
     slug = _REM.target_slug(title, _FILE_KIND)
     path = os.path.join(mdir, slug + ".md")
-    # FR-6 (turn-2): a same-slug page on disk is UPDATED via M2, never clobbered.
-    # Turn-1 safe stub: route the collision to M2 rather than overwrite a byte.
-    if os.path.exists(path):
+    # FR-6 identity/collision: identity is (project_hash, normalized_slug). A
+    # same-slug card ANYWHERE under THIS project's memory dir (recursive, incl.
+    # subdirs — not just the exact path) is UPDATED via M2, NEVER clobbered. The
+    # glob is project-scoped, so a same-slug card in a DIFFERENT project is
+    # invisible here (cross-project isolation, the FIX2 #3 class). This routes the
+    # 2nd file of the same answer to M2 too (idempotence, FR-8/AC-7).
+    existing = _REM.find_same_slug_card(mdir, slug)
+    if existing:
         (m2_handoff or _default_m2_handoff)(
-            index_db_path, provenance, hits or [], {"path": path, "score": 1.0},
+            index_db_path, provenance, hits or [], {"path": existing, "score": 1.0},
             memory_dir=mdir, cwd=cwd)
-        _oplog(index_db_path, OP_DEDUPED, title, extra=f"same_slug={path}")
-        return {"action": "deduped_to_m2", "neighbor": path, "reason": "same_slug_collision"}
+        _oplog(index_db_path, OP_DEDUPED, title, extra=f"same_slug={existing}")
+        return {"action": "deduped_to_m2", "neighbor": existing,
+                "reason": "same_slug_collision"}
 
     answer = (provenance.get("answer_text") or "").strip()
-    body = answer + "\n\n" + _provenance_block(provenance, scores)
+    prov_block = _provenance_block(provenance, scores)
+    # FR-5: a page whose provenance cannot be recorded is NOT filed (fail-closed).
+    if "## Provenance" not in prov_block:  # pragma: no cover — defensive
+        _oplog(index_db_path, OP_REJECTED, title, extra="reason=provenance_unrecordable")
+        return {"action": "rejected", "reason": "provenance_unrecordable"}
+    body = answer + "\n\n" + prov_block
     content = _REM.build_card(title, body, _FILE_KIND, _FILE_EVIDENCE, _FILE_SOURCE,
                               _FILE_TYPE, related=[])
     _REM._atomic_write(path, content)
@@ -311,9 +339,84 @@ def _file_new_page(index_db_path, provenance, title, scores, *, memory_dir=None,
     return {"action": "filed", "path": path, "confidence": 0.40, "support": scores}
 
 
+# --- FR-4 promoting events (genuine tier-≥2 only; never minted by filing) -----
+def _norm_ref(ref):
+    """Normalize an affirmation target (a slug, a path, or the raw query text) to a
+    bare slug stem for the mis-attribution guard."""
+    ref = (ref or "").strip()
+    if ref.endswith(".md"):
+        ref = os.path.basename(ref)[:-3]
+    elif "/" in ref:
+        ref = os.path.basename(ref)
+    return ref
+
+
+def _affirmation_targets(affirmation, filed_slug):
+    """Mis-attribution guard (spec §8 Breaks-when): the affirmation MUST reference
+    the just-filed page. Accepts the target given as the on-disk slug, the page
+    path, or the raw recall query/title (which slugifies to the filed slug). An
+    empty/ambiguous or DIFFERENT-page target ⇒ False (no lift)."""
+    ref = _norm_ref(affirmation.get("target"))
+    if not ref:
+        return False
+    if ref == filed_slug:
+        return True
+    return _REM.target_slug(ref, _FILE_KIND) == filed_slug
+
+
+def _already_promoted(filed_path, event_type, session_id):
+    """FR-8 EXPLICIT same-source guard (NOT the PK): `append_event` stamps a fresh
+    `ts` each run, so the (path, ts, event_type) PK cannot dedup a re-run. This
+    content-keys on (event_type, session_id) already present on `## Evidence`."""
+    rec = _M1._record_from_file(filed_path)
+    if rec is None:
+        return False
+    for ev in rec.get("events") or []:
+        if ev.get("event_type") == event_type and ev.get("session_id") == session_id:
+            return True
+    return False
+
+
+def _apply_affirmation(index_db_path, filed_path, affirmation, filed_slug, *,
+                       session_id=None):
+    """Emit ONE genuine tier-≥2 event on the just-filed page from a REAL in-session
+    affirmation. Returns {"promoted": event_type|None, "reason": ...}. The filing
+    act NEVER calls this without a real affirmation record, so no filing path mints
+    a promoting event. Dark-safe (append_event is itself events-gated)."""
+    kind = (affirmation.get("kind") or "").strip()
+    etype = _AFFIRMATION_EVENT.get(kind)
+    if etype is None:
+        return {"promoted": None, "reason": "unknown_kind"}
+    if not _affirmation_targets(affirmation, filed_slug):
+        return {"promoted": None, "reason": "mis_attributed"}
+    sess = affirmation.get("session_id") or session_id
+    if _already_promoted(filed_path, etype, sess):
+        return {"promoted": None, "reason": "idempotent_skip"}
+    ok = _EV.append_event(filed_path, etype, session_id=sess,
+                          note=f"m3 affirmation {kind}")
+    if not ok:
+        return {"promoted": None, "reason": "not_written"}  # dark / contended / de-duped
+    _oplog(index_db_path, OP_PROMOTED, filed_slug, extra=f"event={etype} sess={sess}")
+    return {"promoted": etype, "session_id": sess}
+
+
+def affirm_filed_page(index_db_path, filed_path, affirmation, *, session_id=None):
+    """Apply a genuine in-session affirmation to an already-filed page (the "later
+    in the session" path). Dark-safe: a complete no-op unless M3 is active. Reads
+    the page's own slug for the mis-attribution guard."""
+    if not _active():
+        return {"promoted": None, "reason": "dark"}
+    rec = _M1._record_from_file(filed_path)
+    if rec is None:
+        return {"promoted": None, "reason": "unreadable"}
+    return _apply_affirmation(index_db_path, filed_path, affirmation, rec["slug"],
+                              session_id=session_id or affirmation.get("session_id"))
+
+
 # --- the pipeline (FR-1/FR-2/FR-3/FR-7) --------------------------------------
 def file_recalled_answer(index_db_path, provenance, *, memory_dir=None, cwd=None,
-                         support_fn=None, neighbors_fn=None, m2_handoff=None):
+                         support_fn=None, neighbors_fn=None, m2_handoff=None,
+                         affirmation=None):
     """File a recalled answer back into the wiki, gated. Returns an outcome dict
     with an "action" ∈ {noop, rejected, deduped_to_m2, filed}.
 
@@ -382,5 +485,15 @@ def file_recalled_answer(index_db_path, provenance, *, memory_dir=None, cwd=None
                 "score": float(top.get("score", 0.0))}
 
     # 5. FR-3: file supported + novel at cold-start 0.40 (empty ## Evidence).
-    return _file_new_page(index_db_path, provenance, title, scores,
-                          memory_dir=memory_dir, cwd=cwd, m2_handoff=m2_handoff, hits=hits)
+    outcome = _file_new_page(index_db_path, provenance, title, scores,
+                             memory_dir=memory_dir, cwd=cwd, m2_handoff=m2_handoff,
+                             hits=hits)
+    # FR-4: a GENUINE in-session affirmation (never minted by filing) may lift the
+    # just-filed page across the gate. The filing act itself, with affirmation=None,
+    # mints NOTHING — the turn-1 invariant is preserved.
+    if outcome.get("action") == "filed" and affirmation:
+        outcome["promotion"] = _apply_affirmation(
+            index_db_path, outcome["path"], affirmation,
+            _REM.target_slug(title, _FILE_KIND),
+            session_id=provenance.get("session_id"))
+    return outcome
