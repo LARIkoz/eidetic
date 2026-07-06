@@ -1013,5 +1013,63 @@ class NSBLexiconAnchorTest(R2Base):
         self.assertEqual(out["action"], "filed")
 
 
+# ===================== FIX R6 (re-audit S3 — negation twin of NS-B) =========
+class S3NegationLexiconAnchorTest(R2Base):
+    """S3: the negation veto's relatedness must ALSO strip only the pair under test
+    (here: nothing — no pair), NOT the flat lexicon union. A lexicon-anchor negation
+    ("Read access is not enabled." vs "…enabled.") must REJECT — the symmetric twin
+    of NS-B on the negation path. Both paths now route through ONE pair-aware helper."""
+
+    def test_read_access_not_enabled_rejected(self):
+        out = self._file("Read access is not enabled.", ["Read access is enabled."])
+        self.assertEqual(out["action"], "rejected")
+        self.assertEqual(os.listdir(self.mem), [])
+
+    def test_connection_not_open_rejected(self):
+        out = self._file("The primary connection is not open.",
+                         ["The primary connection is open."])
+        self.assertEqual(out["action"], "rejected")
+
+    def test_primary_sync_not_enabled_rejected(self):
+        out = self._file("Primary sync is not enabled.", ["Primary sync is enabled."])
+        self.assertEqual(out["action"], "rejected")
+
+    def test_ns_b_antonym_stays_closed(self):
+        self.assertEqual(self._file("Read access is enabled.",
+                                    ["Read access is disabled."])["action"], "rejected")
+
+    def test_s1_normal_negation_still_rejects(self):
+        self.assertEqual(self._file(
+            "The auth service does not issue JWT access tokens for user sessions.",
+            ["The auth service issues JWT access tokens for user sessions."])["action"],
+            "rejected")
+
+    def test_n2_subclause_still_files(self):
+        # the clause-precise negation still does NOT over-reject a subclause negation
+        self.assertEqual(self._file(
+            "The token, if not expired, is accepted by the gateway.",
+            ["The token is accepted by the gateway when valid."])["action"], "filed")
+
+    def test_revert_verify_flat_strip_reopens_both_paths(self):
+        # REVERT-VERIFY the UNIFIED helper: flat-strip it → BOTH the negation AND the
+        # antonym lexicon-anchor repros file; the pair-aware default rejects both.
+        orig = m3._shared_content
+        m3._shared_content = (lambda ccs, scs, pair_forms=frozenset():
+                              (ccs & scs) - m3._ANTONYM_FORMS)  # the flat-strip bug
+        try:
+            neg = self._file("Read access is not enabled.", ["Read access is enabled."],
+                             query="neg lexicon anchor")
+            anto = self._file("Read access is enabled.", ["Read access is disabled."],
+                              query="antonym lexicon anchor")
+        finally:
+            m3._shared_content = orig
+        self.assertEqual(neg["action"], "filed", "revert-verify: flat strip reopens negation twin")
+        self.assertEqual(anto["action"], "filed", "revert-verify: flat strip reopens antonym")
+        self.assertEqual(self._file("Read access is not enabled.",
+                                    ["Read access is enabled."])["action"], "rejected")
+        self.assertEqual(self._file("Read access is enabled.",
+                                    ["Read access is disabled."])["action"], "rejected")
+
+
 if __name__ == "__main__":
     unittest.main()

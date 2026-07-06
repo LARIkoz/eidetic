@@ -295,6 +295,18 @@ def _antonym_cross(claim_words, span_words):
     return False
 
 
+def _shared_content(claim_content_set, span_content_set, pair_forms=frozenset()):
+    """THE single relatedness anchor used by BOTH the negation and antonym vetoes:
+    the content tokens shared between a claim and a cited span, minus ONLY the antonym
+    forms of the PAIR UNDER TEST (`pair_forms`) — NEVER the flat `_ANTONYM_FORMS`
+    union. Stripping the flat union is exactly the drift that let NS-B (antonym) and
+    its twin S3 (negation) survive: a shared anchor that is itself a lexicon term (from
+    some OTHER pair) must still count as relatedness. Unifying both paths on this one
+    helper makes the two sites structurally unable to drift again. The negation path
+    passes NO pair (it tests polarity, not a specific pair) ⇒ strips nothing."""
+    return (claim_content_set & span_content_set) - pair_forms
+
+
 def _antonym_contradicts(claim_words, claim_content_set, spans_tok):
     """COVERAGE-FREE, corroboration-aware antonym veto (LS4) — the antonym analog of
     the coverage-free negation veto, verbose-span-proof (a long cited chunk cannot
@@ -316,7 +328,7 @@ def _antonym_contradicts(claim_words, claim_content_set, spans_tok):
         pair_forms = side_a | side_b  # subtract ONLY this pair (NS-B), not the flat union
         agree = oppose = False
         for sw, sc in spans_tok:
-            if not ((claim_content_set & sc) - pair_forms):
+            if not _shared_content(claim_content_set, sc, pair_forms):
                 continue  # topically unrelated cited span — never counts
             if sw & claim_side:
                 agree = True
@@ -395,8 +407,10 @@ def _overlap_support(claim, spans):
             continue
         if _has_negation(span) != claim_neg:  # NEGATION (clause-precise, coverage-free)
             neg_text = claim if claim_neg else span
-            shared_nonanto = (claim_content_set & span_content) - _ANTONYM_FORMS
-            if _negation_on_shared(neg_text, shared_nonanto):
+            # NO pair under test → strip nothing (S3: the flat-union strip removed the
+            # very lexicon token the negation scopes, disarming the veto).
+            shared = _shared_content(claim_content_set, span_content)
+            if _negation_on_shared(neg_text, shared):
                 return 0.0
     if _antonym_contradicts(claim_words, claim_content_set, spans_tok):  # ANTONYM
         return 0.0
