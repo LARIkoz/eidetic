@@ -169,3 +169,32 @@ M2_RELATED_MIN_DEFAULT = 0.78
 # reranker / None / below floor ⇒ NO edit (never cosine-only).
 M2_RELEVANCE_MIN = {"multilingual": 0.0, "english": 0.0}
 M2_RELEVANCE_MIN_DEFAULT = 0.0
+
+# M3 auto-file (spec-m3-autofile FR-1/FR-2). M3 files a recalled answer back as a
+# typed page ONLY through a claim-support gate with teeth, at agent cold-start.
+#
+# M3_NEIGHBORS = K vector-neighbors probed to detect a near-duplicate before
+# filing (same primitive as M1/M2).
+#
+# M3_DEDUP_MIN = the profile-aware cosine floor above which the answer is a
+# NEAR-DUPLICATE of an existing page → route to M2 (update), file NO new page
+# (FR-1, AC-4). Calibrated AT the compound near-duplicate line
+# (VECTOR_GATE_MIN_SIM_BY_PROFILE = {multilingual 0.85, english 0.60}, ~50 lines
+# above): a genuine same-topic duplicate scored cos 0.920 while e5 topical noise
+# sat ~0.83-0.84 (compound's build note), so 0.85 cleanly admits real duplicates
+# to M2 and lets a genuinely-new topic file. Dedup is vector-first: an FTS-only
+# store returns no neighbors, so M3 files a paraphrase there (stated honestly,
+# Breaks-when). Unknown profile → the stricter (multilingual) end.
+#
+# M3_SUPPORT_MIN = the claim-support floor for the DEFAULT deterministic
+# span-overlap scorer (LLM-free; the fraction of a claim's content words covered
+# by its best cited span, ∈[0,1]). ANY material claim below this ⇒ the WHOLE
+# answer is REJECTED, no page, no event (FR-2, AC-1). Precision-first / bias
+# toward REJECT (NFR): a rejected good answer is recoverable (a human can still
+# promote); a filed UNSUPPORTED answer is the top laundering risk. 0.5 requires a
+# majority of a claim's content words to be span-backed. A registered
+# cross-encoder scorer supplies its own floor via the injection seam.
+M3_NEIGHBORS = 8
+M3_DEDUP_MIN = {"multilingual": 0.85, "english": 0.60}
+M3_DEDUP_MIN_DEFAULT = 0.85
+M3_SUPPORT_MIN = 0.5
