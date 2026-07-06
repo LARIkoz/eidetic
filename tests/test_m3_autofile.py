@@ -851,5 +851,95 @@ class NS4PaddingDisarmTest(R2Base):
         self.assertEqual(out["action"], "filed")
 
 
+# ===================== FIX R4 (re-audit LS4 — verbose-span antonym) =========
+class LS4VerboseAntonymTest(R2Base):
+    """The ANTONYM veto must fire regardless of how VERBOSE the cited span is — a
+    normal long source chunk must not disarm it (LS4, the antonym analog of NS4)."""
+
+    def test_verbose_enabled_disabled_rejected(self):
+        out = self._file(
+            "The request cache is disabled by default.",
+            ["The request cache is enabled by default for all authenticated users "
+             "across every region in production today."])
+        self.assertEqual(out["action"], "rejected")
+        self.assertEqual(os.listdir(self.mem), [])
+
+    def test_verbose_allow_deny_rejected(self):
+        out = self._file(
+            "The API endpoint allows anonymous access.",
+            ["The API endpoint denies anonymous access for all unauthenticated "
+             "external clients by strict default policy."])
+        self.assertEqual(out["action"], "rejected")
+
+    def test_verbose_primary_secondary_rejected(self):
+        out = self._file(
+            "The replica database handles all primary writes.",
+            ["The replica database handles all secondary read queries for reporting "
+             "dashboards across the analytics cluster."])
+        self.assertEqual(out["action"], "rejected")
+
+    def test_negation_contrast_verbose_span_rejects(self):
+        # contrast: the coverage-free negation veto ALSO rejects the same verbose span
+        out = self._file(
+            "The request cache is not enabled by default.",
+            ["The request cache is enabled by default for all authenticated users "
+             "across every region in production today."])
+        self.assertEqual(out["action"], "rejected")
+
+    def test_normal_length_antonym_still_rejects(self):  # LS2 keep
+        out = self._file("The request cache is disabled by default for all clients.",
+                         ["The request cache is enabled by default for all clients."])
+        self.assertEqual(out["action"], "rejected")
+
+    def test_dual_antonym_legitimate_still_files(self):  # OR1 keep
+        # claim carries BOTH sides (old disabled, new enabled) → no cross → files
+        out = self._file(
+            "The old cache was disabled but the new cache is enabled by default.",
+            ["The new cache is enabled by default for all clients."])
+        self.assertEqual(out["action"], "filed")
+
+    def test_multi_span_access_refresh_still_files(self):
+        # a span AGREES with each claim's side (access span for the access sentence,
+        # refresh span for the refresh sentence) → corroborated → no false veto
+        out = m3.file_recalled_answer(
+            self.db, {"answer_text": "The auth service issues JWT access tokens for user sessions. "
+                                     "Refresh tokens rotate the JWT session daily.",
+                      "sources": [{"card_id": "c0", "span": "The auth service issues JWT access tokens for sessions."},
+                                  {"card_id": "c1", "span": "Refresh tokens rotate the JWT session for the auth service daily."}],
+                      "recall_query": "token policy", "session_id": "s"},
+            memory_dir=self.mem, neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "filed")
+
+    def test_revert_verify_span_cov_gate_launders_verbose_antonym(self):
+        # REVERT-VERIFY: a scorer that gates the antonym veto on span_cov>=0.75 (the R3
+        # antonym path) FILES the verbose-span antonym; the coverage-free default REJECTS.
+        def _span_cov_gated(claim, spans):
+            cw = m3._word_set(claim)
+            ccs = set(m3._content_tokens(claim))
+            for s in spans or []:
+                sc = set(m3._content_tokens(s))
+                if not sc:
+                    continue
+                shared = (ccs & sc) - m3._ANTONYM_FORMS
+                span_nonanto = {t for t in sc if t not in m3._ANTONYM_FORMS}
+                span_cov = (len(shared) / len(span_nonanto)) if span_nonanto else 0.0
+                if span_cov >= 0.75 and m3._antonym_cross(cw, m3._word_set(s)):
+                    return 0.0
+            return 1.0  # support assumed for the revert-verify
+        m3.register_support(_span_cov_gated)
+        try:
+            out = self._file("The request cache is disabled by default.",
+                             ["The request cache is enabled by default for all authenticated "
+                              "users across every region in production today."])
+        finally:
+            m3.register_support(None)
+        self.assertEqual(out["action"], "filed", "revert-verify: span_cov gate launders verbose antonym")
+        self.assertEqual(
+            self._file("The request cache is disabled by default.",
+                       ["The request cache is enabled by default for all authenticated "
+                        "users across every region in production today."])["action"],
+            "rejected")
+
+
 if __name__ == "__main__":
     unittest.main()
