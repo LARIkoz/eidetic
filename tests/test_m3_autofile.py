@@ -539,5 +539,135 @@ class FR8IdempotenceTest(M3Base):
         self.assertEqual(inc, full)   # --full == --incremental
 
 
+# ===================== FIX R1 (adversarial audit A1a/A1b/A3) ================
+def _pure_overlap(claim, spans):
+    """The OLD bag-of-words overlap (no polarity / no salient gate) — used only in
+    revert-verify to prove the new hard gates are load-bearing."""
+    ct = m3._content_tokens(claim)
+    if not ct:
+        return 1.0
+    best = 0.0
+    for s in spans or []:
+        ss = set(m3._content_tokens(s))
+        if ss:
+            best = max(best, sum(1 for t in ct if t in ss) / len(ct))
+    return best
+
+
+# --- A1a: fact-support gate (negation + salient-entity coverage) -------------
+class A1aFactGateTest(M3Base):
+    def _file(self, answer, spans, query="q"):
+        return m3.file_recalled_answer(
+            self.db, _prov(answer, spans, query=query), memory_dir=self.mem,
+            neighbors_fn=self._no_neighbors)
+
+    def test_negation_rejected_end_to_end(self):
+        out = self._file(
+            "The auth service does not issue JWT access tokens for user sessions.",
+            ["The auth service issues JWT access tokens for user sessions."])
+        self.assertEqual(out["action"], "rejected")
+        self.assertEqual(out.get("reason"), "unsupported_claim")
+        self.assertEqual(os.listdir(self.mem), [])           # NO page filed
+
+    def test_mongodb_dilution_rejected(self):
+        out = self._file("The configuration database is MongoDB.",
+                         ["The configuration database settings."])
+        self.assertEqual(out["action"], "rejected")
+        self.assertEqual(os.listdir(self.mem), [])
+
+    def test_port_number_dilution_rejected(self):
+        out = self._file("The datastore is PostgreSQL running on port 9999.",
+                         ["The datastore is running for the auth service user sessions."])
+        self.assertEqual(out["action"], "rejected")
+        self.assertEqual(os.listdir(self.mem), [])
+
+    def test_genuine_paraphrase_still_files(self):
+        # all salient entities present, polarity matches → must STILL FILE
+        out = self._file(
+            "The auth service issues JWT access tokens for user sessions.",
+            ["Auth service issues JWT access tokens for user sessions daily."])
+        self.assertEqual(out["action"], "filed")
+        self.assertTrue(os.path.exists(out["path"]))
+
+    def test_matching_negation_still_files(self):
+        # polarity MATCHES (both negated) + salient covered → supported, files
+        out = self._file("The JWT session tokens do not expire after logout.",
+                         ["The JWT session tokens do not expire after logout ever."])
+        self.assertEqual(out["action"], "filed")
+
+    def test_revert_verify_pure_overlap_files_the_negation(self):
+        # REVERT-VERIFY: restore pure bag-of-words overlap → the negation answer FILES
+        m3.register_support(_pure_overlap)
+        try:
+            out = self._file(
+                "The auth service does not issue JWT access tokens for user sessions.",
+                ["The auth service issues JWT access tokens for user sessions."])
+        finally:
+            m3.register_support(None)
+        self.assertEqual(out["action"], "filed", "revert-verify: pure overlap launders negation")
+
+
+# --- A1b: materiality widened to short factual / directive assertions --------
+class A1bMaterialityTest(M3Base):
+    def test_short_entity_rider_now_gated_and_rejected(self):
+        # "Use MongoDB." is now MATERIAL (proper noun) + unsupported → whole answer REJECT
+        out = m3.file_recalled_answer(
+            self.db, _prov("The auth service issues JWT access tokens for user sessions. "
+                           "Use MongoDB.",
+                           ["The auth service issues JWT access tokens for user sessions."]),
+            memory_dir=self.mem, neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "rejected")
+        self.assertEqual(os.listdir(self.mem), [])
+
+    def test_short_directive_rider_gated_and_rejected(self):
+        out = m3.file_recalled_answer(
+            self.db, _prov("The auth service issues JWT access tokens for user sessions. "
+                           "Delete all data.",
+                           ["The auth service issues JWT access tokens for user sessions."]),
+            memory_dir=self.mem, neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "rejected")
+
+    def test_material_predicate(self):
+        self.assertTrue(m3._is_material("Use MongoDB."))      # proper noun
+        self.assertTrue(m3._is_material("Port 9999."))        # number
+        self.assertTrue(m3._is_material("Delete all data."))  # directive imperative
+        self.assertFalse(m3._is_material("Yes."))             # still non-material filler
+        self.assertFalse(m3._is_material("Okay then."))
+
+    def test_revert_verify_old_materiality_files_the_rider(self):
+        # REVERT-VERIFY: restore ≥3-content-words-only → the short rider is skipped,
+        # never scored, and the answer FILES with the un-gated "Use MongoDB." rider.
+        old = m3._is_material
+        m3._is_material = lambda c: len(m3._content_tokens(c)) >= 3
+        try:
+            out = m3.file_recalled_answer(
+                self.db, _prov("The auth service issues JWT access tokens for user sessions. "
+                               "Use MongoDB.",
+                               ["The auth service issues JWT access tokens for user sessions."]),
+                memory_dir=self.mem, neighbors_fn=self._no_neighbors)
+        finally:
+            m3._is_material = old
+        self.assertEqual(out["action"], "filed")
+        self.assertIn("Use MongoDB.", open(out["path"], encoding="utf-8").read())
+
+
+# --- A3: empty-answer reject is op-logged like every other reject path -------
+class A3EmptyAnswerOplogTest(M3Base):
+    def _oplog_rejected(self):
+        log = os.path.join(os.path.dirname(os.path.dirname(self.db)), "log.md")
+        if not os.path.exists(log):
+            return 0
+        return open(log, encoding="utf-8").read().count("op=autofile_rejected")
+
+    def test_empty_answer_rejected_and_logged(self):
+        out = m3.file_recalled_answer(
+            self.db, _prov("   ", ["some span text here"], query="empty answer case"),
+            memory_dir=self.mem, neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "rejected")
+        self.assertEqual(out.get("reason"), "empty_answer")
+        self.assertEqual(self._oplog_rejected(), 1)   # logged, consistent with other rejects
+        self.assertEqual(os.listdir(self.mem), [])
+
+
 if __name__ == "__main__":
     unittest.main()

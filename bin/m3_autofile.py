@@ -147,6 +147,22 @@ other such only own same too very just also here there now
 
 _SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+# identifier-preserving word (keeps code-ish `_ . / + -` and digits together, but
+# never captures TRAILING punctuation — `Yes.` → `Yes`, `port_9999` → `port_9999`).
+_WORD_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_./+-]*[A-Za-z0-9])?")
+
+# A1a — negation / polarity markers. Read off the RAW text (the tokenizer strips
+# `not`/`no` as stopwords and splits `doesn't`→`doesn`,`t`, so a raw scan is the
+# only faithful polarity read). `n't` catches doesn't/isn't/won't/can't/…
+_NEG_WORD_RE = re.compile(r"\b(not|no|never|without|cannot|none|neither|nor)\b", re.I)
+
+# A1b — directive-imperative verbs: a claim whose FIRST word is one of these is a
+# short factual directive ("Delete all data.") and MUST be gated, not skipped.
+_DIRECTIVE_VERBS = frozenset("""
+use delete drop remove add set run enable disable install configure create update
+call import export avoid stop start restart reset truncate insert replace prefer
+choose pick apply ensure make keep switch migrate rename move copy grant revoke
+""".split())
 
 
 def _content_tokens(text):
@@ -160,25 +176,80 @@ def _split_claims(text):
     return [s.strip() for s in _SENT_SPLIT_RE.split((text or "").strip()) if s.strip()]
 
 
+def _has_negation(text):
+    """A1a polarity read on RAW text: an explicit negation marker present?"""
+    low = (text or "").lower()
+    return ("n't" in low) or bool(_NEG_WORD_RE.search(low))
+
+
+def _salient_set(text):
+    """A1a salient tokens (lowercased) that a supporting span MUST contain: numbers,
+    ALLCAPS (JWT/SQL), internal-capital names (MongoDB/PostgreSQL), code-ish
+    identifiers (port_9999/a.b), and NON-sentence-initial Title-case proper nouns.
+    A sentence-initial ordinary Capitalized word (The/Use/Delete) is NOT salient."""
+    out = set()
+    toks = [m.group(0) for m in _WORD_RE.finditer(text or "")]
+    for i, tok in enumerate(toks):
+        has_digit = any(c.isdigit() for c in tok)
+        allcaps = tok.isalpha() and tok.isupper() and len(tok) >= 2
+        internal_cap = any(c.isupper() for c in tok[1:])
+        codeish = ("_" in tok) or ("/" in tok) or ("+" in tok) or \
+                  ("." in tok and any(c.isalnum() for c in tok)) or \
+                  ("-" in tok and has_digit)
+        title_case = len(tok) > 1 and tok[:1].isupper() and tok[1:].islower()
+        if has_digit or allcaps or internal_cap or codeish or (title_case and i > 0):
+            out.add(tok.lower())
+    return out
+
+
+def _is_directive(claim):
+    """A1b: the claim's first word is a directive-imperative verb."""
+    first = next((m.group(0).lower() for m in _WORD_RE.finditer(claim or "")), "")
+    return first in _DIRECTIVE_VERBS
+
+
 def _is_material(claim):
-    """A MATERIAL claim carries ≥ 3 content words — trivial filler ("Yes.",
-    greetings) is non-material and neither supports nor is gated."""
-    return len(_content_tokens(claim)) >= 3
+    """A MATERIAL claim is scored by the gate. Widened (A1b) so a SHORT factual or
+    directive assertion is no longer skipped un-gated: material iff ≥3 content words
+    OR it carries a salient token (proper noun / number / identifier) OR its first
+    word is a directive imperative. Trivial filler ("Yes.", "Okay then.") stays
+    non-material (nothing to support)."""
+    if len(_content_tokens(claim)) >= 3:
+        return True
+    if _salient_set(claim):
+        return True
+    return _is_directive(claim)
 
 
 # --- support scorer (LLM-free by default; a cross-encoder may be registered) --
 def _overlap_support(claim, spans):
-    """DEFAULT deterministic span-overlap scorer (NO LLM). Returns the fraction of
-    the claim's content words covered by its BEST cited span (∈[0,1]). A claim with
-    no content words returns 1.0 (nothing to support — caller filters materiality).
-    Best-of over spans models "the answer was built from these cited spans"."""
+    """DEFAULT deterministic FACT-support scorer (NO LLM) — certifies the ASSERTED
+    FACT, not bag-of-words overlap (A1a). For a span to support the claim it must,
+    as HARD fail-closed gates:
+      (1) POLARITY match — `_has_negation(claim) == _has_negation(span)`; a negation
+          the span lacks (or vice-versa) ⇒ that span cannot support (fail-closed).
+      (2) SALIENT COVERAGE — every salient token of the claim (proper noun / number /
+          identifier) MUST appear in the span; an entity/number absent from the span
+          ⇒ that span cannot support.
+    A span passing both then contributes its content-word overlap; support is the
+    BEST qualifying span, floored at M3_SUPPORT_MIN. Bias to REJECT: a span that
+    fails either hard gate contributes 0. A claim with no content words returns 1.0
+    (non-material — the caller filters materiality). The cross-encoder stays OPT-IN
+    via register_support (the FTS-only leg has no model)."""
     claim_tokens = _content_tokens(claim)
     if not claim_tokens:
         return 1.0
+    claim_neg = _has_negation(claim)
+    claim_salient = _salient_set(claim)
     best = 0.0
     for span in spans or []:
         span_set = set(_content_tokens(span))
         if not span_set:
+            continue
+        if _has_negation(span) != claim_neg:          # (1) polarity hard gate
+            continue
+        span_words = {m.group(0).lower() for m in _WORD_RE.finditer(span)}
+        if not claim_salient.issubset(span_words):    # (2) salient-coverage hard gate
             continue
         covered = sum(1 for t in claim_tokens if t in span_set)
         best = max(best, covered / len(claim_tokens))
@@ -221,7 +292,10 @@ def _title_for(provenance):
     for c in _split_claims(provenance.get("answer_text") or ""):
         if _is_material(c):
             return c
-    return (provenance.get("answer_text") or "recalled answer").strip().splitlines()[0][:80]
+    tail = (provenance.get("answer_text") or "").strip()
+    if not tail:
+        return "recalled answer"          # whitespace/empty answer — never index [0]
+    return tail.splitlines()[0][:80]
 
 
 def _default_m2_handoff(index_db_path, provenance, hits, top, *, memory_dir=None, cwd=None):
@@ -382,7 +456,14 @@ def _apply_affirmation(index_db_path, filed_path, affirmation, filed_slug, *,
     """Emit ONE genuine tier-≥2 event on the just-filed page from a REAL in-session
     affirmation. Returns {"promoted": event_type|None, "reason": ...}. The filing
     act NEVER calls this without a real affirmation record, so no filing path mints
-    a promoting event. Dark-safe (append_event is itself events-gated)."""
+    a promoting event. Dark-safe (append_event is itself events-gated).
+
+    AUTHENTICITY IS THE PRODUCER'S CONTRACT (audit A2): `affirmation.kind` is
+    trusted as a REAL in-session user signal (`user_affirmation` = the user
+    explicitly affirmed) or a REAL test pass (`test_pass`, sourced by the deferred
+    producer from `lifecycle_signals` `command_class=test`, spec FR-4). The consumer
+    trusts this typed record exactly as it trusts `sources` — verifying that a
+    signal genuinely occurred is the producer's job, not the consumer's."""
     kind = (affirmation.get("kind") or "").strip()
     etype = _AFFIRMATION_EVENT.get(kind)
     if etype is None:
@@ -435,6 +516,8 @@ def file_recalled_answer(index_db_path, provenance, *, memory_dir=None, cwd=None
 
     answer = (provenance.get("answer_text") or "").strip()
     if not answer:
+        # A3: log like every other reject path (consistency; no silent swallow).
+        _oplog(index_db_path, OP_REJECTED, _title_for(provenance), extra="reason=empty_answer")
         return {"action": "rejected", "reason": "empty_answer"}
 
     # 2. FR-2: no traceable sources ⇒ reject outright (fail toward reject).
