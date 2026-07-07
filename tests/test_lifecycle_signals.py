@@ -529,12 +529,12 @@ class LifecycleSignalsTest(unittest.TestCase):
         self.assertTrue(key.exists())
         self.assertTrue(db.exists())
 
-
-class TestSignalEmissionTest(LifecycleSignalsTest):
-    """FR-4 Step-2: a PASSING test (PostToolUse+Bash, which fires ONLY on exit=0)
-    with command_class=="test" ALSO emits a `test_pass` correlation signal — a
-    STRING LITERAL at the write site. The returned lifecycle record is unchanged."""
-
+    # --- FR-4 Step-2: test_pass signal emission --------------------------------
+    # A PASSING test (PostToolUse+Bash fires ONLY on exit=0) with
+    # command_class=="test" ALSO emits a `test_pass` correlation signal — a STRING
+    # LITERAL at the write site. The returned lifecycle record is unchanged. These
+    # live in LifecycleSignalsTest (not a subclass) so the parent suite is not
+    # re-run under a second class.
     def signals_file(self):
         return self.memory / "events" / "test_signals.jsonl"
 
