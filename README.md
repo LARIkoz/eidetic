@@ -44,7 +44,7 @@ Session 50: *validate_key() was renamed to check_auth() two weeks ago*
             *Agent gets WORSE, not better, from its own memory*
 ```
 
-That's the **Day 60 problem** — after 500+ memory files, stale knowledge actively hurts the agent. More memory = worse performance. No existing tool detects this. **Eidetic solves both.**
+That's the **Day 60 problem** — after 500+ memory files, stale knowledge actively hurts the agent. More memory = worse performance, and most memory tools ignore it. **Eidetic is built for it:** a drift layer **down-ranks** memories as they age, get over-reinforced without human confirmation, or lose their `[[link]]` targets — so stale knowledge stops outranking current knowledge. Catching the exact _renamed-symbol_ case above — a memory that contradicts today's code — is semantic **contradiction detection, on the [v6 roadmap](#roadmap).**
 
 ---
 
@@ -339,7 +339,7 @@ Core principles:
 1. **Files are truth.** Indexes are derived. If the DB dies, rebuild from markdown in <1s.
 2. **Every memory must be findable** without knowing where it is. Cross-project search is the default.
 3. **Critical rules must never become invisible.** The system guarantees all behavioral rules reach the agent.
-4. **The system maintains itself** — or it dies. The AI agent does all indexing, linking, searching, compounding. Human curates when they want to, not because they have to.
+4. **The system maintains itself** — or it dies. The AI agent does all indexing, linking, searching, and compounding automatically. Human curates for _truth_ when they want to — full self-maintenance (contradiction resolution, multi-page synthesis, auto-filing) is the v6 goal.
 
 ---
 
