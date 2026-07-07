@@ -1065,5 +1065,35 @@ class S3NegationLexiconAnchorTest(R2Base):
                                     ["Read access is disabled."])["action"], "rejected")
 
 
+# --- B1-1: the support floor is EXCLUSIVE (AC-11) ----------------------------
+class B1SupportBoundaryTest(M3Base):
+    # 4 content tokens, exactly 2 covered by the cited span ⇒ overlap == 0.5.
+    ANSWER = "Alpha beta gamma delta."
+    SPANS = ["Alpha beta epsilon zeta."]
+
+    def test_scorer_returns_exactly_half(self):
+        # the pair is engineered so the deterministic scorer lands ON the floor.
+        self.assertAlmostEqual(m3.active_support()(self.ANSWER, self.SPANS), 0.5, places=6)
+        self.assertEqual(m3.support_min(), 0.5)
+
+    def test_ac11_fifty_percent_overlap_is_rejected(self):
+        before = sorted(os.listdir(self.mem))
+        out = m3.file_recalled_answer(
+            self.db, _prov(self.ANSWER, self.SPANS), memory_dir=self.mem,
+            neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "rejected")
+        self.assertEqual(out.get("reason"), "unsupported_claim")
+        self.assertAlmostEqual(out.get("score"), 0.5, places=6)
+        self.assertEqual(sorted(os.listdir(self.mem)), before)  # NO page filed
+
+    def test_ac11_revert_verify_boundary_is_load_bearing(self):
+        # REVERT-VERIFY: under the OLD `<` a score of exactly 0.5 would FILE; a
+        # score strictly above the floor (0.75) still files under the new `<=`.
+        strong = m3.file_recalled_answer(
+            self.db, _prov("Alpha beta gamma delta.", ["Alpha beta gamma zeta."]),
+            memory_dir=self.mem, neighbors_fn=self._no_neighbors)
+        self.assertEqual(strong["action"], "filed")  # 3/4 = 0.75 > 0.5 → filed
+
+
 if __name__ == "__main__":
     unittest.main()

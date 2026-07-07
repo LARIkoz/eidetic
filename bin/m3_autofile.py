@@ -13,7 +13,7 @@ Turn-1 CORE (the laundering-critical pipeline):
   * FR-2 claim-support gate WITH TEETH — split the answer into material claim
     sentences; score each against ITS cited span(s) (LLM-free deterministic
     span-overlap by default; a cross-encoder may be registered). ANY material
-    claim below M3_SUPPORT_MIN, or NO cited sources at all ⇒ the WHOLE answer is
+    claim AT OR BELOW M3_SUPPORT_MIN, or NO cited sources at all ⇒ the WHOLE answer is
     REJECTED (no page, no event). Fail toward REJECT.
   * FR-3 file — a supported, non-duplicate answer is written as a new typed page
     (source=agent-extracted, managed lifecycle) with confidence EXACTLY 0.40 and
@@ -716,7 +716,10 @@ def file_recalled_answer(index_db_path, provenance, *, memory_dir=None, cwd=None
             sc = support_fn(claim, spans)
         except Exception:
             sc = None  # scorer error ⇒ fail toward REJECT
-        if sc is None or sc < support_min():
+        # B1-1: the support floor is EXCLUSIVE — a claim at EXACTLY support_min()
+        # (0.5 = half the claim tokens match a span) is subject-echo territory
+        # (shared topic words, possibly divergent assertion) and is REJECTED.
+        if sc is None or sc <= support_min():
             _oplog(index_db_path, OP_REJECTED, title,
                    extra=f"reason=unsupported_claim score={sc}")
             return {"action": "rejected", "reason": "unsupported_claim",
