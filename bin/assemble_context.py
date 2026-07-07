@@ -398,7 +398,7 @@ def fetch_project(conn, cwd, budget_chars, drift_map=None):
     rows = conn.execute("""
         SELECT DISTINCT c.path, c.name, c.description, c.section_heading, c.content,
                c.evidence, c.source, c.last_verified, c.type, c.card_kind,
-               c.status, c.superseded_by,
+               c.status, c.superseded_by, c.confidence,
                memory_fts.rank AS fts_rank
         FROM memory_chunks c
         LEFT JOIN memory_fts ON memory_fts.rowid = c.id
@@ -410,14 +410,19 @@ def fetch_project(conn, cwd, budget_chars, drift_map=None):
     chunks = []
     seen = set()
     for row in rows:
-        path, name, desc, heading, content, evidence, source, lv, typ, card_kind, status, superseded_by, rank = row
+        path, name, desc, heading, content, evidence, source, lv, typ, card_kind, status, superseded_by, confidence, rank = row
         key = (path, heading)
         if key in seen:
             continue
         seen.add(key)
 
         dp = drift_map.get(path)
-        w = compound_weight(evidence, source, lv, drift_penalty=dp, status=status, superseded_by=superseded_by)
+        # FR-B: pass real type/card_kind/confidence so conf_w ranks the injected
+        # Project context. conf_w ≡ 1.0 (identity) behind the Phase-A dark flag ⇒
+        # byte-identical to pre-change until EIDETIC_CONFIDENCE_RANKING is on.
+        w = compound_weight(evidence, source, lv, drift_penalty=dp, status=status,
+                            superseded_by=superseded_by, type_=typ, card_kind=card_kind,
+                            confidence=confidence)
         status_tag = "" if (status or "current") == "current" else f", status={status}"
         short_path = path.replace(os.path.expanduser("~"), "~")
         snippet = content[:500] if len(content) > 500 else content
@@ -447,7 +452,7 @@ def fetch_recent(conn, budget_chars, exclude_project=None, drift_map=None):
     query = """
         SELECT DISTINCT c.path, c.name, c.description, c.section_heading, c.content,
                c.evidence, c.source, c.last_verified, c.type, c.project,
-               c.card_kind, c.status, c.superseded_by
+               c.card_kind, c.status, c.superseded_by, c.confidence
         FROM memory_chunks c
         WHERE {mtime_seconds} > ? AND c.type != 'feedback'
     """.format(mtime_seconds=mtime_seconds)
@@ -466,14 +471,18 @@ def fetch_recent(conn, budget_chars, exclude_project=None, drift_map=None):
     chunks = []
     seen = set()
     for row in rows:
-        path, name, desc, heading, content, evidence, source, lv, typ, proj, card_kind, status, superseded_by = row
+        path, name, desc, heading, content, evidence, source, lv, typ, proj, card_kind, status, superseded_by, confidence = row
         key = (path, heading)
         if key in seen:
             continue
         seen.add(key)
 
         dp = (drift_map or {}).get(path)
-        w = compound_weight(evidence, source, lv, drift_penalty=dp, status=status, superseded_by=superseded_by)
+        # FR-B: pass real type/card_kind/confidence (see fetch_project). conf_w is
+        # identity behind the Phase-A dark flag ⇒ byte-identical when the flag is off.
+        w = compound_weight(evidence, source, lv, drift_penalty=dp, status=status,
+                            superseded_by=superseded_by, type_=typ, card_kind=card_kind,
+                            confidence=confidence)
         stale_tag = " [drift]" if dp else ""
         status_tag = "" if (status or "current") == "current" else f", status={status}"
         short_path = path.replace(os.path.expanduser("~"), "~")
