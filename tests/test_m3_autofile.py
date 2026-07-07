@@ -1306,5 +1306,69 @@ class ProducerTest(M3Base):
         self.assertNotIn("confirmed", types)
 
 
+# --- Step-6: the producer wired into the incremental index pipeline ----------
+class ProducerWiringTest(M3Base):
+    ANSWER = "The auth service issues JWT access tokens for user sessions."
+    SPANS = ["The auth service issues JWT access tokens for user sessions."]
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(lambda: os.environ.pop("EIDETIC_PRODUCER", None))
+        self.addCleanup(lambda: os.environ.pop("EIDETIC_SESSION_ID", None))
+
+    def _events_dir(self):
+        d = os.path.join(os.path.dirname(os.path.dirname(self.db)), "events")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _reindex(self, path):
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, [path])
+        conn.close()
+
+    def test_producer_runs_after_m2_and_is_idempotent(self):
+        # (a) a filed page + a matching test_signal for the SAME session+project.
+        prov = _prov(self.ANSWER, self.SPANS, query="auth token policy", session="sess-wire")
+        prov["project_slug"] = "project_wired"
+        out = m3.file_recalled_answer(self.db, prov, memory_dir=self.mem,
+                                      neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "filed")
+        with open(os.path.join(self._events_dir(), "test_signals.jsonl"), "a",
+                  encoding="utf-8") as f:
+            f.write(_json.dumps({"ts": "2026-07-08T10:00:00.000Z", "session_id": "sess-wire",
+                                 "project_slug": "project_wired", "signal": "test_pass"}) + "\n")
+
+        # (b) run the incremental index pipeline with the producer enabled; the
+        # session_id reaches the indexer via the ambient EIDETIC_SESSION_ID.
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        os.environ["EIDETIC_SESSION_ID"] = "sess-wire"
+        self._reindex(out["path"])
+
+        # (c) the filed card gained EXACTLY one verified_by_test event.
+        self.assertEqual([e["event_type"] for e in _events(out["path"])],
+                         ["verified_by_test"])
+        # after a further reindex the fold materializes 0.40 + 0.15 = 0.55.
+        self.assertAlmostEqual(self._index_conf(out["path"]), 0.55, places=6)
+
+        # (d) idempotence — re-running the pipeline mints no duplicate.
+        self._reindex(out["path"])
+        self.assertEqual([e["event_type"] for e in _events(out["path"])],
+                         ["verified_by_test"])
+
+    def test_wiring_skips_when_producer_env_off(self):
+        prov = _prov(self.ANSWER, self.SPANS, query="cache policy", session="sess-off")
+        prov["project_slug"] = "project_off"
+        out = m3.file_recalled_answer(self.db, prov, memory_dir=self.mem,
+                                      neighbors_fn=self._no_neighbors)
+        with open(os.path.join(self._events_dir(), "test_signals.jsonl"), "a",
+                  encoding="utf-8") as f:
+            f.write(_json.dumps({"session_id": "sess-off", "project_slug": "project_off",
+                                 "signal": "test_pass"}) + "\n")
+        os.environ.pop("EIDETIC_PRODUCER", None)     # producer OFF
+        os.environ["EIDETIC_SESSION_ID"] = "sess-off"
+        self._reindex(out["path"])
+        self.assertEqual(_events(out["path"]), [])   # no event minted
+
+
 if __name__ == "__main__":
     unittest.main()
