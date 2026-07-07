@@ -28,6 +28,9 @@ PHASE_B_SCHEMA_VERSION = 2
 SCHEMA_VERSION = FILE_SCHEMA_VERSION
 MAX_EVENT_BYTES = 512
 EVENT_DIR = Path("events") / "lifecycle"
+# FR-4 producer correlation key: a passing test in a project this session. Sibling
+# of EVENT_DIR (bare metadata — session_id + project_slug + ts, no command text).
+TEST_SIGNALS_FILE = Path("events") / "test_signals.jsonl"
 KEY_NAME = ".hmac_key"
 ALLOWED_TOOLS = {"Write", "Edit", "MultiEdit"}
 FAILURE_TOOLS = {"Bash", "Write", "Edit", "MultiEdit"}
@@ -310,6 +313,30 @@ def _event_path(memory_system: Path, now: Optional[datetime] = None) -> Path:
     return memory_system / EVENT_DIR / f"{now.strftime('%Y-%m-%d')}.jsonl"
 
 
+def _test_signals_path(memory_system: Path) -> Path:
+    return memory_system / TEST_SIGNALS_FILE
+
+
+def _write_test_signal(memory_system: Path, record: Dict[str, Any]) -> None:
+    """FR-4: on a PASSING test (PostToolUse+Bash fires ONLY on exit=0, and
+    command_class=="test"), append an unforgeable correlation row the producer
+    reads later. `"test_pass"` is a STRING LITERAL here — no caller input flows
+    into it. No project_slug (no cwd) ⇒ no binding possible ⇒ no signal."""
+    project_slug = record.get("project_slug")
+    if not project_slug:
+        return
+    signal = {
+        "ts": _recorded_at(),
+        "session_id": record.get("session_id", ""),
+        "project_slug": project_slug,
+        "signal": "test_pass",
+    }
+    data = _compact_json(signal)
+    if len(data) > MAX_EVENT_BYTES:  # keep the single-write atomicity guarantee
+        return
+    _atomic_append_jsonl(_test_signals_path(memory_system), data)
+
+
 def _key_path(memory_system: Path) -> Path:
     return memory_system / EVENT_DIR / KEY_NAME
 
@@ -528,6 +555,10 @@ def _build_bash_record(payload: Dict[str, Any], memory_system: Path) -> Optional
     record["command_class"] = command_class
     record["background"] = tool_input.get("run_in_background") is True
     record["timeout_ms_bucket"] = _timeout_ms_bucket(tool_input.get("timeout"))
+    # FR-4 side-effect: a passing test (this hook fires ONLY on exit=0) emits a
+    # test_pass correlation signal. The returned lifecycle record is UNCHANGED.
+    if command_class == "test":
+        _write_test_signal(memory_system, record)
     return record
 
 
