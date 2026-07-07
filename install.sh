@@ -97,6 +97,34 @@ case "$EMBED_PROFILE" in multilingual|english) ;; *) EMBED_PROFILE=multilingual 
 printf '%s\n' "$EMBED_PROFILE" > "$MEMORY_SYSTEM/.embed_profile"
 echo "   • Embedder: $EMBED_PROFILE"
 
+# 1b) Embed ENGINE — which runtime produces the vectors. mlx = native Apple-Silicon
+#     GPU (no onnx/CoreML, no compile-temp leak, ~18x faster). fastembed = portable
+#     onnxruntime default (any CPU). mlx only works on Apple Silicon + multilingual.
+EMBED_ENGINE="${EIDETIC_EMBED_ENGINE:-}"
+if [ -z "$EMBED_ENGINE" ]; then
+    if [ "$(uname)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] && [ "$EMBED_PROFILE" = "multilingual" ]; then
+        EMBED_ENGINE="$(_prompt_choice "Embed engine — mlx (Apple Silicon GPU, fast) | fastembed (portable CPU)" mlx mlx fastembed)"
+    else
+        EMBED_ENGINE="fastembed"
+    fi
+fi
+case "$EMBED_ENGINE" in mlx|fastembed) ;; *) EMBED_ENGINE="fastembed" ;; esac
+printf '%s\n' "$EMBED_ENGINE" > "$MEMORY_SYSTEM/.embed_engine"
+echo "   • Embed engine: $EMBED_ENGINE"
+
+# Bootstrap the MLX venv if mlx was chosen
+if [ "$EMBED_ENGINE" = "mlx" ]; then
+    MLX_VENV="$HOME/.venvs/eidetic-mlx"
+    if ! "$MLX_VENV/bin/python3" -c "import mlx.core" >/dev/null 2>&1; then
+        echo "   Installing MLX venv at $MLX_VENV ..."
+        python3 -m venv "$MLX_VENV"
+        "$MLX_VENV/bin/pip3" install --quiet mlx tokenizers huggingface_hub fastembed==0.8.0 numpy
+        echo "   ✓ MLX venv ready"
+    else
+        echo "   ✓ MLX venv already installed"
+    fi
+fi
+
 # 2) Query translation (cross-lingual, opt-in): off | auto | apple | opusmt | cli.
 #    A non-English query is translated to English and dual-queried (min-rank fused) —
 #    adds recall, never regresses (5/8 -> 7/8 @3). All backends fail-open.
@@ -331,7 +359,8 @@ echo "  - Export: bash $COMMAND_MEMORY_SYSTEM/bin/export-vault.sh ~/my-vault/"
 echo "  - Delta:  bash $COMMAND_MEMORY_SYSTEM/bin/export-vault.sh ~/my-vault/ --delta"
 echo ""
 echo "Optional v2 features:"
-echo "  - Semantic vector search: python3 -m pip install --user 'fastembed==0.8.0'  (pin: a bump can change e5 pooling → reindex)"
+echo "  - Semantic vector search (fastembed): python3 -m pip install --user 'fastembed==0.8.0'"
+echo "  - Apple Silicon? MLX engine (default): re-run with EIDETIC_EMBED_ENGINE=mlx (no onnx/CoreML, ~18x faster)"
 echo "  - English-only corpus? Smaller/faster embedder: re-run with EIDETIC_EMBED_PROFILE=english, then bin/index.sh --full"
 echo "  - Cross-lingual search? Translate non-English queries: re-run with EIDETIC_QUERY_TRANSLATE=auto (Apple NMT on macOS 26, else Opus-MT/CTranslate2)"
 echo "  - Usage telemetry: which cards get surfaced — python3 bin/usage_stats.py --top 20 (dead cards = prune candidates); opt out with EIDETIC_USAGE_LOG=off"
