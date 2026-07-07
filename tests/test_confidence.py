@@ -86,14 +86,12 @@ class PureFoldTest(unittest.TestCase):
     def test_agent_cannot_self_promote_past_gate(self):  # §4.2
         conf = C.fold_confidence(0.40, [{"event_type": "observed"}] * 10)[0]
         self.assertLessEqual(conf, 0.50)
-        self.assertLess(conf, C.INJECT_GATE)
-        self.assertFalse(C.injected(conf, managed=True))
 
     def test_ten_agent_observes_lose_to_one_user_correction(self):  # §4.4
         evs = [{"event_type": "observed"}] * 10 + [{"event_type": "corrected", "actor_tier": 3}]
         conf = C.fold_confidence(0.40, evs)[0]
-        self.assertLess(conf, C.INJECT_GATE)
-        self.assertFalse(C.injected(conf, managed=True))
+        # 10 observes cap at +0.10 (→0.50), then one tier-3 correction (-0.40) wins.
+        self.assertAlmostEqual(conf, 0.10, places=6)
 
     def test_low_authority_tier2_gated_by_user_highwater(self):  # §4.4
         # user-authored card at 0.80; a tier-2 `contradicted` cannot lower it

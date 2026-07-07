@@ -15,7 +15,6 @@ Nothing here is public API; it is an internal v6 rail.
 CONF_MIN = 0.05          # clamp floor — a card is never made unretrievable by the lifecycle
 CONF_MAX = 0.95          # clamp ceiling — always leaves headroom below an exempt card
 CONF_FLOOR = 0.35        # conf_w = CONF_FLOOR + (1-CONF_FLOOR)*confidence
-INJECT_GATE = 0.55       # managed feedback injected in ALWAYS-APPLY iff confidence >= this
 OBSERVED_CAP = 0.10      # cumulative agent `observed` gain until a tier>=2 event (§4.2)
 DECAY_FLOOR = 0.55       # decay never takes a card below this (§4.3)
 DECAY_STEP = 0.10        # one `decayed` event subtracts this (only if confidence > DECAY_FLOOR)
@@ -173,10 +172,3 @@ def conf_weight(confidence, managed):
     if not managed:
         return 1.0
     return CONF_FLOOR + (1.0 - CONF_FLOOR) * confidence
-
-
-def injected(confidence, managed):
-    """§5.3 within-type gate for managed cards (exempt always injected)."""
-    if not managed:
-        return True
-    return confidence >= INJECT_GATE

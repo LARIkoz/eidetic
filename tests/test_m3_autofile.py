@@ -97,9 +97,6 @@ class SupportedFilesTest(M3Base):
         self.assertNotAlmostEqual(conf, 0.45, places=6)
         # the built fold matches exactly
         self.assertAlmostEqual(C.fold_confidence(0.40, [])[0], 0.40, places=6)
-        # un-injected: 0.40 < 0.55 inject gate; managed page not injected
-        self.assertFalse(C.injected(conf, managed=True))
-        self.assertLess(conf, C.INJECT_GATE)
 
     def test_ac2_no_promoting_event_minted_by_filing(self):
         out = m3.file_recalled_answer(
@@ -312,11 +309,11 @@ class FR4AffirmationTest(M3Base):
     def _conf(self, path):
         return self._index_conf(path)
 
-    def test_ac3_user_affirmation_lifts_to_0_60_injected(self):
+    def test_ac3_user_affirmation_lifts_to_0_60(self):
         out = self._file()
         self.assertEqual(out["action"], "filed")
         path = out["path"]
-        # filing ALONE mints nothing → still 0.40, un-injected (turn-1 invariant)
+        # filing ALONE mints nothing → still 0.40 (turn-1 invariant)
         self.assertAlmostEqual(self._conf(path), 0.40, places=6)
         self.assertEqual(_events(path), [])
         # a GENUINE in-session user affirmation referencing THIS page
@@ -326,10 +323,9 @@ class FR4AffirmationTest(M3Base):
         self.assertEqual(res["promoted"], "confirmed")
         evs = _events(path)
         self.assertEqual([e["event_type"] for e in evs], ["confirmed"])
-        # fold: 0.40 + 0.20 = 0.60 ≥ 0.55 → INJECTED (the algebra working, not laundering)
+        # fold: 0.40 + 0.20 = 0.60 (the algebra working, not laundering)
         conf = self._conf(path)
         self.assertAlmostEqual(conf, 0.60, places=6)
-        self.assertTrue(C.injected(conf, managed=True))
 
     def test_ac3_verified_by_test_lifts_tier2(self):
         out = self._file(query="cache eviction policy")
@@ -339,7 +335,6 @@ class FR4AffirmationTest(M3Base):
         self.assertEqual(res["promoted"], "verified_by_test")
         conf = self._conf(out["path"])
         self.assertAlmostEqual(conf, 0.55, places=6)   # 0.40 + 0.15
-        self.assertTrue(C.injected(conf, managed=True))
 
     def test_ac3_one_call_affirmation_via_recall_query(self):
         # the ergonomic one-call form: affirmation targets the recall query identity
@@ -354,7 +349,7 @@ class FR4AffirmationTest(M3Base):
 
     def test_ac3_misattributed_affirmation_does_not_lift(self):
         # mis-attribution guard (§8 Breaks-when): an affirmation referencing a
-        # DIFFERENT page does NOT lift this one — it stays at 0.40, un-injected.
+        # DIFFERENT page does NOT lift this one — it stays at 0.40.
         out = self._file(query="rate limit policy")
         res = m3.affirm_filed_page(
             self.db, out["path"],
@@ -364,18 +359,17 @@ class FR4AffirmationTest(M3Base):
         self.assertEqual(res.get("reason"), "mis_attributed")
         self.assertEqual(_events(out["path"]), [])                 # NO event
         self.assertAlmostEqual(self._conf(out["path"]), 0.40, places=6)
-        self.assertFalse(C.injected(self._conf(out["path"]), managed=True))
 
-    def test_ac3_revert_verify_filing_act_never_mints_and_gate_is_load_bearing(self):
-        # REVERT-VERIFY: filing WITHOUT an affirmation reaches NO ≥0.55 path — the
-        # page is 0.40. A version that minted `confirmed` on the filing act would
-        # put it at 0.60 across the gate (laundering). Prove the delta is real: the
-        # SAME page only crosses 0.55 once a genuine tier-≥2 event is appended.
+    def test_ac3_revert_verify_filing_act_never_mints_confirmed_event(self):
+        # REVERT-VERIFY: filing WITHOUT an affirmation mints nothing — the page
+        # stays at exactly 0.40. A version that minted `confirmed` on the filing
+        # act would put it at 0.60 (laundering). Prove the delta is real: the
+        # SAME page only lifts once a genuine tier-≥2 event is appended.
         out = self._file(query="retry budget policy")
-        self.assertLess(self._conf(out["path"]), C.INJECT_GATE)     # 0.40 < 0.55
-        # simulate the (forbidden) mint-on-filing → it WOULD cross the gate
+        self.assertAlmostEqual(self._conf(out["path"]), 0.40, places=6)
+        # simulate the (forbidden) mint-on-filing → it WOULD lift by +0.20
         C_evs = [{"event_type": "confirmed"}]
-        self.assertGreaterEqual(C.fold_confidence(0.40, C_evs)[0], C.INJECT_GATE)
+        self.assertAlmostEqual(C.fold_confidence(0.40, C_evs)[0], 0.60, places=6)
 
     def test_ac3_dark_safe_affirmation_noop(self):
         out = self._file(query="dark policy")
