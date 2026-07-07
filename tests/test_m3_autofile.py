@@ -1095,5 +1095,76 @@ class B1SupportBoundaryTest(M3Base):
         self.assertEqual(strong["action"], "filed")  # 3/4 = 0.75 > 0.5 → filed
 
 
+# --- Step-3: structured filed-page tracking (events/m3_filed.jsonl) ----------
+import json as _json
+
+
+class FiledTrackingTest(M3Base):
+    ANSWER = "The auth service issues JWT access tokens for user sessions."
+    SPANS = ["The auth service issues JWT access tokens for user sessions."]
+
+    def _filed_path(self):
+        # <root>/events from <root>/db/index.db (mirrors _events_dir_for).
+        return os.path.join(os.path.dirname(os.path.dirname(self.db)), "events",
+                            "m3_filed.jsonl")
+
+    def _read_filed(self):
+        p = self._filed_path()
+        if not os.path.exists(p):
+            return []
+        with open(p, encoding="utf-8") as f:
+            return [_json.loads(line) for line in f if line.strip()]
+
+    def _prov_full(self, query="auth token policy"):
+        prov = _prov(self.ANSWER, self.SPANS, query=query, session="sess-track")
+        prov["project_slug"] = "project_deadbeef"
+        return prov
+
+    def test_filing_writes_exactly_one_m3_filed_line(self):
+        out = m3.file_recalled_answer(
+            self.db, self._prov_full(), memory_dir=self.mem,
+            neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "filed")
+        rows = self._read_filed()
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["session_id"], "sess-track")
+        self.assertEqual(row["project_slug"], "project_deadbeef")
+        self.assertEqual(row["filed_path"], out["path"])
+        self.assertTrue(row["filed_slug"])
+        self.assertIn("ts", row)
+
+    def test_missing_provenance_keys_write_empty_strings(self):
+        # session_id/project_slug absent ⇒ empty strings (producer never matches).
+        prov = {"answer_text": self.ANSWER,
+                "sources": [{"card_id": "c0", "span": self.SPANS[0]}],
+                "recall_query": "no ids here"}
+        out = m3.file_recalled_answer(self.db, prov, memory_dir=self.mem,
+                                      neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "filed")
+        rows = self._read_filed()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["session_id"], "")
+        self.assertEqual(rows[0]["project_slug"], "")
+
+    def test_dark_mode_writes_no_m3_filed_line(self):
+        os.environ.pop("EIDETIC_CONFIDENCE_EVENTS", None)  # M3 dark
+        out = m3.file_recalled_answer(
+            self.db, self._prov_full(), memory_dir=self.mem,
+            neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "noop")
+        self.assertEqual(self._read_filed(), [])       # nothing filed ⇒ nothing tracked
+
+    def test_rejected_answer_writes_no_m3_filed_line(self):
+        # a rejected answer never reaches the OP_FILED site ⇒ no tracker row.
+        bad = _prov("The datastore is PostgreSQL on port 9999.",
+                    ["The auth service issues JWT access tokens."], session="sess-track")
+        bad["project_slug"] = "project_deadbeef"
+        out = m3.file_recalled_answer(self.db, bad, memory_dir=self.mem,
+                                      neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "rejected")
+        self.assertEqual(self._read_filed(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

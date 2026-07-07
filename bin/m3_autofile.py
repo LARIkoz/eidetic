@@ -39,7 +39,10 @@ M3 consumes a TYPED PROVENANCE RECORD (a plain dict), NOT a transcript:
      "sources": [{"card_id": str,              # a cited source card
                   "span": str}, ...],          # the cited chunk text (ground truth)
      "recall_query": str,                      # what was asked
-     "session_id": str}                        # the originating session
+     "session_id": str,                        # the originating session
+     "project_slug": str}                      # OPTIONAL — the lifecycle project_slug
+                                               #   (only for the FR-4 filed-page tracker;
+                                               #   absent ⇒ the producer never matches)
 
 The CONSUMER (this module: gate + dedup + file) is LIVE. The PRODUCER (a
 session-end hook mining the transcript, or the recall/answer path writing this
@@ -52,12 +55,18 @@ import os
 import re
 import sys
 from datetime import datetime
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import evidence as _EV  # noqa: E402  (events_enabled — the dark rail)
 import m1_contradiction as _M1  # noqa: E402  (neighbors_via_door — the S2 door)
 import remember as _REM  # noqa: E402  (build_card / _atomic_write / target_slug)
+
+try:
+    import lifecycle_signals as _LC  # noqa: E402  (shared O_APPEND single-write + ts)
+except Exception:  # pragma: no cover
+    _LC = None
 
 try:
     import compound as _COMPOUND
@@ -539,6 +548,45 @@ def _log_path_for(index_db_path):
     return os.path.join(os.path.dirname(os.path.dirname(index_db_path)), "log.md")
 
 
+# The structured filed-page tracker the FR-4 producer reads to correlate a filed
+# page with a same-session test pass — a machine-queryable sibling of the oplog.
+M3_FILED_FILE = "m3_filed.jsonl"
+TEST_SIGNALS_FILE = "test_signals.jsonl"
+
+
+def _events_dir_for(index_db_path):
+    """`<root>/events` from `<root>/db/index.db` (the same `<memory-system>/events`
+    lifecycle_signals writes to). None ⇒ no db path ⇒ skip (never a live fallback)."""
+    if not index_db_path:
+        return None
+    return os.path.join(os.path.dirname(os.path.dirname(index_db_path)), "events")
+
+
+def _track_filed_page(index_db_path, provenance, filed_slug, filed_path):
+    """Step-3: append a structured filing row to `<memory-system>/events/m3_filed.jsonl`
+    at the OP_FILED site so the FR-4 producer can correlate this filed page with a
+    same-session test pass. session_id/project_slug come from the OPTIONAL provenance
+    keys; absent ⇒ empty strings (the producer simply never matches it — fail toward
+    no-lift). Reuses lifecycle_signals' shared O_APPEND single-write helper. Only ever
+    reached inside the already-`_active()`-gated filing path, so nothing is tracked
+    when M3 is dark."""
+    events_dir = _events_dir_for(index_db_path)
+    if _LC is None or events_dir is None:
+        return
+    record = {
+        "ts": _LC._recorded_at(),
+        "session_id": str(provenance.get("session_id") or ""),
+        "project_slug": str(provenance.get("project_slug") or ""),
+        "filed_slug": filed_slug,
+        "filed_path": filed_path,
+    }
+    try:
+        _LC._atomic_append_jsonl(Path(os.path.join(events_dir, M3_FILED_FILE)),
+                                 _LC._compact_json(record))
+    except Exception:  # pragma: no cover — tracking is best-effort, never blocks filing
+        pass
+
+
 def _oplog(index_db_path, op, title, *, extra=None):
     log_path = _log_path_for(index_db_path)
     if _OPLOG is None or log_path is None:
@@ -586,6 +634,7 @@ def _file_new_page(index_db_path, provenance, title, scores, *, memory_dir=None,
                               _FILE_TYPE, related=[])
     _REM._atomic_write(path, content)
     _oplog(index_db_path, OP_FILED, title, extra=f"path={path} conf=0.40")
+    _track_filed_page(index_db_path, provenance, slug, path)
     return {"action": "filed", "path": path, "confidence": 0.40, "support": scores}
 
 
