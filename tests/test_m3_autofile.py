@@ -1166,5 +1166,145 @@ class FiledTrackingTest(M3Base):
         self.assertEqual(self._read_filed(), [])
 
 
+# --- Step-4: the FR-4 producer (AC-4/6/7/8/9/10/12) --------------------------
+class ProducerTest(M3Base):
+    ANSWER = "The auth service issues JWT access tokens for user sessions."
+    SPANS = ["The auth service issues JWT access tokens for user sessions."]
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(lambda: os.environ.pop("EIDETIC_PRODUCER", None))
+
+    def _events_dir(self):
+        d = os.path.join(os.path.dirname(os.path.dirname(self.db)), "events")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _write_signal(self, session, project_slug, signal="test_pass"):
+        row = {"ts": "2026-07-08T10:00:00.000Z", "session_id": session,
+               "project_slug": project_slug, "signal": signal}
+        with open(os.path.join(self._events_dir(), "test_signals.jsonl"), "a",
+                  encoding="utf-8") as f:
+            f.write(_json.dumps(row) + "\n")
+
+    def _file(self, project_slug, session, query="auth token policy"):
+        prov = _prov(self.ANSWER, self.SPANS, query=query, session=session)
+        prov["project_slug"] = project_slug
+        out = m3.file_recalled_answer(self.db, prov, memory_dir=self.mem,
+                                      neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "filed")
+        return out
+
+    # AC-8: matching test + filed page → 1 affirmation, verified_by_test on card.
+    def test_ac8_matching_test_and_filed_mints_verified_by_test(self):
+        out = self._file("project_alpha", "sess-1")
+        self._write_signal("sess-1", "project_alpha")
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        results = m3.produce_test_affirmations(self.db, session_id="sess-1")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["promoted"], "verified_by_test")
+        self.assertEqual([e["event_type"] for e in _events(out["path"])],
+                         ["verified_by_test"])
+        self.assertAlmostEqual(self._index_conf(out["path"]), 0.55, places=6)  # 0.40+0.15
+
+    # AC-9: idempotent — a 2nd producer run mints no duplicate event.
+    def test_ac9_idempotent_second_run_no_duplicate(self):
+        out = self._file("project_alpha", "sess-1")
+        self._write_signal("sess-1", "project_alpha")
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        m3.produce_test_affirmations(self.db, session_id="sess-1")
+        again = m3.produce_test_affirmations(self.db, session_id="sess-1")
+        self.assertEqual(again[0]["reason"], "idempotent_skip")
+        self.assertEqual([e["event_type"] for e in _events(out["path"])],
+                         ["verified_by_test"])   # still exactly one
+        self.assertAlmostEqual(self._index_conf(out["path"]), 0.55, places=6)
+
+    # AC-4: gated OFF by default (EIDETIC_PRODUCER unset) → [].
+    def test_ac4_gated_off_returns_empty(self):
+        out = self._file("project_alpha", "sess-1")
+        self._write_signal("sess-1", "project_alpha")
+        os.environ.pop("EIDETIC_PRODUCER", None)   # OFF
+        self.assertEqual(m3.produce_test_affirmations(self.db, session_id="sess-1"), [])
+        self.assertEqual(_events(out["path"]), [])   # no event minted
+
+    # AC-6: filed page but NO test signal → 0 affirmations.
+    def test_ac6_no_test_signal_no_affirmation(self):
+        out = self._file("project_alpha", "sess-1")
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        self.assertEqual(m3.produce_test_affirmations(self.db, session_id="sess-1"), [])
+        self.assertEqual(_events(out["path"]), [])
+
+    # AC-7: test signal but NO filed page → 0 affirmations.
+    def test_ac7_test_signal_no_filed_page(self):
+        self._write_signal("sess-1", "project_alpha")
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        self.assertEqual(m3.produce_test_affirmations(self.db, session_id="sess-1"), [])
+
+    # AC-10: cross-project — test in A, page filed from B → NO affirmation.
+    def test_ac10_cross_project_no_match(self):
+        out = self._file("project_beta", "sess-1")     # page filed in project B
+        self._write_signal("sess-1", "project_alpha")  # test passed in project A
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        self.assertEqual(m3.produce_test_affirmations(self.db, session_id="sess-1"), [])
+        self.assertEqual(_events(out["path"]), [])
+
+    # AC-10b: a signal with an EMPTY project_slug never binds (non-empty guard).
+    def test_ac10b_empty_project_slug_never_binds(self):
+        out = self._file("", "sess-1")                 # filed with no project binding
+        self._write_signal("sess-1", "")               # signal with no project binding
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        self.assertEqual(m3.produce_test_affirmations(self.db, session_id="sess-1"), [])
+        self.assertEqual(_events(out["path"]), [])
+
+    # cross-session: same project, different session → NO affirmation.
+    def test_cross_session_no_match(self):
+        out = self._file("project_alpha", "sess-A")
+        self._write_signal("sess-B", "project_alpha")
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        self.assertEqual(m3.produce_test_affirmations(self.db, session_id="sess-A"), [])
+        self.assertEqual(_events(out["path"]), [])
+
+    # AC-12: all dark (M3 off) — producer mints nothing on any card.
+    def test_ac12_dark_mints_nothing(self):
+        out = self._file("project_alpha", "sess-1")     # filed while flags on
+        self._write_signal("sess-1", "project_alpha")
+        os.environ.pop("EIDETIC_CONFIDENCE_EVENTS", None)  # M3 dark now
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        results = m3.produce_test_affirmations(self.db, session_id="sess-1")
+        self.assertTrue(all(r["promoted"] is None for r in results))
+        self.assertEqual(_events(out["path"]), [])       # no event on the card
+        self.assertAlmostEqual(self._index_conf(out["path"]), 0.40, places=6)
+
+    # robustness: malformed JSONL lines are skipped, the good row still matches.
+    def test_malformed_jsonl_skipped(self):
+        out = self._file("project_alpha", "sess-1")
+        d = self._events_dir()
+        with open(os.path.join(d, "test_signals.jsonl"), "a", encoding="utf-8") as f:
+            f.write("{ this is not json\n")
+            f.write("\n")
+        self._write_signal("sess-1", "project_alpha")
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        results = m3.produce_test_affirmations(self.db, session_id="sess-1")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["promoted"], "verified_by_test")
+
+    # kind is a LITERAL — a forged signal cannot smuggle a different event kind.
+    def test_forged_signal_kind_ignored(self):
+        out = self._file("project_alpha", "sess-1")
+        # a signal row carrying an attacker-chosen "kind"/"signal" is irrelevant:
+        # the producer only reads project_slug/session_id/signal=="test_pass" and
+        # hardcodes kind="test_pass" at the affirm site.
+        self._write_signal("sess-1", "project_alpha", signal="test_pass")
+        d = self._events_dir()
+        with open(os.path.join(d, "test_signals.jsonl"), "a", encoding="utf-8") as f:
+            f.write(_json.dumps({"session_id": "sess-1", "project_slug": "project_alpha",
+                                 "signal": "test_pass", "kind": "confirmed"}) + "\n")
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        m3.produce_test_affirmations(self.db, session_id="sess-1")
+        types = [e["event_type"] for e in _events(out["path"])]
+        self.assertEqual(types, ["verified_by_test"])
+        self.assertNotIn("confirmed", types)
+
+
 if __name__ == "__main__":
     unittest.main()

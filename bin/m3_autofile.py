@@ -51,6 +51,7 @@ driven directly (like M2's `process_trigger`). An answer with NO traceable
 sources is rejected outright (FR-2): fail toward reject.
 """
 
+import json
 import os
 import re
 import sys
@@ -717,6 +718,110 @@ def affirm_filed_page(index_db_path, filed_path, affirmation, *, session_id=None
         return {"promoted": None, "reason": "unreadable"}
     return _apply_affirmation(index_db_path, filed_path, affirmation, rec["slug"],
                               session_id=session_id or affirmation.get("session_id"))
+
+
+# --- FR-4 producer: verified_by_test from a real test-runner exit-0 -----------
+def _producer_enabled():
+    """The producer gate (spec §Dark-safe gating) — OFF by default. Signals still
+    accrue in JSONL; nothing reads them until this flag is on."""
+    return os.environ.get("EIDETIC_PRODUCER", "").strip().lower() in (
+        "1", "on", "true", "yes")
+
+
+def _read_jsonl(path):
+    """Read a metadata JSONL file into a list of dicts. Malformed lines are skipped
+    SILENTLY (metadata, fail toward no-lift); a missing/unreadable file ⇒ []."""
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(obj, dict):
+                    rows.append(obj)
+    except OSError:
+        return []
+    return rows
+
+
+def newest_test_signal_session(index_db_path, memory_system=None):
+    """Fallback correlation key for the indexer when the ambient EIDETIC_SESSION_ID
+    is absent: the session_id of the most recent `test_pass` signal. Best-effort —
+    returns '' when there is none. Never raises."""
+    if memory_system:
+        events_dir = os.path.join(str(memory_system), "events")
+    else:
+        events_dir = _events_dir_for(index_db_path)
+    if not events_dir:
+        return ""
+    for row in reversed(_read_jsonl(os.path.join(events_dir, TEST_SIGNALS_FILE))):
+        if row.get("signal") == "test_pass" and row.get("session_id"):
+            return row.get("session_id")
+    return ""
+
+
+def produce_test_affirmations(index_db_path, *, session_id, memory_system=None):
+    """FR-4: mint `verified_by_test` events on M3-filed pages that share a project
+    with a passing test THIS session. A RANKING signal ("a test suite passed in this
+    project"), not a claim-level safety gate — project-level correlation is the
+    contract (spec §Why this is different).
+
+    Algorithm: read `test_signals.jsonl` → the set of project_slugs with a
+    `test_pass` this session; read `m3_filed.jsonl` → this session's filed pages;
+    for each filed page whose (non-empty) project_slug is in the passing set, call
+    `affirm_filed_page` with a `kind="test_pass"` affirmation. `"test_pass"` is a
+    STRING LITERAL here — the unforgeable property; no caller input flows into it.
+
+    Robustness: gated OFF by default (EIDETIC_PRODUCER); malformed rows skipped;
+    missing files ⇒ []; NEVER raises out of the producer. affirm_filed_page is
+    itself `_active()`-gated, so when M3 is dark this mints nothing."""
+    if not _producer_enabled():
+        return []
+    if memory_system:
+        events_dir = os.path.join(str(memory_system), "events")
+    else:
+        events_dir = _events_dir_for(index_db_path)
+    if not events_dir:
+        return []
+
+    signals = _read_jsonl(os.path.join(events_dir, TEST_SIGNALS_FILE))
+    filed = _read_jsonl(os.path.join(events_dir, M3_FILED_FILE))
+
+    passing = {
+        (row.get("project_slug") or "")
+        for row in signals
+        if row.get("session_id") == session_id and row.get("signal") == "test_pass"
+    }
+    passing.discard("")  # an empty project_slug can never bind a filed page
+
+    results = []
+    for row in filed:
+        if row.get("session_id") != session_id:
+            continue
+        slug = row.get("project_slug") or ""
+        if not slug or slug not in passing:           # cross-project / no-project ⇒ no match
+            continue
+        filed_path = row.get("filed_path")
+        filed_slug = row.get("filed_slug")
+        if not filed_path or not filed_slug:
+            continue
+        affirmation = {
+            "kind": "test_pass",   # LITERAL — the unforgeable property (spec §Authenticity)
+            "target": filed_slug,
+            "session_id": session_id,
+        }
+        try:
+            res = affirm_filed_page(index_db_path, filed_path, affirmation,
+                                    session_id=session_id)
+        except Exception:  # pragma: no cover — never raise out of the producer
+            continue
+        results.append(res)
+    return results
 
 
 # --- the pipeline (FR-1/FR-2/FR-3/FR-7) --------------------------------------
