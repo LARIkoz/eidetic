@@ -161,14 +161,37 @@ M2_RELATED_MIN_DEFAULT = 0.78
 # semantically unrelated). M1 is clean because a cross-encoder confirms; M2 had none
 # — that asymmetry was the bug. M2_RELEVANCE_MIN is the SECOND gate: the S5
 # cross-encoder (jina-reranker-v2) relevance logit, checked on the EDIT before M2
-# touches a page. Owner calibration (his box; reranker BROKEN on chabrec → ONNX
-# missing, so tests MOCK it): on 16 labeled real pairs the 0.0 threshold admits 0/8
-# spurious and 5/8 strong-related (the 3 dropped "related" are weak topic-tag
-# adjacency — correctly rejected). Precision-first: a missed synthesis is safe, a
-# spurious edit pollutes. Profile-aware like M2_RELATED_MIN. FAIL-CLOSED in code: no
-# reranker / None / below floor ⇒ NO edit (never cosine-only).
-M2_RELEVANCE_MIN = {"multilingual": 0.0, "english": 0.0}
-M2_RELEVANCE_MIN_DEFAULT = 0.0
+# touches a page. FAIL-CLOSED in code: no reranker / None / below floor ⇒ NO edit
+# (never cosine-only). Profile-aware like M2_RELATED_MIN.
+#
+# M2CAL calibration (owner's box, REAL 1390-card store, read-only dry-run). The
+# earlier 0.0 floor was an UNCALIBRATED placeholder: it was chosen when the reranker
+# was unprovisioned (BROKEN on chabrec → ONNX missing) so no real logit distribution
+# existed. The M2-activation dry-run over the real store MEASURED that distribution
+# for the first time: rel min=-3.34, median=-0.20, max=+1.38. A 0.0 floor therefore
+# admits the entire top ~third of neighbors INCLUDING junk — e.g. the semantically-
+# unrelated pair `github-anchor-slugify`↔`key-hunt` scores rel=-2.9 (correctly deep
+# negative) but many noise pairs sit in [0.0, 0.75) and would pass. TRUE relations
+# score ≥0.75 (measured: two obd-seo builder projects at rel=1.05). Because median is
+# NEGATIVE, ≥0.75 is well into the right tail — precision-first, as an M2 edit mutates
+# page bytes and there is no confirmer behind it (this floor IS the edit-precision
+# gate). Raising 0.0 → 0.75 is the core M2CAL over-fire fix (the dry-run projected
+# ~2845 synthesis edits at 0.0, 60% of them cross-project). Do NOT lower without
+# re-measuring the reranker logit distribution on the deployment's own store.
+M2_RELEVANCE_MIN = {"multilingual": 0.75, "english": 0.75}
+M2_RELEVANCE_MIN_DEFAULT = 0.75
+
+# M2CAL supersession bar (spec-m2-synthesis over-fire fix, change #3). The auto-
+# supersession path (marking a card obsolete via frontmatter `superseded_by` + a
+# terminal `contradicted` event) is DESTRUCTIVE and measured ~100% FALSE-positive on
+# the real store (every sampled same-project supersession was two DISTINCT docs, not
+# an evolution of one). It is therefore SUGGESTION-ONLY by default and only auto-
+# applies behind the explicit EIDETIC_M2_AUTOSUPERSEDE flag AND above this STRICT
+# relevance bar — set to 1.0 (stricter than the 0.75 synthesis floor) because
+# retiring a page is higher-consequence than annotating one: only a pair the cross-
+# encoder scores at/above the very top of the measured band (max +1.38) may auto-
+# retire. Reuses the same S5 reranker logit as M2_RELEVANCE_MIN.
+M2_SUPERSEDE_MIN = 1.0
 
 # M3 auto-file (spec-m3-autofile FR-1/FR-2). M3 files a recalled answer back as a
 # typed page ONLY through a claim-support gate with teeth, at agent cold-start.

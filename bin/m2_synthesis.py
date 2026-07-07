@@ -36,13 +36,15 @@ except Exception:  # pragma: no cover
 
 try:
     from constants import (M2_FANOUT, M2_RELATED_MIN, M2_RELATED_MIN_DEFAULT,
-                           M2_RELEVANCE_MIN, M2_RELEVANCE_MIN_DEFAULT)
+                           M2_RELEVANCE_MIN, M2_RELEVANCE_MIN_DEFAULT,
+                           M2_SUPERSEDE_MIN)
 except ImportError:  # pragma: no cover
     M2_FANOUT = 8
     M2_RELATED_MIN = {"multilingual": 0.78, "english": 0.62}
     M2_RELATED_MIN_DEFAULT = 0.78
-    M2_RELEVANCE_MIN = {"multilingual": 0.0, "english": 0.0}
-    M2_RELEVANCE_MIN_DEFAULT = 0.0
+    M2_RELEVANCE_MIN = {"multilingual": 0.75, "english": 0.75}
+    M2_RELEVANCE_MIN_DEFAULT = 0.75
+    M2_SUPERSEDE_MIN = 1.0
 
 AUTOMATED_ACTOR = "test"  # tier-2 for the supersession terminal (like M1)
 
@@ -55,6 +57,20 @@ def m2_enabled():
     converges precision on realistic corpora (spec §6). Dark-safe (FR-9) holds
     either way — off ⇒ no selection, no mutation, no event."""
     return os.environ.get("EIDETIC_M2_SYNTHESIS", "").strip().lower() in (
+        "1", "on", "true", "yes")
+
+
+def m2_autosupersede_enabled():
+    """M2CAL change #3 — the auto-MUTATION arm of supersession, dormant by default.
+    Detection (the temporal-evolution classifier) always runs and, by default, only
+    SUGGESTS (op-log `supersession_suggestion`); it NEVER marks a card obsolete
+    (frontmatter `superseded_by` + terminal `contradicted` event) unless this flag is
+    explicitly on. Rationale (M2CAL): the real-store dry-run measured ~100% FALSE-
+    positives on same-project supersessions (two distinct docs, not one evolving) —
+    auto-retiring cards is destructive, so the DETECTION is kept as a human-review
+    suggestion while the auto-MUTATION is removed from the default path. Even when on,
+    the auto path stays same-project (the M2CAL choke) AND above M2_SUPERSEDE_MIN."""
+    return os.environ.get("EIDETIC_M2_AUTOSUPERSEDE", "").strip().lower() in (
         "1", "on", "true", "yes")
 
 
@@ -588,11 +604,24 @@ def process_trigger(index_db_path, trigger_path, meta, body, *, neighbors,
     outcomes = []
 
     # Resolve the selected set once and classify editability (FR-2).
+    # M2CAL change #1 — SAME-PROJECT GATE (mirrors M1 m1_contradiction.py:465). The
+    # WRITE path (synthesis edit AND supersession, both of which iterate `selected`
+    # below) must be same-project: cross-project relatedness is for READ/search only.
+    # The real-store dry-run showed 60% of M2's projected edits were CROSS-project
+    # (e.g. synthesizing/superseding between unrelated projects that merely share
+    # vocabulary). Drop any neighbor whose project differs from the trigger's BEFORE
+    # it can be synthesized or superseded; surface it as skip_cross_project for
+    # diagnostics. Because supersession routes through this same `selected` list, this
+    # single choke covers both write actions.
     selected = []
     for path, score in select_related(trigger_path, neighbors):
         P = _M1._record_from_file(path)
-        if P is not None:
-            selected.append((path, score, P))
+        if P is None:
+            continue
+        if P["project"] != T["project"]:
+            outcomes.append({"path": path, "action": "skip_cross_project"})
+            continue  # cross-project neighbors never synthesized OR superseded
+        selected.append((path, score, P))
 
     # M2.1 F1: the RELEVANCE gate. The cosine gate (M2_RELATED_MIN) is recall-only;
     # a cross-encoder must confirm P is GENUINELY related to T before M2 edits it.
@@ -638,14 +667,34 @@ def process_trigger(index_db_path, trigger_path, meta, body, *, neighbors,
             outcomes.append({"path": path, "action": "deferred_to_m1"})
             continue
 
-        # FR-7: gated temporal supersession (M2 is the sole superseded_by setter).
+        # FR-7 + M2CAL change #3: temporal supersession is SUGGESTION-ONLY by default.
+        # The detection (temporal-evolution classifier) always runs, but the
+        # DESTRUCTIVE auto-MUTATION (frontmatter `superseded_by` + terminal
+        # `contradicted` event, via `_apply_supersession`) fires ONLY when ALL hold:
+        #   (a) EIDETIC_M2_AUTOSUPERSEDE is explicitly on (default OFF), AND
+        #   (b) the pair is same-project (already guaranteed — `selected` is same-
+        #       project gated above — but re-asserted here for defence in depth), AND
+        #   (c) this path's reranker relevance ≥ the STRICT M2_SUPERSEDE_MIN bar.
+        # Otherwise (the default) M2 NEVER mutates the target: it emits an op-log
+        # `supersession_suggestion` (target slug, trigger, reason=auto-suggestion) for
+        # human review and moves on. Rationale (M2CAL): ~100% measured FP — auto-
+        # marking cards obsolete is destructive, so keep the DETECTION, drop the
+        # default auto-MUTATION.
         try:
             is_sup = supersedes(T, P)
         except Exception:
             is_sup = False
         if is_sup:
-            act = _apply_supersession(index_db_path, T, P)
-            outcomes.append({"path": path, "action": act})
+            same_project = (P["project"] == T["project"])
+            r_sup = rel_by_path.get(path)
+            if (m2_autosupersede_enabled() and same_project
+                    and r_sup is not None and r_sup >= M2_SUPERSEDE_MIN):
+                act = _apply_supersession(index_db_path, T, P)
+                outcomes.append({"path": path, "action": act})
+            else:
+                _oplog(index_db_path, OP_SUPERSESSION_SUGGESTION, P["slug"],
+                       trigger=T, score=score, extra="reason=auto-suggestion")
+                outcomes.append({"path": path, "action": "supersession_suggestion"})
             continue
 
         # M2.1 F1: relevance gate on the EDIT. FAIL-CLOSED — no reranker / None /

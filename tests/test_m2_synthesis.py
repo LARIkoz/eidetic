@@ -61,6 +61,7 @@ class M2Base(unittest.TestCase):
     def tearDown(self):
         os.environ.pop("EIDETIC_CONFIDENCE_EVENTS", None)
         os.environ.pop("EIDETIC_M2_SYNTHESIS", None)
+        os.environ.pop("EIDETIC_M2_AUTOSUPERSEDE", None)
         m2.register_relevance(None)
         if hasattr(self, "_saved_nvd"):
             m1.neighbors_via_door = self._saved_nvd
@@ -334,6 +335,8 @@ class PipelineTest(M2Base):
         self.assertEqual(self._events(pi), [])
 
     def test_ac8_gated_supersession(self):
+        # M2CAL: exercise the auto-MUTATION arm (suggestion-only by default).
+        os.environ["EIDETIC_M2_AUTOSUPERSEDE"] = "on"
         # a NON-dominating trigger (managed target, but trigger is older/equal-tier)
         # cannot set superseded_by → suggestion, target untouched.
         p_hi = self._write("hi.md", _card("hi-page", source="agent-extracted",
@@ -564,6 +567,13 @@ class D1BodyTest(M2Base, TriggerMixin):
 
 # --- D2: supersession classifier ---------------------------------------------
 class D2SupersedesTest(M2Base, TriggerMixin):
+    def setUp(self):
+        super().setUp()
+        # M2CAL change #3: supersession is suggestion-only by DEFAULT; these tests
+        # exercise the auto-MUTATION arm, so they opt into it explicitly (same-project
+        # + rel≥M2_SUPERSEDE_MIN still enforced in code). tearDown pops the flag.
+        os.environ["EIDETIC_M2_AUTOSUPERSEDE"] = "on"
+
     def _run(self, target_body, trig_body, trig_src="user-explicit"):
         p = self._write("target.md", _card("t2-page", source="agent-extracted", body=target_body))
         self._index([p]).close()
@@ -784,7 +794,7 @@ class M21RelevanceGateTest(M2Base, TriggerMixin):
         return open(log, encoding="utf-8").read().count(f"op={verb}") if os.path.exists(log) else 0
 
     def test_gate_admits_when_relevant(self):
-        p, out = self._run(lambda a, b: 0.5)   # ≥ 0.0 floor
+        p, out = self._run(lambda a, b: 0.9)   # ≥ 0.75 floor (M2CAL)
         self.assertEqual(out[0]["action"], "edited")
         self.assertIn("eidetic:synthesis:begin", self._read(p))
 
@@ -833,8 +843,8 @@ class M21RelevanceGateTest(M2Base, TriggerMixin):
         # a cosine-only strawman (ignore the score) WOULD edit — proven live in the
         # code revert-verify (see M2-PROGRESS §M2.1); here assert the gate discriminates.
         out2 = m2.process_trigger(self.db, tp, tm, "t", neighbors=[{"score": 0.9, "path": p}],
-                                  confirmer=NO, supersedes=NOSUP, relevance_fn=lambda a, b: 0.01)
-        self.assertEqual(out2[0]["action"], "edited")
+                                  confirmer=NO, supersedes=NOSUP, relevance_fn=lambda a, b: 0.8)
+        self.assertEqual(out2[0]["action"], "edited")   # ≥ 0.75 floor (M2CAL)
 
 
 # --- M2.1 F2: exempt behavioral + transient cards ----------------------------
@@ -995,6 +1005,166 @@ class R1BrokenRegionTest(M2Base, TriggerMixin):
         self.assertEqual(out, [])
         self.assertEqual(self._read(p), before)
         self.assertEqual(self._oplog_count("region_broken"), 0)
+
+
+# ===================== M2CAL — activation calibration ======================
+# The three load-bearing M2CAL changes: (1) same-project WRITE gate, (2) real
+# 0.75 relevance floor, (3) supersession suggestion-only by default. Each test
+# below is written so it FAILS if its guard is reverted (RED-on-break).
+class M2CalTest(M2Base, TriggerMixin):
+    def _oplog_count(self, verb):
+        log = os.path.join(os.path.dirname(os.path.dirname(self.db)), "log.md")
+        if not os.path.exists(log):
+            return 0
+        return open(log, encoding="utf-8").read().count(f"op={verb}")
+
+    def _other_project_page(self, fn, text):
+        """Write a managed page under a DIFFERENT project (proj-b), so its detected
+        `project` differs from the trigger's (proj-a). Returns the path."""
+        mem_b = os.path.join(self.tmp, ".claude", "projects", "proj-b", "memory")
+        os.makedirs(mem_b, exist_ok=True)
+        p = os.path.join(mem_b, fn)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(text)
+        return p
+
+    # (1) SAME-PROJECT GATE — a cross-project pair is neither synthesized nor superseded.
+    def test_cross_project_pair_skipped_no_synthesis_no_supersession(self):
+        # sanity: the two paths really are in different projects
+        xp = self._other_project_page("x.md", _card("x-page", source="agent-extracted",
+                                                     body="shipped the obd seo builder v2"))
+        self.assertNotEqual(
+            index_impl.detect_relation_namespace(xp, index_impl.detect_project(xp) or ""),
+            index_impl.detect_relation_namespace(self.mem + "/z.md",
+                                                 index_impl.detect_project(self.mem + "/z.md") or ""))
+        before = self._read(xp)
+        tp, tm = self._trig()  # trigger lives under proj-a
+        # SUP (would supersede) + admit-all relevance + AUTOSUPERSEDE on: the ONLY
+        # thing stopping a write is the same-project gate.
+        os.environ["EIDETIC_M2_AUTOSUPERSEDE"] = "on"
+        out = m2.process_trigger(self.db, tp, tm, "the plan for the obd seo builder",
+                                 neighbors=[{"score": 0.99, "path": xp}],
+                                 confirmer=NO, supersedes=SUP, relevance_fn=lambda a, b: 5.0)
+        self.assertEqual([o["action"] for o in out], ["skip_cross_project"])
+        self.assertEqual(self._read(xp), before)                 # zero mutation
+        self.assertNotIn("eidetic:synthesis:begin", self._read(xp))  # no synthesis
+        self.assertIsNone(m2._read_frontmatter_key(self._read(xp), "superseded_by"))  # no supersession
+        self.assertEqual(self._events(xp), [])                   # no event
+
+    def test_revert_verify_cross_project_gate_is_load_bearing(self):
+        # REVERT-VERIFY: neuter the project on the record → the same pair now edits,
+        # proving the gate (not some other filter) is what blocks the cross-project write.
+        xp = self._other_project_page("x.md", _card("x-page", source="agent-extracted",
+                                                     body="Neighbor body."))
+        tp, tm = self._trig()
+        out = m2.process_trigger(self.db, tp, tm, "trigger body",
+                                 neighbors=[{"score": 0.99, "path": xp}],
+                                 confirmer=NO, supersedes=NOSUP, relevance_fn=lambda a, b: 5.0)
+        self.assertEqual(out[0]["action"], "skip_cross_project")  # gated
+        # monkeypatch _record_from_file to force same project → the write happens
+        orig = m1._record_from_file
+        m1._record_from_file = lambda path: (lambda r: (r.update({"project": "proj-a"}) or r))(orig(path))
+        try:
+            out2 = m2.process_trigger(self.db, tp, tm, "trigger body",
+                                      neighbors=[{"score": 0.99, "path": xp}],
+                                      confirmer=NO, supersedes=NOSUP, relevance_fn=lambda a, b: 5.0)
+            self.assertEqual(out2[0]["action"], "edited")
+        finally:
+            m1._record_from_file = orig
+
+    # (2) REAL RELEVANCE FLOOR — same-project, rel < 0.75 → relevance_skipped.
+    def test_same_project_below_floor_skipped(self):
+        p = self._write("t.md", _card("t-page", source="agent-extracted", body="body"))
+        tp, tm = self._trig()
+        out = m2.process_trigger(self.db, tp, tm, "t", neighbors=[{"score": 0.9, "path": p}],
+                                 confirmer=NO, supersedes=NOSUP, relevance_fn=lambda a, b: 0.74)
+        self.assertEqual(out[0]["action"], "relevance_skipped")  # 0.74 < 0.75
+        self.assertNotIn("eidetic:synthesis:begin", self._read(p))
+        self.assertEqual(self._events(p), [])
+
+    # (2) REAL RELEVANCE FLOOR — same-project, rel ≥ 0.75 → synthesized (edit + one observed).
+    def test_same_project_at_floor_synthesized(self):
+        p = self._write("t.md", _card("t-page", source="agent-extracted", body="body"))
+        tp, tm = self._trig()
+        out = m2.process_trigger(self.db, tp, tm, "t", neighbors=[{"score": 0.9, "path": p}],
+                                 confirmer=NO, supersedes=NOSUP, relevance_fn=lambda a, b: 0.75)
+        self.assertEqual(out[0]["action"], "edited")            # exactly at the floor admits
+        self.assertIn("eidetic:synthesis:begin", self._read(p))
+        self.assertEqual([e["event_type"] for e in self._events(p)], ["observed"])  # exactly one
+
+    # (3) SUPERSESSION SUGGESTION-ONLY BY DEFAULT — no mutation, no terminal event.
+    def test_supersession_suggestion_only_by_default(self):
+        # a dominating temporal supersession that WOULD auto-retire the target if the
+        # flag were on; with default flags it only SUGGESTS.
+        p = self._write("target.md", _card("t2-page", source="agent-extracted",
+                                            body="the plan to ship t2 page"))
+        self._index([p]).close()
+        trig = self._write("s2.md", _card("t2-page-src", source="user-explicit"))
+        tm = {"name": "t2-page-src", "type": "project", "source": "user-explicit",
+              "last_verified": NEW}
+        before = self._read(p)
+        out = m2.process_trigger(self.db, trig, tm, "shipped t2 page to production",
+                                 neighbors=[{"score": 0.9, "path": p}], confirmer=NO)
+        self.assertEqual(out[0]["action"], "supersession_suggestion")
+        # frontmatter superseded_by UNCHANGED (still absent), no terminal contradicted event
+        self.assertIsNone(m2._read_frontmatter_key(self._read(p), "superseded_by"))
+        self.assertEqual(self._events(p), [])                 # NO terminal event
+        self.assertEqual(before.split("## Evidence")[0], self._read(p).split("## Evidence")[0])
+        self.assertEqual(self._oplog_count("supersession_suggestion"), 1)  # op-log suggestion
+        # NO bare auto-mutation op (`op=supersession target=` — trailing space is what
+        # separates it from the `op=supersession_suggestion` prefix).
+        log = os.path.join(os.path.dirname(os.path.dirname(self.db)), "log.md")
+        self.assertNotIn("op=supersession target=", open(log, encoding="utf-8").read())
+
+    def test_revert_verify_autosupersede_flag_reaches_auto_path(self):
+        # with EIDETIC_M2_AUTOSUPERSEDE=on + same-project + rel≥bar the auto path is
+        # still reachable → the target is actually superseded (mutation + terminal event).
+        os.environ["EIDETIC_M2_AUTOSUPERSEDE"] = "on"
+        p = self._write("target.md", _card("t2-page", source="agent-extracted",
+                                            body="the plan to ship t2 page"))
+        self._index([p]).close()
+        trig = self._write("s2.md", _card("t2-page-src", source="user-explicit"))
+        tm = {"name": "t2-page-src", "type": "project", "source": "user-explicit",
+              "last_verified": NEW}
+        out = m2.process_trigger(self.db, trig, tm, "shipped t2 page to production",
+                                 neighbors=[{"score": 0.9, "path": p}], confirmer=NO)
+        self.assertEqual(out[0]["action"], "superseded")
+        self.assertEqual(m2._read_frontmatter_key(self._read(p), "superseded_by"), "t2-page-src")
+        self.assertEqual([e["event_type"] for e in self._events(p)], ["contradicted"])
+
+    def test_autosupersede_flag_on_but_rel_below_bar_stays_suggestion(self):
+        # flag on, same-project, but rel < M2_SUPERSEDE_MIN (1.0) → still suggestion-only
+        # (the strict bar is load-bearing, not just the flag).
+        os.environ["EIDETIC_M2_AUTOSUPERSEDE"] = "on"
+        p = self._write("target.md", _card("t2-page", source="agent-extracted",
+                                            body="the plan to ship t2 page"))
+        self._index([p]).close()
+        trig = self._write("s2.md", _card("t2-page-src", source="user-explicit"))
+        tm = {"name": "t2-page-src", "type": "project", "source": "user-explicit",
+              "last_verified": NEW}
+        out = m2.process_trigger(self.db, trig, tm, "shipped t2 page to production",
+                                 neighbors=[{"score": 0.9, "path": p}], confirmer=NO,
+                                 relevance_fn=lambda a, b: 0.9)  # 0.9 < 1.0 bar
+        self.assertEqual(out[0]["action"], "supersession_suggestion")
+        self.assertIsNone(m2._read_frontmatter_key(self._read(p), "superseded_by"))
+
+    # (6) DARK-SAFE regression — with M2 flags OFF, a full index of a fixture is a no-op.
+    def test_dark_safe_full_index_is_noop(self):
+        self._saved_nvd = m1.neighbors_via_door
+        tgt = self._write("t.md", _card("t-page", source="agent-extracted", body="target body"))
+        trg = self._write("s.md", _card("s-page", source="user-explicit", body="signal body"))
+        m1.neighbors_via_door = lambda db, probe, exclude_paths=(): (
+            [] if tgt in exclude_paths else [{"score": 0.9, "path": tgt}])
+        # M2 flags OFF (events rail may be on, but the M2 activation flag is off)
+        os.environ.pop("EIDETIC_M2_SYNTHESIS", None)
+        before_tgt, before_trg = self._read(tgt), self._read(trg)
+        conn = index_impl.init_db(self.db); index_impl.run_full(conn, [tgt, trg]); conn.close()
+        # byte-identical: no synthesis region, no event, no op-log
+        self.assertEqual(self._read(tgt), before_tgt)
+        self.assertEqual(self._read(trg), before_trg)
+        self.assertEqual(self._events(tgt), [])
+        self.assertEqual(self._oplog_count("synthesis_edit"), 0)
+        self.assertEqual(self._oplog_count("supersession_suggestion"), 0)
 
 
 if __name__ == "__main__":
