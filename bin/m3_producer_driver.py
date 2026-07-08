@@ -120,8 +120,13 @@ def drive(index_db_path, candidates, *, memory_dir=None, cwd=None,
     outcomes = []
     try:
         for cand in candidates:
+            # The miner (m3_recall_miner) emits `recalled_answer`; smoke/direct
+            # callers use `answer_text`. Accept BOTH — reading only `answer_text`
+            # silently treats every mined candidate as empty → empty_answer reject,
+            # i.e. the miner→driver path never files (caught in live observation).
             prov = build_provenance(
-                index_db_path, cand.get("answer_text") or "",
+                index_db_path,
+                cand.get("answer_text") or cand.get("recalled_answer") or "",
                 cand.get("recall_query") or "",
                 session_id=cand.get("session_id") or "",
                 project_slug=cand.get("project_slug") or "", k=k, conn=conn)

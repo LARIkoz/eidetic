@@ -243,6 +243,21 @@ if [ "$TSIZE" -lt 1000 ]; then
     exit 0
 fi
 
+# --- M3 auto-file driver (DARK; two independent locks) ------------------------
+# Mines this transcript for memory-recall answers and drives them through the
+# judge-gated filing pipeline (m3_hook.py). No-op unless EIDETIC_M3_DRIVER=on;
+# filing additionally requires EIDETIC_M3_AUTOFILE=on inside the gate.
+# Runs HERE (before the signal-extraction path) and in the BACKGROUND so it is
+# INDEPENDENT of that path — signal extraction has several early exits on empty/
+# failed codex output (lines below) that would otherwise starve M3 of ever firing.
+# Backgrounded + disowned so it survives this script's own exit; own loud log.
+if [ "${EIDETIC_M3_DRIVER:-}" = "on" ]; then
+    mkdir -p "$MEMORY_SYSTEM/events" 2>/dev/null || true
+    ( python3 "$MEMORY_SYSTEM/bin/m3_hook.py" "$TRANSCRIPT" \
+        >> "$MEMORY_SYSTEM/events/m3_driver.log" 2>&1 || true ) &
+    disown 2>/dev/null || true
+fi
+
 # Extract the end of the transcript for signal extraction (cost control).
 # Claude Code JSONL stores role/content under message.*, while older tests used
 # top-level role/content. Support both. Keep parsing on complete JSONL lines and
@@ -418,16 +433,5 @@ else
     printf '%s\n' "$RESULT" | python3 "$COMPOUND" "$(pwd)" 2>/dev/null || exit 0
 fi
 
-
-# --- M3 auto-file driver (DARK; two independent locks) ------------------------
-# Mines this transcript for memory-recall answers and drives them through the
-# judge-gated filing pipeline (m3_hook.py). No-op unless EIDETIC_M3_DRIVER=on;
-# filing additionally requires EIDETIC_M3_AUTOFILE=on inside the gate. Loud log,
-# never blocks session close.
-if [ "${EIDETIC_M3_DRIVER:-}" = "on" ] && [ -n "${TRANSCRIPT:-}" ] && [ -f "${TRANSCRIPT:-}" ]; then
-    mkdir -p "$MEMORY_SYSTEM/events" 2>/dev/null || true
-    python3 "$MEMORY_SYSTEM/bin/m3_hook.py" "$TRANSCRIPT" \
-        >> "$MEMORY_SYSTEM/events/m3_driver.log" 2>&1 || true
-fi
 
 exit 0

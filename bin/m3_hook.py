@@ -20,6 +20,46 @@ if _BIN not in sys.path:
     sys.path.insert(0, _BIN)
 
 
+def _reexec_under_sdk_python():
+    """The miner + judge call the shared SDK (shared_api_cache → needs `dotenv`,
+    `pydantic`, …). The session hook prepends the py3.12 `eidetic-mlx` venv to
+    PATH for embedding; that venv is ISOLATED (include-system-site-packages=false)
+    and lacks the SDK deps, so a bare `python3` here resolves to the venv and the
+    SDK import fails with ModuleNotFoundError. Inverse of embed.py's mlx re-exec:
+    when the current interpreter cannot load the SDK, re-exec under the first
+    python3 that CAN (system/homebrew). M3 does not need mlx — source retrieval
+    degrades to FTS-only. No-op when the current python already has the SDK, or
+    when no capable python is found (then M3 runs and reports the sdk error
+    loudly — no regression). Loop-guarded; opt out with EIDETIC_NO_M3_PY_REEXEC=1."""
+    if os.environ.get("EIDETIC_M3_PY_REEXEC") or os.environ.get("EIDETIC_NO_M3_PY_REEXEC"):
+        return
+    try:
+        import dotenv  # noqa: F401 — proxy: this interpreter can load the shared SDK
+        return
+    except Exception:
+        pass
+    import subprocess
+    seen = {os.path.realpath(sys.executable)}
+    for cand in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3",
+                 "/usr/bin/python3", os.path.join(sys.base_prefix, "bin", "python3")):
+        try:
+            if not cand or not os.path.exists(cand):
+                continue
+            rp = os.path.realpath(cand)
+            if rp in seen:
+                continue
+            seen.add(rp)
+            subprocess.run([cand, "-c", "import dotenv"], check=True, timeout=15,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            continue
+        os.environ["EIDETIC_M3_PY_REEXEC"] = "1"
+        try:
+            os.execv(cand, [cand, os.path.abspath(__file__), *sys.argv[1:]])
+        except Exception:
+            return  # exec failed → fall through under the current interpreter
+
+
 def main(argv):
     if len(argv) < 2 or not os.path.isfile(argv[1]):
         print(json.dumps({"m3_driver": "skip", "reason": "no_transcript"}))
@@ -57,4 +97,5 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    _reexec_under_sdk_python()
     sys.exit(main(sys.argv))
