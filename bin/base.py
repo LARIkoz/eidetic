@@ -307,6 +307,34 @@ def cmd_refresh(args):
     return _run_index(base, full=True)
 
 
+# ---------------------------------------------------------------- mlx interpreter route
+# The mlx embed engine is installed ONLY in the py3.12 `eidetic-mlx` venv. base.py is
+# invoked as `python3 base.py …` (system interpreter, no mlx), so the in-process embed
+# canary in `doctor` would silently fall back to FTS-only (canary → "skip", reported
+# green). When mlx is the selected engine, re-exec under the venv interpreter — the
+# python-entrypoint equivalent of the PATH prepend in index/search/doctor/update.sh + the
+# 2 session hooks (the 6 shell entrypoints; base.py doctor was the missed 7th). No-ops
+# off-mlx or without the venv, so it is safe on every machine. Opt out with
+# EIDETIC_NO_MLX_REEXEC=1. Reversible: delete this function and its call in __main__.
+def _reexec_under_mlx_venv():
+    if os.environ.get("EIDETIC_MLX_REEXEC") or os.environ.get("EIDETIC_NO_MLX_REEXEC"):
+        return  # already re-exec'd (loop guard) or explicitly opted out
+    engine = os.environ.get("EIDETIC_EMBED_ENGINE", "").strip()  # same order as embed.py
+    if not engine:
+        try:
+            with open(os.path.join(EIDETIC_ROOT, ".embed_engine"), encoding="utf-8") as f:
+                engine = f.read().strip()
+        except OSError:
+            return  # no engine file → default (fastembed/CPU); nothing to route
+    if engine != "mlx":
+        return
+    venv_py = os.path.expanduser("~/.venvs/eidetic-mlx/bin/python3")
+    if not os.path.exists(venv_py) or os.path.realpath(venv_py) == os.path.realpath(sys.executable):
+        return  # venv absent (other machines) or already running the venv interpreter
+    os.environ["EIDETIC_MLX_REEXEC"] = "1"
+    os.execv(venv_py, [venv_py, os.path.abspath(__file__), *sys.argv[1:]])
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="eidetic base", description="manage topic knowledge-bases")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -331,4 +359,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    _reexec_under_mlx_venv()
     sys.exit(main())

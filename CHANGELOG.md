@@ -14,13 +14,42 @@ an embedder-drift guard voids stale cosines. Additive — no behavior or schema
 changes; `embed.py`/`rerank.py`/`index.sh`/storage are byte-identical and
 existing indexes stay valid.
 
+**v6 metabolism stack — lands DARK BY DEFAULT** (each layer behind its own
+`EIDETIC_*` flag; with flags off the stack is a proven zero-diff no-op):
+
+- **Confidence lifecycle rails** (`bin/confidence.py`, `bin/evidence.py`): typed
+  `## Evidence` events with tiered weights folding into per-card confidence;
+  inert until `EIDETIC_CONFIDENCE_EVENTS=on`.
+- **M1 semantic contradiction detection** (`bin/m1_contradiction.py`):
+  vector-door neighbor scan, same-project gated, suggestion-only.
+- **M2 multi-page synthesis** (`bin/m2_synthesis.py`), calibrated on a real
+  1400-card store before landing: same-project gate, cross-encoder relevance
+  floor 0.75, supersession **suggestion-only** by default
+  (`EIDETIC_M2_AUTOSUPERSEDE` guard) — the uncalibrated form over-fired ~24x.
+- **M3 auto-file consumer** (`bin/m3_autofile.py`): claim-support-gated filing
+  of recalled answers at cold-start confidence 0.40. Ships **dark and
+  driverless** — nothing in production constructs its input record (a
+  documented seam), and a 2026-07-08 real-corpus dry-run measured it
+  not-activation-viable (0 faithful answers filed; the deterministic gate
+  cannot separate a faithful recall from a confident-wrong one). Kept as a
+  consumer seam only.
+- **Chunker H2-split** (spec FR-5): oversized-section splitting; embedded-content
+  window 1500 (`HASH_SCHEME trunc1500-v3` — already the live scheme, no reindex).
+
+## v5.13.2 (2026-07-03)
+
+Docs-only honesty patch — no code changes.
+
+- **README: the Karpathy LLM-Wiki claim now says what is true.** "Implemented end-to-end" is scoped to the wiki **structure** (compounding pages, typed schema, op-log); the maintenance **metabolism** (contradiction detection, multi-page synthesis, auto-filing) is explicitly labeled as the v6 roadmap, in all three places the claim appeared (intro lineage, Promote section, Design philosophy).
+- **README: removed a mis-pointed citation** — the "AI wiki concept" link in Design philosophy pointed to an unrelated Karpathy gist (a git-commit-message shell function), not a wiki document.
+
 ## v5.13.1 (2026-07-03)
 
 Ranking-integrity release: causal fixes to drift-penalty ranking, the declared truth-maintenance slice, and the compounding write-path, from two adversarial audits (2026-07-02/03). The anti-goals were ranking POISON and SILENT duplication; every fix below closes one such path and is guarded by a regression test that fails on the reverted code.
 
 **Drift-penalty ranking (`search_impl`/`assemble_context`):**
 
-- **Penalties multiply into freshness instead of replacing it** — v5.13.0's replacement let broken_wikilink (0.8) overwrite stale freshness (0.5) and *up-rank* a rotten card by +60%, while age_stale was a no-op on any >30-day card. Multiplying is monotonic: a finding can never raise a card.
+- **Penalties multiply into freshness instead of replacing it** — v5.13.0's replacement let broken_wikilink (0.8) overwrite stale freshness (0.5) and _up-rank_ a rotten card by +60%, while age_stale was a no-op on any >30-day card. Multiplying is monotonic: a finding can never raise a card.
 - **Distinct findings on one card compound** (product, floored at 0.1×) — keeping only the minimum let a three-problem card rank like a one-problem card. Duplicate findings of the same type still count once.
 
 **Declared truth-maintenance (`contradicts:`/`supersedes:`, index-time propagation):**

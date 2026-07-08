@@ -61,6 +61,29 @@ VECTOR_DIM = PROFILES[EMBED_PROFILE]["dim"]
 QUERY_PREFIX = PROFILES[EMBED_PROFILE]["query_prefix"]
 PASSAGE_PREFIX = PROFILES[EMBED_PROFILE]["passage_prefix"]
 
+# --- Embedding ENGINE: which runtime produces the SAME model's vectors ---------
+EMBED_ENGINES = ("fastembed", "mlx")
+
+
+def _active_engine(_config_path=None):
+    name = os.environ.get("EIDETIC_EMBED_ENGINE", "").strip()
+    if not name:
+        cfg = _config_path or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".embed_engine")
+        try:
+            with open(cfg, encoding="utf-8") as f:
+                name = f.read().strip()
+        except OSError:
+            name = ""
+    if name not in EMBED_ENGINES:
+        return "fastembed"
+    if name == "mlx" and EMBED_PROFILE != "multilingual":
+        return "fastembed"
+    return name
+
+
+EMBED_ENGINE = _active_engine()
+
 # fastembed defaults its model cache to TMPDIR (/var/folders/.../T), which macOS
 # periodically purges — silently evicting the ~2GB e5 weights and breaking all
 # vector search until a manual reindex. Pin to a persistent, env-overridable cache.
@@ -91,7 +114,52 @@ def _fastembed_version():
         return None
 
 
+def _engine_stamp():
+    if EMBED_ENGINE == "mlx":
+        import mlx_embed
+        return f"mlx:{mlx_embed.MLX_ENGINE_VERSION}"
+    return "fastembed"
+
+
 _model = None
+
+
+def _sweep_orphan_coreml_caches(max_age_s=7200, cap=500):
+    """Self-heal the CoreML EP temp leak.
+
+    onnxruntime's CoreMLExecutionProvider compiles the model to a
+    ~1 GB `$TMPDIR/onnxruntime-*.mlmodelc` bundle on every process and never
+    removes it — a killed embed (OOM on --full) leaks it for sure, and macOS's
+    own tmp-reaper only runs on reboot after 3 idle days. On a box that embeds
+    per-prompt this piled up to tens of thousands of dirs / hundreds of GB.
+
+    Sweep orphans (not touched for >max_age_s, so an in-flight compile in a
+    sibling worker is never hit) once per process, best-effort — embedding must
+    never fail because cleanup did. Capped so a large backlog drains over
+    several runs instead of blocking one embed on hundreds of rmtrees."""
+    import shutil
+    import tempfile
+    now = time.time()
+    removed = 0
+    try:
+        for entry in os.scandir(tempfile.gettempdir()):
+            if removed >= cap:
+                break
+            name = entry.name
+            if not (name.startswith("onnxruntime-") and name.endswith(".mlmodelc")):
+                continue
+            try:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                if now - entry.stat().st_mtime <= max_age_s:
+                    continue
+                shutil.rmtree(entry.path, ignore_errors=True)
+                removed += 1
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return removed
 
 
 def _embed_providers():
@@ -188,13 +256,18 @@ def _vector_meta_ok(vec_conn):
             f"hash_scheme {stored_scheme or 'none'} != expected {HASH_SCHEME} "
             "(content_hash formula changed — run index.sh --full)"
         )
-    # fastembed pooling/geometry drift: same model+dim can embed differently after
-    # a fastembed bump (e5 CLS->mean). Only flag when BOTH versions are known and
-    # differ — an absent stamp is a pre-stamp db (backward-compatible), and no live
-    # fastembed means vector search is unavailable anyway.
+    stored_engine = meta.get("embed_engine")
+    live_engine = _engine_stamp()
+    effective_stored = stored_engine or ("fastembed" if stored_model else None)
+    if effective_stored and effective_stored != live_engine:
+        mismatch.append(
+            f"embed_engine {effective_stored} != live {live_engine} "
+            "(different embedding runtime — run index.sh --full)"
+        )
     stored_fev = meta.get("fastembed_version")
     live_fev = _fastembed_version()
-    if stored_model and stored_fev and live_fev and stored_fev != live_fev:
+    if (live_engine == "fastembed" and effective_stored == "fastembed"
+            and stored_model and stored_fev and live_fev and stored_fev != live_fev):
         mismatch.append(
             f"fastembed {stored_fev} != live {live_fev} "
             "(embedder pooling/geometry may differ — run index.sh --full)"
@@ -239,11 +312,13 @@ def content_hash(name, desc, content, heading):
 
 
 def embed_texts(texts):
+    if EMBED_ENGINE == "mlx":
+        import mlx_embed
+        return mlx_embed.embed_texts([PASSAGE_PREFIX + t for t in texts])
+
     import numpy as np
 
     model = get_model()
-    # Indexed documents get the active profile's passage prefix (e5 "passage: ";
-    # bge-en none) — fastembed does not add it.
     embeddings = list(model.embed([PASSAGE_PREFIX + t for t in texts]))
     return [np.array(e, dtype=np.float32).tobytes() for e in embeddings]
 
@@ -255,6 +330,10 @@ def embed_query_texts(texts):
     sides as passage: inflates similarity and un-discriminates any gate built
     on it (compound._vector_gate). Callers comparing a QUERY-like text against
     stored/candidate passages must use this path, not embed_texts."""
+    if EMBED_ENGINE == "mlx":
+        import mlx_embed
+        return mlx_embed.embed_texts([QUERY_PREFIX + t for t in texts])
+
     import numpy as np
 
     model = get_model()
@@ -316,6 +395,7 @@ def run_full(index_db_path, vector_db_path):
         # the CURRENT fastembed, so this records the geometry of the whole db. The
         # search-time guard degrades to FTS the moment the live fastembed differs.
         vec_conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('fastembed_version',?)", (_fastembed_version(),))
+        vec_conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('embed_engine',?)", (_engine_stamp(),))
         vec_conn.commit()
         success = True
     except Exception as e:
@@ -424,10 +504,13 @@ def search(vector_db_path, query, limit=5):
     try:
         if not _vector_meta_ok(vec_conn):
             return []  # drift detected + warned; fail safe to FTS-only
-        model = get_model()
-        # Search queries get the active profile's query prefix (e5 "query: "; bge
-        # an asymmetric instruction) — fastembed does not add it.
-        q_vec = np.array(list(model.embed([QUERY_PREFIX + query]))[0], dtype=np.float32)
+        if EMBED_ENGINE == "mlx":
+            import mlx_embed
+            q_vec = np.frombuffer(
+                mlx_embed.embed_texts([QUERY_PREFIX + query])[0], dtype=np.float32)
+        else:
+            model = get_model()
+            q_vec = np.array(list(model.embed([QUERY_PREFIX + query]))[0], dtype=np.float32)
 
         rows = vec_conn.execute(
             "SELECT chunk_id, path, name, section_heading, content_hash, embedding FROM vectors"

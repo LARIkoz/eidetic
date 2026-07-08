@@ -363,7 +363,7 @@ Core principles:
 1. **Files are truth.** Indexes are derived. If the DB dies, rebuild from markdown in <1s.
 2. **Every memory must be findable** without knowing where it is. Cross-project search is the default.
 3. **Critical rules must never become invisible.** The system guarantees all behavioral rules reach the agent.
-4. **The system maintains itself** — or it dies. The AI agent does all indexing, linking, searching, compounding. Human curates when they want to, not because they have to.
+4. **The system maintains itself** — or it dies. The AI agent does all indexing, linking, searching, and compounding automatically. Human curates for _truth_ when they want to — full self-maintenance (contradiction resolution, multi-page synthesis, auto-filing) is the v6 goal.
 
 ---
 
