@@ -1539,29 +1539,41 @@ jobs:
                   status TEXT,
                   area TEXT,
                   supersedes TEXT,
-                  superseded_by TEXT
+                  superseded_by TEXT,
+                  contradicted_by TEXT,
+                  confidence REAL
               )
           """)
-          conn.execute("INSERT INTO memory_chunks VALUES (1, '/tmp/a.md', 'project', 'observed', 'user-explicit', '', 'stale body', 'Old', 'desc', 'p', 'finding', 'current', '', '', '')")
-          conn.execute("INSERT INTO memory_chunks VALUES (2, '/tmp/a.md', 'project', 'observed', 'user-explicit', '', 'valid body', 'New', 'desc', 'p', 'finding', 'current', '', '', '')")
+          conn.execute("INSERT INTO memory_chunks VALUES (1, '/tmp/a.md', 'project', 'observed', 'user-explicit', '', 'stale body', 'Old', 'desc', 'p', 'finding', 'current', '', '', '', '', 0.7)")
+          conn.execute("INSERT INTO memory_chunks VALUES (2, '/tmp/a.md', 'project', 'observed', 'user-explicit', '', 'valid body', 'New', 'desc', 'p', 'finding', 'current', '', '', '', '', 0.7)")
+
+          # v6: _vector_search loads bin/engine.py as "eidetic_engine" and reads
+          # index.search() dicts (score/chunk_id/path/name/section_heading/content_hash),
+          # then re-derives engine.content_hash() to drop a stale-hash neighbor BEFORE
+          # dedup. Mock that Engine API surface (not the retired embed.search loader).
+          class _Index:
+              def search(self, query, limit):
+                  return [
+                      {"score": 0.99, "chunk_id": 1, "path": "/tmp/a.md",
+                       "name": "stale", "section_heading": "Old", "content_hash": "wrong-hash"},
+                      {"score": 0.80, "chunk_id": 2, "path": "/tmp/a.md",
+                       "name": "valid", "section_heading": "New", "content_hash": "valid-hash"},
+                  ]
+
+              def close(self):
+                  pass
 
           class Loader:
               def create_module(self, spec):
                   return None
 
               def exec_module(self, module):
-                  module.search = lambda vector_db, query, limit: [
-                      (0.99, 1, "/tmp/a.md", "stale", "Old", "wrong-hash"),
-                      (0.80, 2, "/tmp/a.md", "valid", "New", "valid-hash"),
-                  ]
+                  module.open_index = lambda vector_db: _Index()
                   module.content_hash = lambda name, desc, content, heading: "valid-hash" if content == "valid body" else "other-hash"
-
-          class Spec:
-              loader = Loader()
 
           old_spec = search_impl.importlib.util.spec_from_file_location
           try:
-              search_impl.importlib.util.spec_from_file_location = lambda *a, **k: importlib.machinery.ModuleSpec("eidetic_embed", Loader())
+              search_impl.importlib.util.spec_from_file_location = lambda *a, **k: importlib.machinery.ModuleSpec("eidetic_engine", Loader())
               results = search_impl._vector_search("vectors.db", conn, "query", 5, None)
           finally:
               search_impl.importlib.util.spec_from_file_location = old_spec
