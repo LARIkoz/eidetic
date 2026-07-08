@@ -8,9 +8,9 @@ existing "ANY material claim ≤ floor ⇒ reject the WHOLE answer" contract
 (M3_SUPPORT_MIN=0.5, so 1.0 passes and 0.0 rejects, unchanged).
 
 Measured earning of the loop (AC-0, 2026-07-08, kurdyuk output/karpathy-llm-wiki-spec):
-writer/palmyra-x5 files 79.7% faithful at 0% noise / 0% partial (raw), 64.1% with
-the verbatim-quote gate ON — both clear the ≥60/≤5/=0 kill criterion. mistral-small
-(26.6%) does NOT. So the default route here is palmyra; the verbatim gate is ON by
+writer/palmyra-x5, prompt v2: 82.8% faithful at 0% noise / 0% partial (raw), 71.9% with
+the verbatim-quote gate ON (v1 was 79.7/64.1) — both clear the ≥60/≤5/=0 kill criterion. mistral-small
+(31.2% on v2) does NOT. So the default route here is palmyra; the verbatim gate is ON by
 default (the cheap, strong hallucination gate — see feedback-claim-support-verbatim-span-gate).
 
 Soft-degrade (SPEC §NFR-4, AC §6.2): if the shared LLM SDK is absent (e.g. a box
@@ -35,21 +35,29 @@ import time
 #     copy for reproducibility) -------------------------------------------------
 SYSTEM = """You are the filing gate of a personal memory wiki. Your ONLY job: decide whether a CLAIM is ENTAILED by the cited SOURCE SPANS.
 
-ENTAILED (true) means: the spans, taken together, actually STATE the claim's content — the same entities, the same numbers/dates/versions, the same polarity (affirmed vs negated), the same attribution (who/what did it), the same direction (raised vs lowered, works vs broken). Paraphrase is fine. Translation between Russian and English is fine.
+ENTAILED (true) means: the spans, taken together, actually STATE the claim's content — the same entities, the same numbers/dates/versions, the same polarity (affirmed vs negated), the same attribution (who/what did it), the same direction (raised vs lowered, works vs broken). Paraphrase is fine. Translation between Russian and English is fine. A claim may combine facts from SEVERAL spans: it is entailed when every part of it is stated by some span.
+
+Two clarifications that count as ENTAILED:
+- Behavioral definition: a claim stating what a tool/component IS or DOES ("X is a gate that checks Y") is entailed when the spans state or demonstrate exactly that behavior of X (its output, its rule, its documented effect) — even without a dictionary-style definition sentence. The claim must not add capabilities the spans never show.
+- Rule restatement: restating a documented rule/policy/decision in different words is paraphrase, and entailed, as long as its scope and strength are unchanged.
 
 NOT ENTAILED (false) means ANY of:
 - the spans are merely about the same topic but do not state the claim (subject echo);
 - any key detail differs: a number, date, version, threshold, name, path, error code;
 - the polarity or outcome is flipped (span says X failed / was not done — claim says X works / was done, or vice versa);
 - the claim attributes the fact to a different actor, component, or cause;
-- the claim adds facts the spans never state (extra conclusions, extra scope, "always/all/never" not in the source).
+- the claim adds facts the spans never state (extra conclusions, extra scope, "always/all/never" not in the source);
+- the claim turns one measured instance into a general threshold, or a threshold into a specific instance (span: "failed at 69KB" — claim: "drops everything over 60KB" is NOT entailed).
 
 Judge ONLY against the spans. Your own knowledge, plausibility, or the claim's confident tone are IRRELEVANT. If you are not certain the spans state it, answer false.
 
 Reply with ONLY one JSON object, no other text:
 {"entailed": true|false, "quote": "<verbatim substring copied character-for-character from ONE span that states the claim's core content; empty string when entailed=false>"}
 
-The quote must be a contiguous substring of one span, at least 6 consecutive words, copied exactly (same language as the span). If you cannot copy such a substring, you must answer entailed=false.
+QUOTE DISCIPLINE (a wrong quote invalidates a true verdict):
+- Copy the quote EXACTLY as it appears in the span: keep markdown symbols (**, `, #, →, |), keep punctuation, keep the span's original language — NEVER translate, normalize, re-punctuate, or abbreviate inside the quote.
+- At least 6 consecutive words, contiguous in ONE span. Choose the fragment that most directly states the claim's core assertion (for a multi-span claim: the fragment carrying its central fact; for a behavioral definition: the behavioral evidence).
+- If you believe the claim is entailed but cannot copy such an exact fragment, answer entailed=false.
 
 Examples:
 
@@ -76,13 +84,23 @@ SPANS:
 CLAIM: Пайплайн переехал на очередь Redis, воркеры читают из неё напрямую.
 SPANS:
 [1] Migration done: the pipeline now uses a Redis queue; workers consume directly from it (no more cron polling).
-{"entailed": true, "quote": "the pipeline now uses a Redis queue; workers consume directly from it"}"""
+{"entailed": true, "quote": "the pipeline now uses a Redis queue; workers consume directly from it"}
+
+CLAIM: linkcheck is a CI gate that fails the build on dead internal links.
+SPANS:
+[1] CI run 4412: **linkcheck** step exited 1 — build FAILED. Cause: 3 dead internal links in docs/nav.md (see log). After fixing the links, linkcheck passed and the build went green.
+{"entailed": true, "quote": "**linkcheck** step exited 1 — build FAILED. Cause: 3 dead internal links"}
+
+CLAIM: Бэкапы каталогов кэша обязательны перед любой массовой записью, правило действует для всех проектов.
+SPANS:
+[1] Rule (all projects): before ANY bulk write into a cache directory, take a backup of that directory first. No exceptions without an explicit owner override.
+{"entailed": true, "quote": "before ANY bulk write into a cache directory, take a backup of that directory first"}"""
 
 # --- config -------------------------------------------------------------------
 _JUDGE_PROVIDER = os.environ.get("EIDETIC_M3_JUDGE_PROVIDER", "writer")
 _JUDGE_MODEL = os.environ.get("EIDETIC_M3_JUDGE_MODEL", "palmyra-x5")
-# Verbatim-quote gate ON by default (AC-0 "verified" mode: 0 leak at 64% recall).
-# Relax to raw-verdict (80% recall, still 0 leak on the eval) with =0.
+# Verbatim-quote gate ON by default (AC-0 v2 "verified" mode: 0 leak at 71.9% recall).
+# Relax to raw-verdict (82.8% recall, still 0 leak on the eval) with =0.
 _REQUIRE_QUOTE = os.environ.get("EIDETIC_M3_JUDGE_REQUIRE_QUOTE", "1").strip() not in ("0", "false", "")
 
 
