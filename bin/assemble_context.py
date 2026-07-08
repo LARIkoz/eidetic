@@ -92,6 +92,7 @@ except ImportError:
         "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
         "contradicts": "ALTER TABLE memory_chunks ADD COLUMN contradicts TEXT DEFAULT ''",
         "contradicted_by": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by TEXT DEFAULT ''",
+        "confidence": "ALTER TABLE memory_chunks ADD COLUMN confidence REAL DEFAULT 0.7",
     }
 
 DRIFT_PENALTY_FLOOR = 0.1

@@ -56,6 +56,15 @@ READER_SAFE_MIGRATIONS = {
     "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
     "contradicts": "ALTER TABLE memory_chunks ADD COLUMN contradicts TEXT DEFAULT ''",
     "contradicted_by": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by TEXT DEFAULT ''",
+    # STEP-1B confidence (§4). Reader-safe: DEFAULT 0.7 == the base-schema default
+    # and the neutral cold-start, and no file re-read is needed — the writer
+    # recomputes the fold on its next index pass. WITHOUT this, a pre-1B index
+    # (table created before the confidence column existed; CREATE TABLE IF NOT
+    # EXISTS never adds it) crashes every reader that SELECTs c.confidence
+    # (assemble_context, search) with "no such column: c.confidence" the moment
+    # it upgrades to v6 — confidence had NO migration, only the base CREATE.
+    # conf_w ranking stays dark, so the interim 0.7 changes no ranking.
+    "confidence": "ALTER TABLE memory_chunks ADD COLUMN confidence REAL DEFAULT 0.7",
 }
 WRITER_BACKFILL_MIGRATIONS = {
     # The card's OWN frontmatter relation value, kept apart from the effective
