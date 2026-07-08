@@ -30,19 +30,98 @@ DB_PATH = os.path.join(MEMORY_SYSTEM, "db", "index.db")
 TODAY = datetime.now().strftime("%Y-%m-%d")
 
 
+# Threshold fallback (stage 3): >= COMPOUND overlapping salient keywords on
+# one card → compound into it; exactly FLAG → too ambiguous to auto-compound,
+# but too close to silently duplicate — log "possible duplicate of <card>"
+# and still create the new file. Below FLAG → genuinely new topic.
+OVERLAP_COMPOUND_MIN = 3
+OVERLAP_FLAG_MIN = 2
+# Vector gate = POSITIVE-ONLY promotion threshold (never a veto).
+#
+# Design law (audit findings, KEEP #6): the vector gate may ADD positive signal
+# (promote a BORDERLINE lexical match the salient-keyword counter under-counted)
+# or stay silent — it must NEVER hard-veto a STRONG lexical match. A cosine at
+# or above this threshold is treated as "the embedder judges this a true
+# duplicate"; below it the gate is silent and the lexical stage alone decides.
+#
+# Threshold calibrated empirically ON THIS BOX (multilingual-e5-large, 1024d,
+# fastembed 0.8.0, query:/passage: prefixes — see eidetic-v6-build calibration
+# 2026-07-03): a genuine same-topic duplicate scored cos 0.920, while topical-
+# but-distinct near-dups sharing surface keywords scored 0.833-0.837 and a
+# strong-lexical paraphrase of the target scored 0.843. 0.85 therefore cleanly
+# separates a real duplicate (>=0.92) from e5 topical noise (~0.83-0.84) — and,
+# critically, sits ABOVE the 0.843 strong-lexical paraphrase, proving why the
+# gate must not veto strong lexical matches (they legitimately score below it).
+# bge-small-en spreads wider and 0.60 discriminates there. Unknown profile →
+# strict (fail toward FLAGGING, never toward auto-compounding).
+VECTOR_GATE_MIN_SIM_BY_PROFILE = {"multilingual": 0.85, "english": 0.60}
+VECTOR_GATE_MIN_SIM_DEFAULT = 0.85
+
+
+def _sanitize_words(query):
+    # Keep `-`: a hyphenated identifier (scikit-learn) stays ONE keyword unit,
+    # matching extract_keywords — splitting it here double-counted both halves
+    # in the overlap threshold. Hyphens are safe inside the quoted FTS terms
+    # every caller builds (porter unicode61 splits them into adjacent tokens).
+    if not isinstance(query, str):
+        query = " ".join(query)
+    sanitized = re.sub(r'[*()\[\]{}^~:+]', ' ', query)
+    sanitized = sanitized.replace('"', '""')
+    return [w for w in sanitized.split() if len(w) > 2 and w.upper() not in ("AND", "OR", "NOT", "NEAR")]
+
+
+def _keyword_paths(conn, word, limit=200):
+    """Distinct card paths matching ONE keyword (FTS porter stemming applies,
+    so `performing` finds a card that says `performs`). ORDER BY path before
+    LIMIT: an unordered LIMIT returned an arbitrary subset, so the same signal
+    could compound on one run and duplicate on the next."""
+    try:
+        rows = conn.execute("""
+            SELECT DISTINCT c.path
+            FROM memory_fts
+            JOIN memory_chunks c ON memory_fts.rowid = c.id
+            WHERE memory_fts MATCH ?
+            ORDER BY c.path
+            LIMIT ?
+        """, ('"' + word + '"', limit)).fetchall()
+    except sqlite3.OperationalError:
+        return set()
+    return {r[0] for r in rows}
+
+
+def _salient_words(conn, words):
+    """Order keywords by salience: rarest-in-corpus first (document frequency
+    via the porter-stemmed FTS index), longer word on ties, signal order last.
+
+    v5.13.0 used the FIRST 4 keywords in signal order, so a paraphrase that
+    swapped one early word silently duplicated (audit probe E2C). Keywords the
+    corpus has never seen (df=0) are dropped — they carry no matching power
+    and would sabotage every AND query.
+
+    Returns [(word, matching_paths), ...] most-salient first.
+    """
+    scored = []
+    for position, word in enumerate(words):
+        paths = _keyword_paths(conn, word)
+        if not paths:
+            continue
+        scored.append((len(paths), -len(word), position, word, paths))
+    scored.sort(key=lambda t: (t[0], t[1], t[2]))
+    return [(word, paths) for _df, _neglen, _pos, word, paths in scored]
+
+
 def search_fts5(conn, query, limit=3):
     """Search FTS5 for existing memory on same topic.
 
     Staged match: the strict phrase of up to 6 keywords first (cheap, precise),
-    then ONE retry as an implicit AND of the top 4 keywords. Extracted keywords
-    are almost never contiguous in a real document, so the phrase-only query
-    matched ~nothing and every signal became a new card instead of compounding.
+    then ONE retry as an implicit AND of the top 4 SALIENT keywords (rarest in
+    corpus first — not first-in-signal-order, which was paraphrase-fragile).
     Deliberately NO loose OR stage — false-compounding a signal into an
-    unrelated card is worse than creating a new card.
+    unrelated card is worse than creating a new card; partial overlap is
+    handled by find_overlap_candidate(), which compounds only above a strict
+    threshold and otherwise merely FLAGS.
     """
-    sanitized = re.sub(r'[*()\[\]{}^~:+\-]', ' ', query)
-    sanitized = sanitized.replace('"', '""')
-    words = [w for w in sanitized.split() if len(w) > 2 and w.upper() not in ("AND", "OR", "NOT", "NEAR")]
+    words = _sanitize_words(query)
     if not words:
         return []
 
@@ -63,22 +142,192 @@ def search_fts5(conn, query, limit=3):
     rows = run_match('"' + " ".join(words[:6]) + '"')
     if rows:
         return rows
-    # FTS5 space-separated terms = implicit AND; input is sanitized above.
-    return run_match(" ".join(words[:4]))
+    salient = _salient_words(conn, words)
+    if len(salient) < 4:
+        # An AND of fewer than 4 terms is too weak a topic signature to
+        # auto-compound on; leave it to the thresholded fallback.
+        return []
+    # FTS5 space-separated terms = implicit AND; each term quoted so a kept
+    # hyphenated identifier parses as a phrase, not FTS syntax.
+    return run_match(" ".join('"' + w + '"' for w, _paths in salient[:4]))
+
+
+_vector_gate_warned = False
+
+
+class _DoorEmbedder:
+    """Adapts the Engine API v1.1 door to the injectable-embedder shape the vector
+    gate expects (`embed_query_texts` / `embed_texts` / `EMBED_PROFILE`), routing
+    through S1 `embed_query_batch`, S4 `embed_passages`, and S3 `profile()` —
+    retiring compound's private `embed.*` back door (spec §2, S1/S3/S4). Verdicts
+    are identical to the back door because the door wraps the same functions."""
+
+    def __init__(self, engine):
+        self._engine = engine
+        self.EMBED_PROFILE = engine.profile()
+
+    def embed_query_texts(self, texts):
+        return self._engine.embed_query_batch(texts)
+
+    def embed_texts(self, texts):
+        return self._engine.embed_passages(texts)
+
+
+def _vector_gate(signal_text, candidate_text, embedder=None):
+    """Optional semantic signal for the threshold fallback (positive-only).
+
+    True  = cosine >= the profile promotion threshold (the embedder judges the
+            pair a true duplicate) — used only to PROMOTE a borderline lexical
+            match, never to veto a strong one (see find_overlap_candidate).
+    False = cosine below threshold (embedder does not see a duplicate).
+    None  = vectors unavailable (no vectors.db / no fastembed — the FTS-only
+            default); caller proceeds on the lexical stage alone.
+    Never raises, but a degradation WITH a vectors.db present is logged once
+    (class only) — a silently dead gate looks identical to an approving one.
+
+    `embedder` is INJECTABLE (audit F2): any object exposing `embed_query_texts`
+    / `embed_texts` (→ list of little-endian float32 blobs) and an `EMBED_PROFILE`
+    attribute. Tests pass a hermetic deterministic stub so the guard exercises
+    the threshold logic WITHOUT the live model/store; production passes None and
+    the module embeds against `bin/embed.py` and `DB_PATH`'s vectors.db as before.
+
+    Asymmetric prefixes: the signal is the QUERY side, the candidate card the
+    passage side — embedding both as passage: inflates e5 cosine and defeats
+    the threshold. Threshold is profile-aware (see VECTOR_GATE_MIN_SIM_BY_PROFILE).
+    """
+    global _vector_gate_warned
+    production = embedder is None
+    if production:
+        vector_db = DB_PATH.replace("index.db", "vectors.db")
+        if not os.path.exists(vector_db):
+            return None
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import engine
+            embedder = _DoorEmbedder(engine)  # v1.1 door (S1/S3/S4) — retires the back door
+        except Exception:
+            return None  # no usable embedder → lexical-only
+    try:
+        import struct
+
+        q_blobs = embedder.embed_query_texts([signal_text[:2000]])
+        p_blobs = embedder.embed_texts([candidate_text[:2000]])
+        if not q_blobs or not p_blobs:
+            return None
+        vecs = [struct.unpack(f"{len(b) // 4}f", b) for b in (q_blobs[0], p_blobs[0])]
+        dot = sum(x * y for x, y in zip(vecs[0], vecs[1]))
+        norms = [sum(x * x for x in v) ** 0.5 for v in vecs]
+        if not all(norms):
+            return None
+        threshold = VECTOR_GATE_MIN_SIM_BY_PROFILE.get(
+            getattr(embedder, "EMBED_PROFILE", ""), VECTOR_GATE_MIN_SIM_DEFAULT
+        )
+        return (dot / (norms[0] * norms[1])) >= threshold
+    except Exception as exc:
+        if production and not _vector_gate_warned:
+            _vector_gate_warned = True
+            print(
+                f"WARN: compound vector gate degraded ({type(exc).__name__}) "
+                "despite vectors.db present; using lexical threshold only",
+                file=sys.stderr,
+            )
+        return None
+
+
+def find_overlap_candidate(conn, query, signal_text, embedder=None):
+    """Stage-3 thresholded fallback after phrase + AND both missed.
+
+    Counts how many of the top-6 salient keywords individually hit the same
+    card (porter stemming absorbs inflection: performs/performing), then applies
+    the vector gate as a POSITIVE-ONLY signal per the KEEP #6 design law:
+
+      STRONG lexical (>= OVERLAP_COMPOUND_MIN keywords converge on one card):
+        compound unconditionally. The vector gate may CONFIRM but must NEVER
+        veto — a genuine strong-lexical paraphrase scores below e5's duplicate
+        line (0.843 < 0.85 on this box), so a cosine veto here demoted real
+        compounds (the pre-fix bug: 1 RED test on the vectored box).
+      BORDERLINE lexical (OVERLAP_FLAG_MIN .. OVERLAP_COMPOUND_MIN-1): too weak
+        to auto-compound on lexical alone, but the vector gate may ADD positive
+        signal — a near-dup the salient counter under-counted still compounds
+        when the embedder judges the pair a true duplicate (sim >= threshold).
+        Otherwise FLAG.
+      No lexical (< OVERLAP_FLAG_MIN): genuinely new topic — vector-only
+        compounding is NEVER allowed.
+
+    Returns:
+      ("compound", rows)  — strong lexical, or borderline confirmed by vectors;
+      ("flag", path)      — a possible duplicate: surface it, don't silently dup;
+      (None, None)        — genuinely new topic.
+    """
+    words = _sanitize_words(query)
+    salient = _salient_words(conn, words)[:6]
+    if not salient:
+        return None, None
+
+    counts = {}
+    for _word, paths in salient:
+        for path in paths:
+            if is_compound_candidate(path):
+                counts[path] = counts.get(path, 0) + 1
+    if not counts:
+        return None, None
+
+    best_path, best_count = max(counts.items(), key=lambda kv: (kv[1], kv[0]))
+    if best_count < OVERLAP_FLAG_MIN:
+        return None, None
+
+    def _card_rows():
+        return conn.execute("""
+            SELECT path, name, section_heading, content, 0 AS fts_rank
+            FROM memory_chunks WHERE path = ? LIMIT 1
+        """, (best_path,)).fetchall()
+
+    # STRONG lexical: compound; gate may confirm, never veto (so it isn't called).
+    if best_count >= OVERLAP_COMPOUND_MIN:
+        rows = _card_rows()
+        return ("compound", rows) if rows else ("flag", best_path)
+
+    # BORDERLINE lexical: vectors decide. Only a positive (True) cosine promotes
+    # to compound; False (below threshold) and None (vectors unavailable) FLAG.
+    rows = _card_rows()
+    if rows and _vector_gate(signal_text, rows[0][3] or "", embedder=embedder) is True:
+        return "compound", rows
+    return "flag", best_path
 
 
 def extract_keywords(signal_text):
-    """Extract meaningful keywords from a signal for FTS5 search."""
+    """Extract meaningful keywords from a signal for FTS5 search.
+
+    Returns the stopword-filtered keywords in signal order (the phrase stage
+    needs original order); when over the cap, the LONGEST words are kept
+    (local salience). Corpus-rarity ordering happens in _salient_words, where
+    the index is available.
+    """
     words = re.findall(r'\b[a-zA-Z_-]{4,}\b', signal_text)
     stopwords = {
         "that", "this", "with", "from", "have", "been", "were", "will",
         "would", "could", "should", "about", "their", "which", "when",
         "what", "more", "than", "very", "also", "just", "into", "only",
         "other", "some", "such", "because", "before", "after", "made",
+        "then", "them", "they", "there", "these", "those", "where",
+        "while", "during", "using", "does", "each", "both", "same",
+        "being", "much", "many", "most", "must", "over", "under",
+        "between", "through", "against", "without", "within", "instead",
+        "every", "several", "always", "never", "still",
         "decision", "rule", "worked", "failed", "knowledge",
     }
-    keywords = [w for w in words if w.lower() not in stopwords]
-    return " ".join(keywords[:10])
+    keywords = []
+    seen = set()
+    for w in words:
+        lw = w.lower()
+        if lw in stopwords or lw in seen:
+            continue
+        seen.add(lw)
+        keywords.append(w)
+    if len(keywords) > 10:
+        keep = set(sorted(keywords, key=len, reverse=True)[:10])
+        keywords = [w for w in keywords if w in keep]
+    return " ".join(keywords)
 
 
 PROTECTED_TYPES = {"feedback", "user"}
@@ -109,6 +358,22 @@ def _get_file_type(filepath):
         if m:
             return m.group(1)
     return None
+
+
+def _emit_observed_if_managed(card_path, signal):
+    """Append one `observed` Evidence event iff the compounded card is MANAGED
+    (spec §2.3, §4.5 bullet 1). Best-effort — never breaks the compound write."""
+    try:
+        import index_impl
+        import confidence as _conf
+        import evidence
+        with open(card_path, "r", encoding="utf-8") as f:
+            meta, _body = index_impl.parse_frontmatter(f.read())
+        card_kind = index_impl.infer_card_kind(meta, card_path)
+        if _conf.is_managed(meta.get("type"), meta.get("source"), card_kind):
+            evidence.observed(card_path, note=signal[:80])
+    except Exception:
+        pass
 
 
 def _markdown_headings(content):
@@ -270,24 +535,48 @@ def main():
 
     compounded = 0
     new_signals = []
+    flagged = []
 
     for signal in signals:
         keywords = extract_keywords(signal)
         matched = False
+        # First candidate we could NOT compound into (protected type or a
+        # failed write): if nothing else absorbs the signal it becomes a new
+        # card, and this near-dup must be FLAGGED — a silent new card next to
+        # a matching feedback/user card is exactly the silent-duplication
+        # this release promises away.
+        dup_candidate = None
 
         if conn and keywords:
             results = search_fts5(conn, keywords, limit=3)
+            if not results:
+                action, payload = find_overlap_candidate(conn, keywords, signal)
+                if action == "compound":
+                    results = payload
+                elif action == "flag":
+                    flagged.append((payload, signal))
             for path, name, heading, content, rank in results:
                 if is_compound_candidate(path):
                     file_type = _get_file_type(path)
-                    if file_type in ("feedback", "user"):
+                    if file_type in PROTECTED_TYPES:
+                        if dup_candidate is None:
+                            dup_candidate = path
                         continue
                     if update_existing(path, signal):
                         compounded += 1
                         matched = True
+                        # STEP 1B (§4.5): a signal compounding into a MANAGED card
+                        # appends one deterministic `observed` event (tier 1) to
+                        # its `## Evidence`, not only a `## History` line — the
+                        # confidence rail then folds it on the next reindex.
+                        _emit_observed_if_managed(path, signal)
                         break
+                    if dup_candidate is None:
+                        dup_candidate = path
 
         if not matched:
+            if dup_candidate is not None:
+                flagged.append((dup_candidate, signal))
             new_signals.append(signal)
 
     if new_signals:
@@ -298,7 +587,12 @@ def main():
 
     total = compounded + len(new_signals)
     if total > 0:
-        print(f"Signals: {compounded} compounded, {len(new_signals)} new", file=sys.stderr)
+        summary = f"{compounded} compounded, {len(new_signals)} new"
+        if flagged:
+            summary += f", {len(flagged)} flagged"
+        print(f"Signals: {summary}", file=sys.stderr)
+        for dup_path, dup_signal in flagged:
+            print(f"possible duplicate of {dup_path}: {dup_signal[:80]}", file=sys.stderr)
         # Mirror onto the greppable op-log. Best-effort: never break the live
         # Stop-hook if oplog is missing or the log dir is unwritable.
         try:
@@ -306,9 +600,15 @@ def main():
             import oplog
             oplog.append_op(
                 "compound",
-                f"{compounded} compounded, {len(new_signals)} new",
+                summary,
                 project=cwd, count=total,
             )
+            for dup_path, dup_signal in flagged:
+                oplog.append_op(
+                    "compound-flag",
+                    f"possible duplicate of {dup_path}",
+                    project=cwd, detail=dup_signal[:200], count=1,
+                )
         except Exception:
             pass
 

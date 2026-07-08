@@ -94,15 +94,66 @@ class DriftRankingTest(unittest.TestCase):
         # v5.13.0: penalty 0.5 replaced freshness 0.5 → byte-identical scores.
         self.assertLess(scores[flagged], scores[clean])
 
-    def test_confidence_escalation_downranks_a_fresh_card(self):
+    def test_confidence_escalation_downranks_a_stale_card(self):
+        # STALE twins on purpose: on fresh cards (freshness 1.0) the reverted
+        # replace-freshness code ALSO yields ratio 0.3, so a fresh-card version
+        # of this test could not catch the regression. On stale twins
+        # (freshness 0.5) multiply gives ratio 0.3 while replace gives 0.6.
         flagged = "/tmp/eidetic-test/memory/esc-flagged.md"
         clean = "/tmp/eidetic-test/memory/esc-clean.md"
-        self._seed([(flagged, "esc-flagged", BODY, FRESH),
-                    (clean, "esc-clean", BODY, FRESH)])
+        self._seed([(flagged, "esc-flagged", BODY, STALE),
+                    (clean, "esc-clean", BODY, STALE)])
         self._flag(flagged, "confidence_escalation", "threshold=3")
         scores = self._scores()
         self.assertLess(scores[flagged], scores[clean])
         self.assertAlmostEqual(scores[flagged], scores[clean] * 0.3, places=3)
+
+    def test_distinct_findings_compound_and_same_type_counts_once(self):
+        # Two broken wikilinks (SAME type — must count once: 0.8, not 0.64)
+        # plus age_stale (0.5) → 0.8 * 0.5 = 0.4. The reverted min-keeping
+        # code gives min(0.8, 0.5) = 0.5, i.e. a 3-finding card ranked exactly
+        # like the 1-finding card; a per-ROW product would give 0.32.
+        multi = "/tmp/eidetic-test/memory/multi-flagged.md"
+        single = "/tmp/eidetic-test/memory/single-flagged.md"
+        clean = "/tmp/eidetic-test/memory/compound-clean.md"
+        self._seed([(multi, "multi-flagged", BODY, STALE),
+                    (single, "single-flagged", BODY, STALE),
+                    (clean, "compound-clean", BODY, STALE)])
+        self._flag(multi, "broken_wikilink", "[[dead-a]]")
+        self._flag(multi, "broken_wikilink", "[[dead-b]]")
+        self._flag(multi, "age_stale", "threshold=30d")
+        self._flag(single, "age_stale", "threshold=30d")
+        scores = self._scores()
+        self.assertLess(scores[multi], scores[single])
+        self.assertAlmostEqual(scores[multi], scores[clean] * 0.4, places=3)
+        self.assertAlmostEqual(scores[single], scores[clean] * 0.5, places=3)
+
+    def test_compounded_penalty_is_floored(self):
+        # broken(0.8) * age(0.5) * escalation(0.3) * contradicted(0.4) = 0.048
+        # → floored at 0.1 so a many-problem card stays retrievable at all.
+        # Reverted min-keeping code yields 0.3 here.
+        flagged = "/tmp/eidetic-test/memory/floor-flagged.md"
+        clean = "/tmp/eidetic-test/memory/floor-clean.md"
+        self._seed([(flagged, "floor-flagged", BODY, STALE),
+                    (clean, "floor-clean", BODY, STALE)])
+        self._flag(flagged, "broken_wikilink", "[[dead-target]]")
+        self._flag(flagged, "age_stale", "threshold=30d")
+        self._flag(flagged, "confidence_escalation", "threshold=3")
+        self._flag(flagged, "contradicted", "by=other-card")
+        scores = self._scores()
+        self.assertAlmostEqual(scores[flagged], scores[clean] * 0.1, places=3)
+
+    def test_declared_finding_reports_as_penalized_in_diagnostics(self):
+        # The injected diagnostics block must count "penalized" with the SAME
+        # predicate ranking uses: a declared finding penalizes at first_seen=1,
+        # so it may never be reported as "0 penalized" / baseline.
+        flagged = "/tmp/eidetic-test/memory/diag-flagged.md"
+        self._seed([(flagged, "diag-flagged", BODY, FRESH)])
+        self._flag(flagged, "contradicted", "by=other-card", first_seen=1)
+        import assemble_context as ac
+        text, used = ac.fetch_drift_diagnostics(self.db)
+        self.assertIn("contradicted=1 (1 penalized)", text)
+        self.assertIn("[penalized, seen=1]", text)
 
     def test_first_detection_grace_gate_changes_nothing(self):
         flagged = "/tmp/eidetic-test/memory/grace-flagged.md"

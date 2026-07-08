@@ -47,8 +47,16 @@ def _fastembed_available():
 
 
 def _default_search(vectors_db, query, limit):
-    import embed
-    return embed.search(vectors_db, query, limit=limit)
+    # Through the Engine API v1 door; adapt hit dicts back to the tuple shape
+    # embed_canary expects ((sim, chunk_id, path, name, heading, hash)).
+    import engine
+    with engine.open_index(vectors_db) as index:
+        hits = index.search(query, limit=limit)
+    return [
+        (h["score"], h["chunk_id"], h["path"], h["name"],
+         h["section_heading"], h["content_hash"])
+        for h in hits
+    ]
 
 
 def pick_canary_card(vectors_db, conn=None):
@@ -87,7 +95,7 @@ def embed_canary(index_db, vectors_db, search_fn=None, require_fastembed=True):
     """Embed a real card's name -> vector search -> grade where that card ranks.
 
     search_fn(vectors_db, query, limit) -> list of (sim, chunk_id, ...) rows
-    (embed.search's shape). Injected in tests to avoid loading the model."""
+    (the engine hit-tuple shape). Injected in tests to avoid loading the model."""
     if search_fn is None:
         if not os.path.exists(vectors_db):
             return {"status": "skip", "detail": "no vectors.db yet — vector canary skipped (FTS still works)"}
@@ -250,8 +258,10 @@ def _detect_corpus_lang(db_path, sample=300):
     import collections
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        # Stable sample (see base.py): an unordered LIMIT could sample a
+        # different subset across reindexes and flip the detected language.
         rows = conn.execute(
-            "SELECT COALESCE(name,'')||' '||COALESCE(content,'') FROM memory_chunks LIMIT ?",
+            "SELECT COALESCE(name,'')||' '||COALESCE(content,'') FROM memory_chunks ORDER BY rowid LIMIT ?",
             (sample,)).fetchall()
         conn.close()
     except sqlite3.Error:

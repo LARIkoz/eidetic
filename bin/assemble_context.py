@@ -73,11 +73,38 @@ RULE_CLUSTERS = _load_rule_clusters()
 # Single source of truth: bin/constants.py. Literal fallback only for when the
 # module is run somewhere constants.py is not importable (W3 dedup).
 try:
-    from constants import EVIDENCE_WEIGHTS, SOURCE_WEIGHTS, DRIFT_PENALTIES
+    from constants import (
+        EVIDENCE_WEIGHTS, SOURCE_WEIGHTS, DRIFT_PENALTIES, DECLARED_DRIFT_TYPES,
+        READER_SAFE_MIGRATIONS,
+    )
 except ImportError:
     EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
     SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
-    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3}
+    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3,
+                       "contradicted": 0.4, "unresolved_relation": 1.0, "relation_claim": 1.0}
+    DECLARED_DRIFT_TYPES = {"contradicted"}
+    READER_SAFE_MIGRATIONS = {
+        "project": "ALTER TABLE memory_chunks ADD COLUMN project TEXT DEFAULT ''",
+        "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
+        "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
+        "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
+        "supersedes": "ALTER TABLE memory_chunks ADD COLUMN supersedes TEXT DEFAULT ''",
+        "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
+        "contradicts": "ALTER TABLE memory_chunks ADD COLUMN contradicts TEXT DEFAULT ''",
+        "contradicted_by": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by TEXT DEFAULT ''",
+    }
+
+DRIFT_PENALTY_FLOOR = 0.1
+
+
+def _drift_finding_penalized(drift_type, first_seen):
+    """One predicate for penalize + diagnostics, so the report can never say
+    "0 penalized" while a penalty is applied. Heuristic findings penalize from
+    the 2nd detection (grace gate); DECLARED relations immediately; penalty-1.0
+    diagnostic types never (they change nothing by construction)."""
+    if DRIFT_PENALTIES.get(drift_type, 0.5) >= 1.0:
+        return False
+    return int(first_seen or 0) > 1 or drift_type in DECLARED_DRIFT_TYPES
 
 
 def load_drift_findings(db_path):
@@ -88,35 +115,42 @@ def load_drift_findings(db_path):
         conn = sqlite3.connect(drift_path)
         conn.execute("PRAGMA busy_timeout=2000")
         rows = conn.execute("""
-            SELECT path, drift_type FROM drift_findings
-            WHERE resolved_at IS NULL AND first_seen > 1
+            SELECT path, drift_type, first_seen FROM drift_findings
+            WHERE resolved_at IS NULL
         """).fetchall()
         conn.close()
     except sqlite3.OperationalError:
         return {}
+    # Distinct penalized types per card COMPOUND (multiply, floored) — same
+    # rule as search_impl._load_drift_data, so injection and search agree.
+    types_by_path = {}
+    for path, drift_type, first_seen in rows:
+        if _drift_finding_penalized(drift_type, first_seen):
+            types_by_path.setdefault(path, set()).add(drift_type)
     findings = {}
-    for path, drift_type in rows:
-        penalty = DRIFT_PENALTIES.get(drift_type, 0.5)
-        if path not in findings or penalty < findings[path]:
-            findings[path] = penalty
+    for path, types in types_by_path.items():
+        penalty = 1.0
+        for drift_type in types:
+            penalty *= DRIFT_PENALTIES.get(drift_type, 0.5)
+        findings[path] = max(DRIFT_PENALTY_FLOOR, penalty)
     return findings
 
 
 def ensure_agent_columns(conn):
-    """Add v2.6 derived columns when context assembly sees an older DB."""
+    """Add READER-SAFE derived columns when context assembly sees an older DB.
+
+    Third reader of the schema (SessionStart injection). Uses the SHARED
+    constants.READER_SAFE_MIGRATIONS — audit F3: it previously hand-maintained
+    its own 6-column list (the exact "two lists that drift" defect KEEP #3 set
+    out to kill, surviving in a third file the parity test never checked). Like
+    the search reader it adds ONLY reader-safe columns, never the writer-back-fill
+    columns (audit F1).
+    """
     try:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
     except sqlite3.OperationalError:
         return
-    migrations = {
-        "project": "ALTER TABLE memory_chunks ADD COLUMN project TEXT DEFAULT ''",
-        "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
-        "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
-        "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
-        "supersedes": "ALTER TABLE memory_chunks ADD COLUMN supersedes TEXT DEFAULT ''",
-        "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
-    }
-    for column, statement in migrations.items():
+    for column, statement in READER_SAFE_MIGRATIONS.items():
         if column not in existing:
             try:
                 conn.execute(statement)
@@ -133,9 +167,34 @@ def status_weight(status, superseded_by=""):
     return STATUS_WEIGHTS.get(normalized, 1.0)
 
 
-def compound_weight(evidence, source, last_verified, drift_penalty=None, status="current", superseded_by=""):
+# STEP 1B confidence lifecycle (pure algebra; import-safe, Phase-A dark).
+try:
+    import confidence as _conf_mod
+except ImportError:  # pragma: no cover
+    _conf_mod = None
+
+
+def _confidence_ranking_on():
+    """Phase-A flag (§10): DARK by default ⇒ conf_w ≡ 1.0 (identity), so injected
+    context is byte-identical to pre-1B until EIDETIC_CONFIDENCE_RANKING is on."""
+    return os.environ.get("EIDETIC_CONFIDENCE_RANKING", "").strip().lower() in (
+        "1", "on", "true", "yes")
+
+
+def _inject_conf_w(type_, source, card_kind, confidence):
+    if _conf_mod is None or not _confidence_ranking_on():
+        return 1.0
+    managed = _conf_mod.is_managed(type_, source, card_kind)
+    c = confidence if confidence is not None else 0.7
+    return _conf_mod.conf_weight(c, managed)
+
+
+def compound_weight(evidence, source, last_verified, drift_penalty=None, status="current",
+                    superseded_by="", type_=None, card_kind=None, confidence=None):
     ev = EVIDENCE_WEIGHTS.get(evidence, 0.7)
-    src = SOURCE_WEIGHTS.get(source, 1.0)
+    # Unknown source → conservative 0.5, consistent with search ranking + the
+    # authority gate (audit F7); 1.0 wrongly trusted a typo'd source as full.
+    src = SOURCE_WEIGHTS.get(source, 0.5)
     st = status_weight(status, superseded_by)
     fr = 0.7
     if last_verified:
@@ -149,7 +208,8 @@ def compound_weight(evidence, source, last_verified, drift_penalty=None, status=
         # Multiply, never replace — replacing let a mild penalty (0.8) overwrite
         # stale freshness (0.5) and up-rank rot. See search_impl.combine_freshness.
         fr *= drift_penalty
-    return ev * src * fr * st
+    # conf_w ≡ 1.0 (identity) unless the Phase-A flag is on (§5.2) — dark by default.
+    return ev * src * fr * st * _inject_conf_w(type_, source, card_kind, confidence)
 
 
 def fetch_drift_diagnostics(db_path, limit=8):
@@ -160,12 +220,10 @@ def fetch_drift_diagnostics(db_path, limit=8):
     try:
         conn = sqlite3.connect(drift_path)
         conn.execute("PRAGMA busy_timeout=2000")
-        counts = conn.execute("""
-            SELECT drift_type, COUNT(*), SUM(CASE WHEN first_seen > 1 THEN 1 ELSE 0 END)
+        count_rows = conn.execute("""
+            SELECT drift_type, first_seen
             FROM drift_findings
             WHERE resolved_at IS NULL
-            GROUP BY drift_type
-            ORDER BY COUNT(*) DESC
         """).fetchall()
         rows = conn.execute("""
             SELECT path, drift_type, detail, first_seen, detected_at
@@ -178,19 +236,31 @@ def fetch_drift_diagnostics(db_path, limit=8):
     except sqlite3.OperationalError:
         return "", 0
 
-    if not counts:
+    if not count_rows:
         return "", 0
+
+    # Penalized = the same predicate ranking uses (declared types penalize at
+    # first_seen=1) — counting `first_seen > 1` alone reported "0 penalized"
+    # while a 0.4x declared penalty was being applied.
+    agg = {}
+    for drift_type, first_seen in count_rows:
+        total, penalized = agg.get(drift_type, (0, 0))
+        agg[drift_type] = (
+            total + 1,
+            penalized + (1 if _drift_finding_penalized(drift_type, first_seen) else 0),
+        )
+    counts = sorted(agg.items(), key=lambda kv: kv[1][0], reverse=True)
 
     parts = ["## Memory Drift Diagnostics\n\n"]
     summary = ", ".join(
-        f"{kind}={count} ({penalized or 0} penalized)"
-        for kind, count, penalized in counts
+        f"{kind}={total} ({penalized} penalized)"
+        for kind, (total, penalized) in counts
     )
     parts.append(f"- Active findings: {summary}\n")
     parts.append("- Treat penalized/stale memories as candidates to verify, not as source-of-truth.\n")
     for path, drift_type, detail, first_seen, detected_at in rows:
         short_path = path.replace(os.path.expanduser("~"), "~")
-        marker = "penalized" if int(first_seen or 0) > 1 else "baseline"
+        marker = "penalized" if _drift_finding_penalized(drift_type, first_seen) else "baseline"
         parts.append(
             f"- {drift_type} [{marker}, seen={first_seen}] {short_path}: {detail or ''} ({detected_at or 'unknown'})\n"
         )
@@ -245,7 +315,7 @@ def fetch_feedback(conn, budget_chars, current_slug=""):
     rows = conn.execute("""
         SELECT c.path, c.name, c.description, c.content,
                c.evidence, c.source, c.last_verified, c.status, c.superseded_by,
-               c.project,
+               c.project, c.type, c.card_kind, c.confidence,
                MIN(c.id) as first_id
         FROM memory_chunks c
         WHERE c.type = 'feedback'
@@ -257,8 +327,11 @@ def fetch_feedback(conn, budget_chars, current_slug=""):
     individual = []  # (weight, name, desc)
 
     for row in rows:
-        path, name, desc, content, evidence, source, lv, status, superseded_by, project, _ = row
-        w = compound_weight(evidence, source, lv, status=status, superseded_by=superseded_by)
+        path, name, desc, content, evidence, source, lv, status, superseded_by, project, \
+            ctype, card_kind, confidence, _ = row
+        # conf_w is identity when the Phase-A flag is off ⇒ byte-identical to pre-1B.
+        w = compound_weight(evidence, source, lv, status=status, superseded_by=superseded_by,
+                            type_=ctype, card_kind=card_kind, confidence=confidence)
         if current_slug and project and current_slug not in (project or ""):
             w *= 0.3
         display_name = name or os.path.basename(path).replace(".md", "")
@@ -330,7 +403,7 @@ def fetch_project(conn, cwd, budget_chars, drift_map=None):
         FROM memory_chunks c
         LEFT JOIN memory_fts ON memory_fts.rowid = c.id
         WHERE c.project LIKE ? ESCAPE '\\' AND c.type != 'feedback'
-        ORDER BY c.mtime DESC
+        ORDER BY c.mtime DESC, c.path, c.section_heading
         LIMIT 50
     """, (f"%{_escape_like(slug[-60:])}%",)).fetchall()
 
@@ -384,7 +457,9 @@ def fetch_recent(conn, budget_chars, exclude_project=None, drift_map=None):
         query += " AND (c.project IS NULL OR c.project NOT LIKE ? ESCAPE '\\')"
         params.append(f"%{_escape_like(exclude_project[-60:])}%")
 
-    query += f" ORDER BY {mtime_seconds} DESC LIMIT 30"
+    # Total order: mtime alone ties for batch-written cards, making the LIMIT-30
+    # cutoff pick an arbitrary subset. (path, section_heading) is the unique key.
+    query += f" ORDER BY {mtime_seconds} DESC, c.path, c.section_heading LIMIT 30"
 
     rows = conn.execute(query, params).fetchall()
 

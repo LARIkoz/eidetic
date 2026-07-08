@@ -105,6 +105,10 @@ class ScanScopeIsolationTest(unittest.TestCase):
         personal = os.path.expanduser("~/.claude/memory-system")
         if not os.path.isdir(personal):
             self.skipTest("no personal memory-system on this box")
+        import glob as _glob
+        if not _glob.glob(os.path.expanduser("~/.claude/projects/*/memory/*.md")):
+            # Scan scope is only observable when at least one card exists.
+            self.skipTest("no personal memory cards on this box")
         files = index_impl.collect_files(personal)
         self.assertTrue(any("/.claude/projects/" in p for p in files))
 

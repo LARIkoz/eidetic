@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Eidetic v2.5 — Drift Detection
 
-Detects stale/decaying memories via three checks: wikilink validation, age
-thresholds, and confidence escalation. Reads from index.db, writes to
-drift_state.db (separate from the derived index — P1). Runs at SessionStart
-(24h throttle). No file mutations.
+Detects stale/decaying memories via four checks: wikilink validation, age
+thresholds, confidence escalation, and DECLARED contradictions. Reads from
+index.db, writes to drift_state.db (separate from the derived index — P1).
+Runs at SessionStart (24h throttle). No file mutations.
 
-Charter: P1 (derived separate), P5 (quality tracked), P6 (improves). NOTE: this
-module does NOT auto-detect contradictions (P11) — contradiction surfacing is
-manual, via `contradicts:`/`contradicted_by:` frontmatter read by the linter.
-An automated P11 contradiction detector is v6 territory.
+Charter: P1 (derived separate), P5 (quality tracked), P6 (improves). NOTE on
+P11 (truth maintenance): contradictions DECLARED in frontmatter
+(`contradicts:`/`contradicted_by:`, propagated onto targets at index time)
+are surfaced as `contradicted` findings here and penalized 0.4x in ranking
+immediately (declared facts bypass the first_seen grace gate). Automated
+SEMANTIC contradiction detection — noticing that two cards disagree without
+anyone declaring it — remains v6 territory.
 """
 
 import os
@@ -45,9 +48,11 @@ INACTIVE_STATUSES = {"archived", "deprecated", "fixed", "obsolete", "resolved", 
 DEFAULT_AGE_DAYS = 60
 
 try:
-    from constants import DRIFT_PENALTIES
+    from constants import DRIFT_PENALTIES, DECLARED_DRIFT_TYPES
 except ImportError:
-    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3}
+    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3,
+                       "contradicted": 0.4, "unresolved_relation": 1.0, "relation_claim": 1.0}
+    DECLARED_DRIFT_TYPES = {"contradicted"}
 
 
 def get_drift_db_path(index_db_path):
@@ -425,6 +430,59 @@ def check_confidence_escalation(index_conn):
     return findings
 
 
+def check_declared_contradictions(index_conn):
+    """Surface declared contradictions (truth-maintenance slice, not P11 auto-detect).
+
+    The `contradicted_by` column is filled either by the card's own
+    frontmatter or by index-time propagation from a card declaring
+    `contradicts:` it (propagation is authoritative AND authority-gated —
+    see index_impl.compute_relation_state — so only live, qualified
+    declarations reach this column). The finding auto-resolves when the
+    declaration is removed and the store reindexed.
+    """
+    try:
+        rows = index_conn.execute("""
+            SELECT DISTINCT path, type, contradicted_by
+            FROM memory_chunks
+            WHERE IFNULL(contradicted_by, '') != ''
+        """).fetchall()
+    except sqlite3.OperationalError:
+        # Pre-v5.14 index without the column — nothing to surface.
+        return []
+    return [
+        (path, mem_type, "contradicted", f"by={contradicted_by.strip()}")
+        for path, mem_type, contradicted_by in rows
+    ]
+
+
+def check_relation_diagnostics(index_conn):
+    """Diagnostics-only findings from declared relations (penalty 1.0 — visible
+    in drift/lint output, never applied to ranking):
+
+    - `unresolved_relation` on the DECLARER: its `contradicts:`/`supersedes:`
+      target resolves to no card in its project (typo, deleted target, or an
+      unqualified cross-project reference) — previously a silent no-op.
+    - `relation_claim` on the TARGET: a declaration the authority gate refused
+      (declarer older or lower source-tier), so the dispute stays visible while
+      a low-trust card cannot down-rank a canonical one.
+    """
+    try:
+        import index_impl
+        _updates, unresolved, gated = index_impl.compute_relation_state(index_conn)
+    except (ImportError, sqlite3.OperationalError):
+        return []
+    findings = []
+    for declarer_path, relation, target in unresolved:
+        findings.append((declarer_path, None, "unresolved_relation", f"{relation}: {target}"))
+    for target_path, column, label in gated:
+        relation = "contradicts" if column == "contradicted_by" else "supersedes"
+        findings.append((
+            target_path, None, "relation_claim",
+            f"{relation}-claim by={label} (below authority; not penalized)",
+        ))
+    return findings
+
+
 def write_findings(drift_conn, findings):
     now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
     new_count = 0
@@ -459,7 +517,13 @@ def auto_resolve(drift_conn, findings):
     ).fetchall()
 
     would_resolve = [e for e in existing if (e[0], e[1], e[2]) not in finding_keys]
-    penalized_resolves = [e for e in would_resolve if int(e[3] or 0) > 1]
+    # Declared types penalize from first_seen=1 (no grace gate), so a bulk
+    # disappearance of them must trip the safety valve exactly like any other
+    # actively-penalizing finding.
+    penalized_resolves = [
+        e for e in would_resolve
+        if int(e[3] or 0) > 1 or e[1] in DECLARED_DRIFT_TYPES
+    ]
     if existing and len(penalized_resolves) > len(existing) * 0.5 and len(penalized_resolves) > 5:
         print(
             f"WARNING: auto-resolve blocked — {len(penalized_resolves)}/{len(existing)} "
@@ -497,6 +561,72 @@ def prune_orphans(drift_conn, index_conn):
     return deleted
 
 
+def _last_evidence_event_is_decay(card_path):
+    """True if the most recent `## Evidence` event is already `decayed`, so decay
+    is emitted at most once per silence episode (idempotent across reindex)."""
+    try:
+        with open(card_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return False
+    last, in_ev = None, False
+    for line in content.splitlines():
+        st = line.strip()
+        if st.startswith("## "):
+            in_ev = st.lower() == "## evidence"
+            continue
+        if in_ev and st.startswith("- "):
+            parts = [p.strip() for p in st[2:].split("·")]
+            if len(parts) >= 2:
+                last = parts[1].lower()
+    return last == "decayed"
+
+
+def emit_decay_events(index_conn, drift_conn):
+    """§4.3 decay-on-silence. Reusing the SINGLE age clock (no second timer):
+    when a MANAGED, non-feedback card's `age_stale` finding is penalizing
+    (first_seen > 1 — the existing grace gate) AND its confidence is still above
+    the 0.55 floor, append ONE synthetic `decayed` event so the fold drops it
+    toward (never below) 0.55. Feedback cards are age-timeless → never decay.
+    Idempotent: at most one decay per silence episode. Returns the count emitted.
+    """
+    try:
+        import confidence as _conf
+        import evidence
+    except ImportError:  # pragma: no cover
+        return 0
+    try:
+        rows = drift_conn.execute(
+            "SELECT DISTINCT path FROM drift_findings "
+            "WHERE drift_type = 'age_stale' AND resolved_at IS NULL AND first_seen > 1"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    emitted = 0
+    for (path,) in rows:
+        try:
+            row = index_conn.execute(
+                "SELECT type, source, card_kind, confidence FROM memory_chunks "
+                "WHERE path = ? LIMIT 1", (path,)
+            ).fetchone()
+        except sqlite3.OperationalError:
+            continue
+        if not row:
+            continue
+        typ, source, card_kind, conf = row
+        if (typ or "").lower() == "feedback":
+            continue  # age-timeless (§4.3, P3)
+        if not _conf.is_managed(typ, source, card_kind):
+            continue
+        if (conf if conf is not None else 0.7) <= _conf.DECAY_FLOOR:
+            continue  # already at/below the floor → no decay event (§4.3)
+        if _last_evidence_event_is_decay(path):
+            continue  # one decay per silence episode
+        if evidence.decayed(path):
+            emitted += 1
+    return emitted
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: drift_check.py <index_db_path>", file=sys.stderr)
@@ -523,16 +653,40 @@ def main():
         drift_conn.close()
         return
 
+    # Surface a broken relation schema (missing/malformed *_explicit columns)
+    # in the routine drift run — otherwise declared-relation truth-maintenance
+    # is silently disabled and nothing tells the operator.
+    try:
+        import index_impl
+        for problem in index_impl.check_relation_schema(index_conn):
+            print(f"WARNING: relation schema — {problem}", file=sys.stderr)
+        # §3.2 (audit F2): surface any `## Evidence` ↔ card_events divergence.
+        evidence_divergences = index_impl.check_evidence_divergence(index_conn)
+        for problem in evidence_divergences:
+            print(f"WARNING: evidence divergence — {problem}", file=sys.stderr)
+        if evidence_divergences:
+            print(f"Doctor: {len(evidence_divergences)} card_events divergence(s) "
+                  "(markdown wins; run index.sh --full).", file=sys.stderr)
+    except ImportError:
+        pass
+
     known_names = build_known_names(index_conn)
 
     all_findings = []
     all_findings.extend(check_wikilink_drift(index_conn, known_names))
     all_findings.extend(check_age_drift(index_conn))
     all_findings.extend(check_confidence_escalation(index_conn))
+    all_findings.extend(check_declared_contradictions(index_conn))
+    all_findings.extend(check_relation_diagnostics(index_conn))
 
     pruned = prune_orphans(drift_conn, index_conn)
     resolved = auto_resolve(drift_conn, all_findings)
     new_count = write_findings(drift_conn, all_findings)
+
+    # STEP 1B §4.3: decay-on-silence rides the same age clock (after first_seen is
+    # updated) — a penalizing age_stale finding on a managed non-feedback card
+    # above 0.55 gets one synthetic `decayed` event on its `## Evidence`.
+    decayed_count = emit_decay_events(index_conn, drift_conn)
 
     record_run(drift_conn)
 
@@ -540,7 +694,7 @@ def main():
         "SELECT COUNT(*) FROM drift_findings WHERE resolved_at IS NULL"
     ).fetchone()[0]
 
-    print(f"Drift check: {len(all_findings)} detected, {new_count} new, {resolved} resolved, {pruned} pruned. {active} active.")
+    print(f"Drift check: {len(all_findings)} detected, {new_count} new, {resolved} resolved, {pruned} pruned, {decayed_count} decayed. {active} active.")
     index_conn.close()
     drift_conn.close()
 

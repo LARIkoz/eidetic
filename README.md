@@ -19,7 +19,7 @@ Eidetic gives an AI coding agent **long-term memory** that lives in plain Markdo
 
 What makes it different from every other memory tool: it **detects when memories go stale** and down-ranks them — so more memory doesn't quietly make the agent _worse_ (that's [why](#why-eidetic) it exists). Claude Code-native via zero-config hooks; works with Codex, Gemini, Cursor, Cline, and any MCP agent.
 
-_Lineage: [Luhmann's Zettelkasten](https://en.wikipedia.org/wiki/Zettelkasten), [Tiago Forte's Second Brain](https://www.buildingasecondbrain.com/), and [Karpathy's **LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) — the wiki **structure** implemented end-to-end (compounding pages, a typed schema, an op-log, typed pages), with drift detection layered on top; the maintenance **metabolism** (contradiction detection, multi-page synthesis, auto-filing) is the v6 roadmap. More in [Design philosophy](#design-philosophy)._
+_Lineage: [Luhmann's Zettelkasten](https://en.wikipedia.org/wiki/Zettelkasten), [Tiago Forte's Second Brain](https://www.buildingasecondbrain.com/), and [Karpathy's **LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) — its **structure** implemented end-to-end (typed pages, wikilinks, an op-log, a compounding write-path), plus declared-contradiction surfacing and supersession; full semantic truth-maintenance is the [v6 roadmap](#roadmap). More in [Design philosophy](#design-philosophy)._
 
 ---
 
@@ -44,7 +44,9 @@ Session 50: *validate_key() was renamed to check_auth() two weeks ago*
             *Agent gets WORSE, not better, from its own memory*
 ```
 
-That's the **Day 60 problem** — after 500+ memory files, stale knowledge actively hurts the agent. More memory = worse performance, and most memory tools ignore it. **Eidetic is built for it:** a drift layer **down-ranks** memories as they age, get over-reinforced without human confirmation, or lose their `[[link]]` targets — so stale knowledge stops outranking current knowledge. Catching the exact _renamed-symbol_ case above — a memory that contradicts today's code — is semantic **contradiction detection, on the [v6 roadmap](#roadmap).**
+That's the **Day 60 problem** — after 500+ memory files, stale knowledge actively hurts the agent. More memory = worse performance.
+
+Eidetic attacks it with **drift detection + truth maintenance**: dead wikilinks, age-stale cards, unconfirmed agent escalation, and declared contradictions / supersession (`contradicts:` / `supersedes:` frontmatter) all genuinely down-rank a card before it poisons the agent. The one case above that nothing declares — a *silent* rename with no broken link — still needs **semantic** contradiction detection, which is the [v6 roadmap](#roadmap); until then it's caught when the rule's wikilink dies, the card ages out, or a newer card declares `contradicts:` it.
 
 ---
 
@@ -112,6 +114,27 @@ Don't memorize commands — hand your agent a ready prompt from **[docs/prompts.
 
 ---
 
+## Built on a reusable engine
+
+Eidetic's embedding / vector / search core is a versioned public seam — the
+**Engine API v1** (`bin/engine.py`). Memory, topic bases, and your own consumers
+build on the same door instead of the private internals.
+
+```
+  Personal memory   Topic bases   Your consumer      ← products
+          \______________ | ______________/
+                     bin/engine.py                   ← Engine API v1 (the door)
+                          |
+                   embed.py · rerank.py              ← private core
+```
+
+Reads degrade (search returns `[]` + one reason if the model is missing), builds
+shout (`EngineUnavailable`), and the contract is versioned (`ENGINE_API 1.0`).
+See [docs/engine.md](docs/engine.md) — quickstart, contract table, and the first
+external consumer (a task-tracker search skill on its own index).
+
+---
+
 ## How it works
 
 ```
@@ -171,15 +194,16 @@ Keyword hits also carry a match-quality factor. A validated, recent, current, hu
 
 ### Drift Detection (v2.5)
 
-The feature that makes Eidetic different. Three checks, 24h throttle, zero file mutations:
+The feature that makes Eidetic different. Four checks, 24h throttle, zero file mutations:
 
 | Check                     | What it catches                                        | Threshold                              |
 | ------------------------- | ------------------------------------------------------ | -------------------------------------- |
 | **Wikilink drift**        | `[[validate-key]]` referenced but file renamed/deleted | Immediate                              |
 | **Age staleness**         | Project memory untouched for 30+ days                  | 30d project, 60d status, 90d reference |
 | **Confidence escalation** | 3+ agent-extracted updates, 0 human confirmation       | 3 events                               |
+| **Declared contradiction** | A card another card declares `contradicts:` (or its own `contradicted_by:`) | Immediate, no grace gate |
 
-Drift findings penalize ranking by **multiplying into the freshness factor**: broken wikilink = 0.8x, stale = 0.5x, confidence escalation = 0.3x — so a stale card with a drift finding always ranks below a merely-old one, and a finding can never _raise_ a card. Auto-resolve when the problem disappears.
+Drift findings penalize ranking by **multiplying into the freshness factor**: broken wikilink = 0.8x, stale = 0.5x, confidence escalation = 0.3x, declared contradiction = 0.4x — so a stale card with a drift finding always ranks below a merely-old one, and a finding can never *raise* a card. Distinct findings on one card **compound** (their penalties multiply, floored at 0.1x), so a three-problem card ranks below a one-problem card. Auto-resolve when the problem disappears — including declared relations: propagation is recomputed from the current declarers on every reindex, so removing a `contradicts:`/`supersedes:` line drops the penalty on the next drift run. A declaration only down-ranks its target when the declarer is at least as new and of equal-or-higher source tier; otherwise the claim is surfaced in diagnostics without touching ranking.
 
 **Grace gate:** a finding starts penalizing only on its **second** detection (drift runs are ≥24h apart), so one transient mis-detection never down-ranks a card. Until then it appears in diagnostics only.
 
@@ -201,13 +225,13 @@ Tree-sitter parses `.py`, `.js`, `.ts`, `.tsx`, `.sh` — every function and cla
 
 ### Knowledge Compounding
 
-Before creating a new memory, searches for existing ones on the same topic. Found? Updates it, adds history. Not found? Creates new file. 50 sessions = 50 refined rules, not 500 duplicate files.
+Before creating a new memory, searches for existing ones on the same topic. Found? Updates it, adds history. Not found? Creates new file. Matching is **lexical, not yet semantic**: salient-keyword overlap with porter stemming, so a repeat in the same or moderately reworded vocabulary compounds, and a heavy paraphrase is at worst **flagged** on the op-log as `possible duplicate of <card>` — never a silent duplicate. So: 50 sessions ≈ dozens of refined rules plus a few flagged near-misses, not 500 silent duplicates. Vector-gated semantic dedup is v6.
 
 ### File Answers Back — Promote (v5.3)
 
 A good synthesized answer shouldn't die in the chat log. **Promote** files it back as one **typed page** — `echo "<answer>" | python3 ~/.claude/memory-system/bin/remember.py "<title>"`. Search-before-write means a re-promote on the same topic appends a dated `## Update` section instead of duplicating, and a new page gets `## Related` wikilinks to its neighbours. It's the deliberate, mid-session companion to the end-of-session signal capture, and it's the same write-path a future importer reuses. Every write also lands on a greppable **op-log** — `grep '^## \[' log.md` is the whole timeline.
 
-This is Eidetic implementing the **structure** of [Karpathy's **LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) end-to-end: compounding pages, an explicit **maintenance contract** ([docs/MEMORY-SCHEMA.md](docs/MEMORY-SCHEMA.md)), typed pages (`synthesis` / `concept` / `entity`), and an op-log — with auto-extraction and drift detection layered on top to surface rot. The maintenance **metabolism** that resolves it (contradiction detection, multi-page synthesis, auto-filing) is the v6 roadmap.
+This is Eidetic implementing the **structure** of [Karpathy's **LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) end-to-end: compounding pages, an explicit **maintenance contract** ([docs/MEMORY-SCHEMA.md](docs/MEMORY-SCHEMA.md)), typed pages (`synthesis` / `concept` / `entity`), and an op-log — with auto-extraction, drift detection, and declared-contradiction / supersession handling layered on top. The wiki's **metabolism** — noticing contradictions *nobody declared* and synthesizing across many pages per ingest — is the [v6 roadmap](#roadmap); that's the part of "maintains itself instead of rotting" still to be earned.
 
 ### Session-End Auto-Capture (configurable)
 
@@ -332,7 +356,7 @@ _Not your use-case? The [40-repo competitive analysis](https://github.com/LARIko
 
 ## Design philosophy
 
-Inspired by [Luhmann's Zettelkasten](https://en.wikipedia.org/wiki/Zettelkasten), [Tiago Forte's Second Brain](https://www.buildingasecondbrain.com/), and the [**LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) pattern by Karpathy, whose **structure** Eidetic implements end-to-end (compounding pages, an explicit schema, an op-log, typed pages); the maintenance metabolism is the v6 roadmap. Per Karpathy, _"humans abandon wikis because maintenance grows faster than value; LLMs don't get bored"_ — so Eidetic's value curve climbs with use instead of decaying.
+Inspired by [Luhmann's Zettelkasten](https://en.wikipedia.org/wiki/Zettelkasten), [Tiago Forte's Second Brain](https://www.buildingasecondbrain.com/), and Karpathy's wiki-for-LLMs idea — both his [AI wiki concept](https://gist.github.com/karpathy/1dd0294ef9567971c1e4348a90d69285) and the [**LLM Wiki**](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) pattern whose structure Eidetic now implements end-to-end (compounding pages, an explicit schema, an op-log, typed pages — semantic truth-maintenance is v6). Per Karpathy, _"humans abandon wikis because maintenance grows faster than value; LLMs don't get bored"_ — so Eidetic's value curve climbs with use instead of decaying.
 
 Core principles:
 
@@ -362,7 +386,7 @@ Core principles:
 
 **Next** — distribution: pip package, docs polish.
 
-**Planned — v6 (truth-maintenance)** — supersession + contradiction detection as a typed-edge graph: memory that resolves its own contradictions and doesn't rot. Plus session-transcript search.
+**Planned — v6 (truth-maintenance)** — *declared* contradictions (`contradicts:`/`contradicted_by:`) and supersession (`supersedes:`) already surface as drift findings and down-rank (0.4x / 0.35x). v6 adds the automatic half: **semantic** contradiction detection (no declaration needed), multi-page synthesis on ingest, and auto-filing of answers — memory that resolves its own contradictions and doesn't rot. Plus session-transcript search.
 
 Full version history: [CHANGELOG.md](CHANGELOG.md)
 

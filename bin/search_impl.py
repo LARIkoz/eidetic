@@ -71,28 +71,80 @@ STOPWORDS = {
 # Single source of truth: bin/constants.py. Literal fallback only for when the
 # module is run somewhere constants.py is not importable (W3 dedup).
 try:
-    from constants import EVIDENCE_WEIGHTS, SOURCE_WEIGHTS, DRIFT_PENALTIES
+    from constants import (
+        EVIDENCE_WEIGHTS, SOURCE_WEIGHTS, DRIFT_PENALTIES, DECLARED_DRIFT_TYPES,
+        READER_SAFE_MIGRATIONS,
+    )
 except ImportError:
     EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
     SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
-    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3}
-
-
-def ensure_agent_columns(conn):
-    """Add v2.6 derived columns when searching an older index.db."""
-    try:
-        existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
-    except sqlite3.OperationalError:
-        return
-    migrations = {
+    DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3,
+                       "contradicted": 0.4, "unresolved_relation": 1.0, "relation_claim": 1.0}
+    DECLARED_DRIFT_TYPES = {"contradicted"}
+    # Reader-safe columns ONLY (see constants.READER_SAFE_MIGRATIONS): a read-only
+    # search must never add the writer-back-fill columns (*_explicit/status_explicit)
+    # — adding them with DEFAULT '' and no file re-read defeats the back-fill and
+    # lets propagation erase a deliberate demotion (audit F1).
+    READER_SAFE_MIGRATIONS = {
         "project": "ALTER TABLE memory_chunks ADD COLUMN project TEXT DEFAULT ''",
         "card_kind": "ALTER TABLE memory_chunks ADD COLUMN card_kind TEXT DEFAULT ''",
         "status": "ALTER TABLE memory_chunks ADD COLUMN status TEXT DEFAULT 'current'",
         "area": "ALTER TABLE memory_chunks ADD COLUMN area TEXT DEFAULT ''",
         "supersedes": "ALTER TABLE memory_chunks ADD COLUMN supersedes TEXT DEFAULT ''",
         "superseded_by": "ALTER TABLE memory_chunks ADD COLUMN superseded_by TEXT DEFAULT ''",
+        "contradicts": "ALTER TABLE memory_chunks ADD COLUMN contradicts TEXT DEFAULT ''",
+        "contradicted_by": "ALTER TABLE memory_chunks ADD COLUMN contradicted_by TEXT DEFAULT ''",
     }
-    for column, statement in migrations.items():
+
+# A card with several distinct penalized findings compounds them (product);
+# the floor keeps a many-problem card retrievable at all (verify-then-fix).
+DRIFT_PENALTY_FLOOR = 0.1
+
+# STEP 1B confidence lifecycle (pure algebra; import-safe). Optional so search
+# still runs if the module is ever unavailable.
+try:
+    import confidence as _conf_mod
+except ImportError:  # pragma: no cover
+    _conf_mod = None
+
+
+def _confidence_ranking_on():
+    """Phase-A rollout flag (§10). DARK by default: OFF ⇒ conf_w ≡ 1.0 and the
+    injection gate is inactive, so ranking + injected context are byte-identical
+    to pre-1B. Flip EIDETIC_CONFIDENCE_RANKING on to let confidence enter the
+    formula (Phase B)."""
+    return os.environ.get("EIDETIC_CONFIDENCE_RANKING", "").strip().lower() in (
+        "1", "on", "true", "yes")
+
+
+def conf_w_for(type_, source, card_kind, confidence):
+    """§5.2 conf_w for a row — EXACTLY 1.0 when the flag is off (identity in the
+    compound product ⇒ zero ranking diff) or the card is exempt; else
+    0.35 + 0.65·confidence (≤ 1, so it can only lower or hold a card's rank)."""
+    if _conf_mod is None or not _confidence_ranking_on():
+        return 1.0
+    managed = _conf_mod.is_managed(type_, source, card_kind)
+    c = confidence if confidence is not None else 0.7
+    return _conf_mod.conf_weight(c, managed)
+
+
+def ensure_agent_columns(conn):
+    """Add READER-SAFE derived columns when searching an older index.db.
+
+    Reader side of the schema migration; uses the SHARED source
+    (constants.READER_SAFE_MIGRATIONS) so it can never drift from the writer
+    (KEEP #3). It adds ONLY reader-safe columns — never the writer-back-fill
+    `*_explicit`/`status_explicit` columns: a search that ADDed those with
+    DEFAULT '' and no file re-read would defeat the back-fill and let the next
+    incremental propagation erase a deliberate superseded/archived demotion
+    (audit F1). A DB lacking those columns is tolerated — the reader never
+    SELECTs them; the writer adds+back-fills them on its next index run.
+    """
+    try:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_chunks)")}
+    except sqlite3.OperationalError:
+        return
+    for column, statement in READER_SAFE_MIGRATIONS.items():
         if column not in existing:
             try:
                 conn.execute(statement)
@@ -119,16 +171,28 @@ def _load_drift_data(db_path):
         return {}
     result = {}
     for path, drift_type, detail, first_seen, detected_at in rows:
-        entry = result.setdefault(path, {"penalty": None, "findings": []})
+        entry = result.setdefault(path, {"penalty": None, "findings": [], "_types": set()})
         # Grace gate: a finding penalizes ranking only from its SECOND
         # detection (`first_seen > 1`). Drift runs are >=24h apart, so a
         # fresh finding is diagnostics-only for at least one full cycle —
         # one transient mis-detection (e.g. a file mid-rename) never
         # down-ranks a card. Same gate in assemble_context.load_drift_findings.
-        penalized = int(first_seen or 0) > 1
+        # DECLARED relations (e.g. `contradicted`) are asserted facts, not
+        # detections — they bypass the gate and penalize immediately.
+        # Penalty-1.0 types (unresolved_relation, relation_claim) are
+        # diagnostics-only by construction and never count as penalized.
         penalty = DRIFT_PENALTIES.get(drift_type, 0.5)
-        if penalized and (entry["penalty"] is None or penalty < entry["penalty"]):
-            entry["penalty"] = penalty
+        penalized = penalty < 1.0 and (
+            int(first_seen or 0) > 1 or drift_type in DECLARED_DRIFT_TYPES
+        )
+        # Distinct penalized types COMPOUND (multiply): a stale card with a
+        # broken wikilink AND a declared contradiction must rank below a card
+        # with any one of those. Keeping only the min let a 3-problem card
+        # rank like a 1-problem card. Duplicate findings of the SAME type
+        # (e.g. 3 broken wikilinks) still count once.
+        if penalized and drift_type not in entry["_types"]:
+            entry["_types"].add(drift_type)
+            entry["penalty"] = penalty if entry["penalty"] is None else entry["penalty"] * penalty
         entry["findings"].append({
             "type": drift_type,
             "detail": detail or "",
@@ -137,6 +201,10 @@ def _load_drift_data(db_path):
             "penalized": penalized,
             "penalty": penalty if penalized else None,
         })
+    for entry in result.values():
+        entry.pop("_types", None)
+        if entry["penalty"] is not None:
+            entry["penalty"] = max(DRIFT_PENALTY_FLOOR, entry["penalty"])
     return result
 
 
@@ -229,6 +297,7 @@ def _base_result(row, drift_info=None, drift_penalty=None, freshness=None, statu
         "area": row["area"] or "",
         "supersedes": row["supersedes"] or "",
         "superseded_by": row["superseded_by"] or "",
+        "contradicted_by": row["contradicted_by"] or "",
         "section": section,
         "snippet": _snippet(content),
         "content_chars": len(content),
@@ -298,6 +367,7 @@ def _fetch_fts_rows(conn, query, limit, type_filter):
             c.id, c.path, c.project, c.name, c.type,
             c.evidence, c.source, c.confidence, c.last_verified,
             c.card_kind, c.status, c.area, c.supersedes, c.superseded_by,
+            c.contradicted_by,
             c.section_heading, c.content, c.description,
             memory_fts.rank AS fts_rank
         FROM memory_fts
@@ -631,7 +701,7 @@ def _detail_lookup(conn, selector, section=None):
         rows = conn.execute("""
             SELECT path, project, name, type, evidence, source, confidence,
                    last_verified, card_kind, status, area, supersedes,
-                   superseded_by, section_heading, content, description, mtime
+                   superseded_by, contradicted_by, section_heading, content, description, mtime
             FROM memory_chunks
             ORDER BY path, section_heading
         """).fetchall()
@@ -663,7 +733,7 @@ def _detail_lookup(conn, selector, section=None):
             rows.extend(conn.execute("""
                 SELECT path, project, name, type, evidence, source, confidence,
                        last_verified, card_kind, status, area, supersedes,
-                       superseded_by, section_heading, content, description, mtime
+                       superseded_by, contradicted_by, section_heading, content, description, mtime
                 FROM memory_chunks
                 WHERE path = ?
                 ORDER BY section_heading
@@ -672,7 +742,7 @@ def _detail_lookup(conn, selector, section=None):
             rows.extend(conn.execute("""
                 SELECT path, project, name, type, evidence, source, confidence,
                        last_verified, card_kind, status, area, supersedes,
-                       superseded_by, section_heading, content, description, mtime
+                       superseded_by, contradicted_by, section_heading, content, description, mtime
                 FROM memory_chunks
                 WHERE path = ? AND COALESCE(section_heading, '') = ?
                 ORDER BY section_heading
@@ -756,13 +826,18 @@ def _run_query(db_path, query, limit, type_filter, warn=False):
         results = []
         for row, strategy, match_quality in rows:
             ev_w = EVIDENCE_WEIGHTS.get(row["evidence"], 0.7)
-            src_w = SOURCE_WEIGHTS.get(row["source"], 1.0)
+            # Unknown/misspelled source → conservative 0.5, CONSISTENT with the
+            # authority gate (index_impl._declarer_outranks) and the vector path
+            # below. Defaulting to 1.0 let a typo'd source rank as user-explicit
+            # while the gate treated it as mid-tier (audit F7).
+            src_w = SOURCE_WEIGHTS.get(row["source"], 0.5)
             status_w = compute_status_weight(row["status"], row["superseded_by"])
             drift_info = drift_data.get(row["path"], {})
             dp = drift_info.get("penalty")
             fr_w = combine_freshness(compute_freshness(row["last_verified"]), dp)
+            conf_w = conf_w_for(row["type"], row["source"], row["card_kind"], row["confidence"])
             raw_rank = abs(row["fts_rank"])
-            compound = raw_rank * ev_w * src_w * fr_w * status_w * max(0.1, match_quality)
+            compound = raw_rank * ev_w * src_w * fr_w * status_w * conf_w * max(0.1, match_quality)
 
             result = _base_result(
                 row,
@@ -1004,14 +1079,25 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False, json_o
 
 
 def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=None, warn=False, relaxed=False):
+    # Vector search goes through the public Engine API v1 door (bin/engine.py):
+    # Index.search is drift-guarded and SOFT (returns [] + one stderr reason on a
+    # missing model / stamp drift), so the FTS path always still answers.
     try:
-        embed_path = os.path.join(os.path.dirname(__file__), "embed.py")
-        spec = importlib.util.spec_from_file_location("eidetic_embed", embed_path)
+        engine_path = os.path.join(os.path.dirname(__file__), "engine.py")
+        spec = importlib.util.spec_from_file_location("eidetic_engine", engine_path)
         if spec is None or spec.loader is None:
-            raise ImportError(f"cannot load {embed_path}")
-        embed = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(embed)
-        vec_results = embed.search(vector_db, query, limit=limit * 2)
+            raise ImportError(f"cannot load {engine_path}")
+        engine = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(engine)
+        index = engine.open_index(vector_db)
+        try:
+            vec_results = [
+                (h["score"], h["chunk_id"], h["path"], h["name"],
+                 h["section_heading"], h["content_hash"])
+                for h in index.search(query, limit=limit * 2)
+            ]
+        finally:
+            index.close()
     except ImportError as e:
         if warn:
             print(f"WARNING: vector search unavailable: {e}", file=sys.stderr)
@@ -1030,18 +1116,19 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=
         row = index_conn.execute("""
             SELECT path, type, evidence, source, last_verified, content, section_heading,
                    description,
-                   project, card_kind, status, area, supersedes, superseded_by
+                   project, card_kind, status, area, supersedes, superseded_by,
+                   contradicted_by, confidence
             FROM memory_chunks WHERE id = ?
         """, (chunk_id,)).fetchone()
         if not row:
             continue
         (row_path, typ, evidence, source, lv, content, heading, desc, project, card_kind,
-         status, area, supersedes, superseded_by) = row
+         status, area, supersedes, superseded_by, contradicted_by, confidence) = row
         if row_path != path or (heading or "") != vector_heading:
             continue
         if not vector_hash:
             continue
-        digest = embed.content_hash(name, desc, content, heading)
+        digest = engine.content_hash(name, desc, content, heading)
         if digest != vector_hash:
             continue
         if type_filter and typ != type_filter:
@@ -1053,7 +1140,8 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=
         drift_info = (drift_data or {}).get(path, {})
         dp = drift_info.get("penalty")
         fr_w = combine_freshness(compute_freshness(lv), dp)
-        compound = sim * ev_w * src_w * fr_w * status_w
+        conf_w = conf_w_for(typ, source, card_kind, confidence)
+        compound = sim * ev_w * src_w * fr_w * status_w * conf_w
 
         row_dict = {
             "path": path,
@@ -1068,6 +1156,7 @@ def _vector_search(vector_db, index_conn, query, limit, type_filter, drift_data=
             "area": area or "",
             "supersedes": supersedes or "",
             "superseded_by": superseded_by or "",
+            "contradicted_by": contradicted_by or "",
             "section_heading": heading or "",
             "content": content or "",
             "description": desc or "",

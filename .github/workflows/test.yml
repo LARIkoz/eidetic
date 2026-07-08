@@ -1999,3 +1999,84 @@ jobs:
 
       - name: Test health check
         run: bash bin/health.sh
+
+  # Spec §9.1 / STEP-1 §3: the WHOLE suite must run in BOTH ranking modes —
+  # FTS-only (fastembed absent) and vectored (fastembed present) — because the
+  # two paths degrade differently and a green FTS-only run says nothing about
+  # the vectored path. Two matrix legs; fail-fast off so BOTH always run; the
+  # both-modes-gate job below fails the workflow if EITHER leg is skipped.
+  suite-both-modes:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [fts-only, vectored]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Mode banner
+        run: |
+          echo "===== RANKING-MODE LEG mode=${{ matrix.mode }} ====="
+
+      # Vectored leg: install the pinned embedder and PROVE it imports (a silent
+      # install failure would masquerade as an fts-only run).
+      - name: Install fastembed (vectored leg)
+        if: matrix.mode == 'vectored'
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install 'fastembed==0.8.0'
+          python3 -c "import fastembed, sys; print('fastembed', fastembed.__version__); \
+            sys.exit(0 if fastembed.__version__ == '0.8.0' else 1)"
+
+      # FTS-only leg: PROVE fastembed is genuinely absent, so this leg really
+      # exercises the no-vectors degradation path (not an accidental vectored run).
+      - name: Assert fastembed absent (fts-only leg)
+        if: matrix.mode == 'fts-only'
+        run: |
+          python3 -c "import importlib.util, sys; \
+            sys.exit(1 if importlib.util.find_spec('fastembed') else 0)" \
+            || { echo 'ERROR: fastembed present in the fts-only leg'; exit 1; }
+
+      # The entire suite, stdlib-only runner (tests are unittest.TestCase — no
+      # pytest dependency). Non-zero exit fails the leg.
+      - name: Run full suite (${{ matrix.mode }})
+        run: |
+          echo "Running full unittest suite in mode=${{ matrix.mode }}"
+          python3 -m unittest discover -s tests -v
+
+      # Loud, explicit coverage boundary for the vectored CI leg.
+      - name: Vectored-leg coverage report
+        if: matrix.mode == 'vectored'
+        run: |
+          echo "::notice title=Vectored CI coverage boundary::fastembed==0.8.0 is"\
+               "installed and imported, so every test runs with the embedder"\
+               "IMPORTABLE (import/version-pin compatibility + no-crash when the"\
+               "library loads). This leg does NOT download the ~2GB e5-large model"\
+               "or build a real vectors.db (impractical/network in CI), so the"\
+               "vector gate sees no vectors.db and returns None — the same code"\
+               "path as fts-only for the similarity assertions. REAL e5 cosine"\
+               "behavior (the 0.85 compound gate calibration) is verified only on"\
+               "a live vectored box; see STEP1-REPORT.md calibration table."
+
+  # Guard: fail the workflow if EITHER both-modes leg was skipped or failed.
+  # A matrix leg that is skipped/cancelled leaves result != 'success'.
+  both-modes-gate:
+    runs-on: ubuntu-latest
+    needs: suite-both-modes
+    if: always()
+    steps:
+      - name: Require both ranking-mode legs to have run and passed
+        run: |
+          RESULT="${{ needs.suite-both-modes.result }}"
+          echo "suite-both-modes result: $RESULT"
+          if [ "$RESULT" != "success" ]; then
+            echo "ERROR: a ranking-mode leg was skipped/failed (result=$RESULT);"\
+                 "both fts-only AND vectored must run and pass."
+            exit 1
+          fi
+          echo "Both fts-only and vectored legs ran and passed."

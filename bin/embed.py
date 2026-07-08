@@ -284,6 +284,13 @@ def _vector_meta_ok(vec_conn):
     return True
 
 
+# Embedded-content window (spec-chunker FR-5). Raised 500 → 1500 so the vector
+# represents a real slice of the chunk (~375 EN tokens, within e5's 512-token
+# window after name/desc/breadcrumb overhead; RU may exceed it → the model's own
+# tokenizer truncation handles the tail). embedding_text() and content_hash()
+# MUST cut at the SAME length (the file's own invariant) or the query-time guard
+# drops otherwise-valid vectors. A FIXED constant, never env-overridable — an env
+# override would desync content_hash across boxes sharing vectors.db semantics.
 EMBED_CONTENT_CHARS = 1500
 
 
@@ -294,6 +301,11 @@ def embedding_text(name, desc, content, heading):
 
 
 def content_hash(name, desc, content, heading):
+    # Hash exactly what embedding_text() feeds the model (content truncated to
+    # EMBED_CONTENT_CHARS) — NOT the full content. Otherwise an edit BEYOND that
+    # cut, which does not change the embedding, changes the hash and the
+    # query-time guard (search_impl) silently drops an otherwise-valid vector.
+    # Keep this in lockstep with embedding_text(). Version tracked by HASH_SCHEME.
     body = (content or "")[:EMBED_CONTENT_CHARS]
     payload = "\0".join([name or "", desc or "", heading or "", body])
     return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()
@@ -312,6 +324,12 @@ def embed_texts(texts):
 
 
 def embed_query_texts(texts):
+    """Query-side embedding (asymmetric retrieval prefix).
+
+    e5-family cosines are calibrated for query:/passage: pairs; embedding both
+    sides as passage: inflates similarity and un-discriminates any gate built
+    on it (compound._vector_gate). Callers comparing a QUERY-like text against
+    stored/candidate passages must use this path, not embed_texts."""
     if EMBED_ENGINE == "mlx":
         import mlx_embed
         return mlx_embed.embed_texts([QUERY_PREFIX + t for t in texts])

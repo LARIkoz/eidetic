@@ -75,7 +75,10 @@ def _detect_corpus_lang(base, threshold=0.5, sample=500):
     db = os.path.join(base, "db", "index.db")
     try:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        rows = conn.execute("SELECT COALESCE(content,'') FROM memory_chunks LIMIT ?",
+        # Stable sample: an unordered LIMIT samples an arbitrary subset, so a
+        # reindex (different rowids/scan order) could flip the detected language
+        # near the threshold. rowid is a cheap total order for a given db.
+        rows = conn.execute("SELECT COALESCE(content,'') FROM memory_chunks ORDER BY rowid LIMIT ?",
                             (sample,)).fetchall()
         conn.close()
     except sqlite3.Error:
