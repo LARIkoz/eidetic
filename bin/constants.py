@@ -166,7 +166,7 @@ M2_RELATED_MIN_DEFAULT = 0.78
 #
 # M2CAL calibration (owner's box, REAL 1390-card store, read-only dry-run). The
 # earlier 0.0 floor was an UNCALIBRATED placeholder: it was chosen when the reranker
-# was unprovisioned (BROKEN on chabrec → ONNX missing) so no real logit distribution
+# was unprovisioned on the build box (ONNX missing) so no real logit distribution
 # existed. The M2-activation dry-run over the real store MEASURED that distribution
 # for the first time: rel min=-3.34, median=-0.20, max=+1.38. A 0.0 floor therefore
 # admits the entire top ~third of neighbors INCLUDING junk — e.g. the semantically-
