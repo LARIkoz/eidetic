@@ -1,4 +1,6 @@
 #!/bin/bash
+# MLX embed engine: route python3 through the eidetic-mlx venv when present.
+[ -d "$HOME/.venvs/eidetic-mlx/bin" ] && export PATH="$HOME/.venvs/eidetic-mlx/bin:$PATH"
 # AI Memory System v1 — Session Signal Extraction (Stop hook, async)
 # Extracts decisions/rules/failures from the session transcript via Claude (Sonnet
 # default) — claude-batch where available, else a plain `claude --print` — then a

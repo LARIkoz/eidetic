@@ -1,4 +1,6 @@
 #!/bin/bash
+# MLX embed engine: route python3 through the eidetic-mlx venv when present.
+[ -d "$HOME/.venvs/eidetic-mlx/bin" ] && export PATH="$HOME/.venvs/eidetic-mlx/bin:$PATH"
 # AI Memory System v1 — FTS5 Search
 # Usage: search.sh "<query>" [--limit N] [--type feedback|project|user|reference|code] [--brief|--full] [--json|--json-object]
 #        search.sh --detail <detail_id|path> [--section SECTION] [--json-object]

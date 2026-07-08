@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# MLX embed engine: route python3 through the eidetic-mlx venv when present.
+[ -d "$HOME/.venvs/eidetic-mlx/bin" ] && export PATH="$HOME/.venvs/eidetic-mlx/bin:$PATH"
 # Eidetic — Doctor / self-check.
 #
 # Diagnoses the WHOLE chain end-to-end and says, in plain language, whether

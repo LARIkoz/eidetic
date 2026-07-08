@@ -585,5 +585,32 @@ def main(argv=None):
     return 0
 
 
+def _reexec_under_mlx_venv():
+    """mlx lives ONLY in the py3.12 `eidetic-mlx` venv. The shell entrypoints
+    prepend the venv to PATH, but callers that invoke embed.py with a bare
+    `python3` (session hooks after an update SNAPs them, update.sh refresh)
+    crash on `import mlx.core`. Same guard as base.py: when the selected
+    engine is mlx and we are not already the venv interpreter, re-exec under
+    it. No-ops off-mlx or without the venv. Opt out: EIDETIC_NO_MLX_REEXEC=1."""
+    if os.environ.get("EIDETIC_MLX_REEXEC") or os.environ.get("EIDETIC_NO_MLX_REEXEC"):
+        return  # already re-exec'd (loop guard) or explicitly opted out
+    engine = os.environ.get("EIDETIC_EMBED_ENGINE", "").strip()
+    if not engine:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        try:
+            with open(os.path.join(root, ".embed_engine"), encoding="utf-8") as f:
+                engine = f.read().strip()
+        except OSError:
+            return  # no engine file -> default (fastembed/CPU); nothing to route
+    if engine != "mlx":
+        return
+    venv_py = os.path.expanduser("~/.venvs/eidetic-mlx/bin/python3")
+    if not os.path.exists(venv_py) or os.path.realpath(venv_py) == os.path.realpath(sys.executable):
+        return  # venv absent (other machines) or already the venv interpreter
+    os.environ["EIDETIC_MLX_REEXEC"] = "1"
+    os.execv(venv_py, [venv_py, os.path.abspath(__file__), *sys.argv[1:]])
+
+
 if __name__ == "__main__":
+    _reexec_under_mlx_venv()
     sys.exit(main())

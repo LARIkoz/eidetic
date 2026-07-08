@@ -1,4 +1,6 @@
 #!/bin/bash
+# MLX embed engine: route python3 through the eidetic-mlx venv when present.
+[ -d "$HOME/.venvs/eidetic-mlx/bin" ] && export PATH="$HOME/.venvs/eidetic-mlx/bin:$PATH"
 # AI Memory System v1 — Smart Memory Inject (SessionStart hook)
 # Writes assembled memories to ~/.claude/rules/memory-context.md
 # Claude auto-loads rules/ files — no 10K stdout cap.

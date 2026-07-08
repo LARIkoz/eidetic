@@ -1,4 +1,6 @@
 #!/bin/bash
+# MLX embed engine: route python3 through the eidetic-mlx venv when present.
+[ -d "$HOME/.venvs/eidetic-mlx/bin" ] && export PATH="$HOME/.venvs/eidetic-mlx/bin:$PATH"
 # Eidetic — update to latest version
 # Preserves: db/, rules/memory-context.md, settings.json hooks
 set -euo pipefail
