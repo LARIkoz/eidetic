@@ -177,11 +177,18 @@ run_codex_cli_extraction() {
     out_dir=$(mktemp -d "${TMPDIR:-/tmp}/eidetic-codexcli-signals.XXXXXX")
     chmod 700 "$out_dir" 2>/dev/null || true
     status=0
+    # -c model_reasoning_summary=none: signal extraction parses the final message
+    # (-o out.md), never the reasoning summary. Summary-null models (e.g.
+    # gpt-5.3-codex-spark, default_summary=none) 400 when the user's global
+    # ~/.codex/config.toml forces model_reasoning_summary="detailed" — which
+    # silently killed signal extraction. Per-call override, safe for all models.
     if [ -n "${EIDETIC_SIGNAL_CODEX_CLI_MODEL:-}" ]; then
         run_with_codex_timeout "$codex_bin" exec --model "$EIDETIC_SIGNAL_CODEX_CLI_MODEL" -s read-only --skip-git-repo-check --color never \
+            -c 'model_reasoning_summary="none"' \
             -o "$out_dir/out.md" - < "$prompt_file" >/dev/null 2>&1 || status=$?
     else
         run_with_codex_timeout "$codex_bin" exec -s read-only --skip-git-repo-check --color never \
+            -c 'model_reasoning_summary="none"' \
             -o "$out_dir/out.md" - < "$prompt_file" >/dev/null 2>&1 || status=$?
     fi
     if [ "$status" -eq 0 ] && [ -s "$out_dir/out.md" ]; then
