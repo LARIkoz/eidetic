@@ -41,10 +41,16 @@ A candidate exists ONLY when BOTH hold in the SAME exchange:
 1. The USER asked about past facts: what happened, what was decided, how something is configured, why something was done, what the state of X is. (Not a request to write/change code now, not chit-chat, not "run this".)
 2. The ASSISTANT answered by STATING SPECIFIC remembered facts — names, numbers, dates, versions, decisions, causes — asserted as established knowledge. NOT: plans, proposals, questions back, work narration ("I ran/fixed/created…"), or facts it visibly derived right there by reading files / running commands in the shown exchange.
 
+GROUNDED-SUBSET RULE (the filing gate rejects the WHOLE answer if ANY fact is unsupported — so you must extract ONLY the memory-grounded subset):
+An assistant response often MIXES recalled knowledge with session-derived facts. You MUST separate them:
+- KEEP: facts the assistant states as prior knowledge, configuration, decisions, architecture, rules. These are claims about how things ARE or WERE — established before this session.
+- DROP: facts the assistant obtained THIS SESSION by reading files, running commands, checking tool output, or reasoning from in-session observations ("I checked and found…", "The output shows…", "Looking at the file…", results of grep/read/bash shown in the transcript). Also drop: plans, proposals, current-session work narration.
+If an exchange mixes both types, extract ONLY the recalled subset. If only 1-2 recalled facts survive the filter, that is fine — a short recalled_answer that passes the gate is worth more than a long mixed one that gets rejected.
+
 STRICT COPY RULES (violating any = do not emit the candidate):
 - recall_query = the user's actual question, condensed, in the user's own language.
-- recalled_answer = ONLY facts the assistant actually stated, near-verbatim, condensed to 1-5 factual sentences. Drop greetings, hedges, markdown, tables. NEVER add, merge from your own knowledge, sharpen numbers, or resolve vagueness — copy the assistant's assertion or skip it.
-- If you are unsure whether the assistant recalled it vs derived it in-session: skip it.
+- recalled_answer = ONLY the memory-grounded facts the assistant stated, near-verbatim, condensed to 1-5 factual sentences. Drop greetings, hedges, markdown, tables. NEVER add, merge from your own knowledge, sharpen numbers, or resolve vagueness — copy the assistant's assertion or skip it.
+- If you are unsure whether a fact is recalled vs derived in-session: drop that fact (keep the rest).
 
 Output ONLY this JSON object, no other text:
 {"candidates": [{"recall_query": "...", "recalled_answer": "..."}]}
