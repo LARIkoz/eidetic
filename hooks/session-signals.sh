@@ -418,4 +418,16 @@ else
     printf '%s\n' "$RESULT" | python3 "$COMPOUND" "$(pwd)" 2>/dev/null || exit 0
 fi
 
+
+# --- M3 auto-file driver (DARK; two independent locks) ------------------------
+# Mines this transcript for memory-recall answers and drives them through the
+# judge-gated filing pipeline (m3_hook.py). No-op unless EIDETIC_M3_DRIVER=on;
+# filing additionally requires EIDETIC_M3_AUTOFILE=on inside the gate. Loud log,
+# never blocks session close.
+if [ "${EIDETIC_M3_DRIVER:-}" = "on" ] && [ -n "${TRANSCRIPT:-}" ] && [ -f "${TRANSCRIPT:-}" ]; then
+    mkdir -p "$MEMORY_SYSTEM/events" 2>/dev/null || true
+    python3 "$MEMORY_SYSTEM/bin/m3_hook.py" "$TRANSCRIPT" \
+        >> "$MEMORY_SYSTEM/events/m3_driver.log" 2>&1 || true
+fi
+
 exit 0
