@@ -28,3 +28,4 @@ embed-last.log
 usage.log*
 usage_rollup.json*
 .cache/
+.embed_engine

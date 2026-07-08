@@ -2,8 +2,9 @@
 
 Hermetic engine-selection / stamp / guard tests run on BOTH legs (no mlx needed).
 The FAITHFULNESS gate (FR-3) and the no-onnx-temp assertion (FR-5) require the mlx
-runtime + the mlx-community weights, so they `importorskip("mlx.core")` and skip
-cleanly where mlx is absent (both legs on this host). unittest + pytest.
+runtime + the mlx-community weights, so they skip cleanly where mlx is absent
+(both legs on this host). Pure unittest — the project runner is
+`unittest discover`, which must not require pytest to IMPORT this module.
 """
 
 import contextlib
@@ -15,8 +16,6 @@ import sys
 import tempfile
 import unittest
 
-import pytest
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bin"))
 
 import embed  # noqa: E402
@@ -26,6 +25,16 @@ import mlx_embed  # noqa: E402
 def _fastembed_available():
     import importlib.util
     return importlib.util.find_spec("fastembed") is not None
+
+
+def _mlx_available():
+    # find_spec("mlx.core") imports the PARENT package first, so a wholly absent
+    # mlx raises ModuleNotFoundError rather than returning None — treat as absent.
+    import importlib.util
+    try:
+        return importlib.util.find_spec("mlx.core") is not None
+    except ImportError:
+        return False
 
 
 RU = "политика ротации ключей требует ежедневной замены сертификата"
@@ -197,7 +206,8 @@ class AdditiveTest(unittest.TestCase):
 class FaithfulnessTest(unittest.TestCase):
     @unittest.skipUnless(_fastembed_available(), "faithfulness gate needs fastembed")
     def test_cosine_ge_0999_per_item_ru_en(self):
-        pytest.importorskip("mlx.core")
+        if not _mlx_available():
+            self.skipTest("mlx runtime absent")
         import numpy as np
         texts = [RU, EN, "kubernetes ingress certificate renewal", "hello world"]
         # Force the fastembed side explicitly (independent of the ambient engine),
@@ -225,7 +235,8 @@ class FaithfulnessTest(unittest.TestCase):
 # --- FR-5 ZERO onnxruntime/CoreML temp under mlx (mlx required → skips) -------
 class NoOnnxTempTest(unittest.TestCase):
     def test_mlx_embed_creates_no_onnx_coreml_temp(self):
-        pytest.importorskip("mlx.core")
+        if not _mlx_available():
+            self.skipTest("mlx runtime absent")
         tmp = tempfile.gettempdir()
 
         def onnx_temps():
