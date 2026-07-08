@@ -531,7 +531,7 @@ jobs:
               for cmd in commands
           ), commands
           signal_hook = next(h for h in stop_hooks if "session-signals" in h.get("command", ""))
-          assert signal_hook["timeout"] == 180000, signal_hook
+          assert signal_hook["timeout"] == 300, signal_hook  # seconds (Claude Code reads seconds; v5.13.0 ms->s migration)
           skill = (home / ".claude/skills/memory-recall/SKILL.md").read_text()
           assert memory_system in skill
           assert "~/.claude/memory-system" not in skill
@@ -611,7 +611,7 @@ jobs:
               assert prefix.startswith("EIDETIC_MEMORY_SYSTEM="), cmd
               assert prefix.split("=", 1)[1] == memory_system, cmd
           signal_hook = next(h for h in stop_hooks if "session-signals" in h.get("command", ""))
-          assert signal_hook["timeout"] == 180000, signal_hook
+          assert signal_hook["timeout"] == 300, signal_hook  # seconds (Claude Code reads seconds; v5.13.0 ms->s migration)
           meta = json.loads((Path(memory_system) / ".installed.json").read_text())
           assert meta["git_sha"] == "fake-sha-quote", meta
           skill = (home / ".claude/skills/memory-recall/SKILL.md").read_text()
@@ -679,7 +679,7 @@ jobs:
               for hook in entry.get("hooks", [])
           ]
           signal_hook = next(h for h in stop_hooks if "session-signals" in h.get("command", ""))
-          assert signal_hook["timeout"] == 180000, signal_hook
+          assert signal_hook["timeout"] == 300, signal_hook  # seconds (Claude Code reads seconds; v5.13.0 ms->s migration)
           assert signal_hook["command"] == "~/.claude/hooks/session-signals.sh", signal_hook
           meta = json.loads((memory_system / ".installed.json").read_text())
           assert meta["git_sha"] == "fake-sha-default", meta
