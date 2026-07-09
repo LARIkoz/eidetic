@@ -529,6 +529,68 @@ class LifecycleSignalsTest(unittest.TestCase):
         self.assertTrue(key.exists())
         self.assertTrue(db.exists())
 
+    # --- FR-4 Step-2: test_pass signal emission --------------------------------
+    # A PASSING test (PostToolUse+Bash fires ONLY on exit=0) with
+    # command_class=="test" ALSO emits a `test_pass` correlation signal — a STRING
+    # LITERAL at the write site. The returned lifecycle record is unchanged. These
+    # live in LifecycleSignalsTest (not a subclass) so the parent suite is not
+    # re-run under a second class.
+    def signals_file(self):
+        return self.memory / "events" / "test_signals.jsonl"
+
+    def read_signals(self):
+        path = self.signals_file()
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def test_a_passing_test_emits_one_test_pass_signal(self):
+        # (a) PostToolUse + Bash + pytest → exactly one test_pass line.
+        self.assertTrue(lifecycle_signals.write_event(self.bash_payload(), self.memory))
+        signals = self.read_signals()
+        self.assertEqual(len(signals), 1)
+        sig = signals[0]
+        self.assertEqual(sig["signal"], "test_pass")
+        self.assertEqual(sig["session_id"], "session-bash")
+        self.assertTrue(sig["project_slug"].startswith("project_"))
+        self.assertIn("ts", sig)
+        # the lifecycle record itself is unchanged (still written to lifecycle/).
+        rec = self.read_events()[0]
+        self.assertEqual(rec["command_class"], "test")
+        self.assertNotIn("signal", rec)
+        # privacy: no command text / raw cwd leaks into the signal file.
+        raw = self.signals_file().read_text(encoding="utf-8")
+        for forbidden in ("SENTINEL_COMMAND", str(self.project), self.project.name):
+            self.assertNotIn(forbidden, raw)
+
+    def test_b_failed_test_emits_no_signal(self):
+        # (b) PostToolUseFailure with a test command → NO test_pass line (exit != 0).
+        payload = self.failure_payload()
+        payload["tool_input"]["command"] = "pytest tests SENTINEL_COMMAND_SECRET"
+        payload["error"] = "Command failed with non-zero exit code"
+        self.assertTrue(lifecycle_signals.write_event(payload, self.memory))
+        self.assertEqual(self.read_signals(), [])
+
+    def test_c_non_test_command_emits_no_signal(self):
+        # (c) PostToolUse + Bash non-test command → NO signal.
+        self.assertTrue(lifecycle_signals.write_event(
+            self.bash_payload(command="git status"), self.memory))
+        self.assertEqual(self.read_signals(), [])
+
+    def test_d_signal_record_stays_under_pipe_buf(self):
+        # (d) the single-write record must stay < 512 bytes (PIPE_BUF atomicity).
+        self.assertTrue(lifecycle_signals.write_event(self.bash_payload(), self.memory))
+        raw = self.signals_file().read_bytes().splitlines()[0]
+        self.assertLess(len(raw), lifecycle_signals.MAX_EVENT_BYTES)
+
+    def test_no_cwd_emits_no_signal(self):
+        # No project_slug (no cwd) ⇒ no binding possible ⇒ no signal. (require_cwd
+        # in _build_bash_record also drops the whole record.)
+        payload = self.bash_payload()
+        payload.pop("cwd", None)
+        self.assertFalse(lifecycle_signals.write_event(payload, self.memory))
+        self.assertEqual(self.read_signals(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

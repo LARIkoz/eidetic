@@ -13,7 +13,7 @@ Turn-1 CORE (the laundering-critical pipeline):
   * FR-2 claim-support gate WITH TEETH — split the answer into material claim
     sentences; score each against ITS cited span(s) (LLM-free deterministic
     span-overlap by default; a cross-encoder may be registered). ANY material
-    claim below M3_SUPPORT_MIN, or NO cited sources at all ⇒ the WHOLE answer is
+    claim AT OR BELOW M3_SUPPORT_MIN, or NO cited sources at all ⇒ the WHOLE answer is
     REJECTED (no page, no event). Fail toward REJECT.
   * FR-3 file — a supported, non-duplicate answer is written as a new typed page
     (source=agent-extracted, managed lifecycle) with confidence EXACTLY 0.40 and
@@ -39,7 +39,10 @@ M3 consumes a TYPED PROVENANCE RECORD (a plain dict), NOT a transcript:
      "sources": [{"card_id": str,              # a cited source card
                   "span": str}, ...],          # the cited chunk text (ground truth)
      "recall_query": str,                      # what was asked
-     "session_id": str}                        # the originating session
+     "session_id": str,                        # the originating session
+     "project_slug": str}                      # OPTIONAL — the lifecycle project_slug
+                                               #   (only for the FR-4 filed-page tracker;
+                                               #   absent ⇒ the producer never matches)
 
 The CONSUMER (this module: gate + dedup + file) is LIVE. The PRODUCER (a
 session-end hook mining the transcript, or the recall/answer path writing this
@@ -48,16 +51,23 @@ driven directly (like M2's `process_trigger`). An answer with NO traceable
 sources is rejected outright (FR-2): fail toward reject.
 """
 
+import json
 import os
 import re
 import sys
 from datetime import datetime
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import evidence as _EV  # noqa: E402  (events_enabled — the dark rail)
 import m1_contradiction as _M1  # noqa: E402  (neighbors_via_door — the S2 door)
 import remember as _REM  # noqa: E402  (build_card / _atomic_write / target_slug)
+
+try:
+    import lifecycle_signals as _LC  # noqa: E402  (shared O_APPEND single-write + ts)
+except Exception:  # pragma: no cover
+    _LC = None
 
 try:
     import compound as _COMPOUND
@@ -539,6 +549,45 @@ def _log_path_for(index_db_path):
     return os.path.join(os.path.dirname(os.path.dirname(index_db_path)), "log.md")
 
 
+# The structured filed-page tracker the FR-4 producer reads to correlate a filed
+# page with a same-session test pass — a machine-queryable sibling of the oplog.
+M3_FILED_FILE = "m3_filed.jsonl"
+TEST_SIGNALS_FILE = "test_signals.jsonl"
+
+
+def _events_dir_for(index_db_path):
+    """`<root>/events` from `<root>/db/index.db` (the same `<memory-system>/events`
+    lifecycle_signals writes to). None ⇒ no db path ⇒ skip (never a live fallback)."""
+    if not index_db_path:
+        return None
+    return os.path.join(os.path.dirname(os.path.dirname(index_db_path)), "events")
+
+
+def _track_filed_page(index_db_path, provenance, filed_slug, filed_path):
+    """Step-3: append a structured filing row to `<memory-system>/events/m3_filed.jsonl`
+    at the OP_FILED site so the FR-4 producer can correlate this filed page with a
+    same-session test pass. session_id/project_slug come from the OPTIONAL provenance
+    keys; absent ⇒ empty strings (the producer simply never matches it — fail toward
+    no-lift). Reuses lifecycle_signals' shared O_APPEND single-write helper. Only ever
+    reached inside the already-`_active()`-gated filing path, so nothing is tracked
+    when M3 is dark."""
+    events_dir = _events_dir_for(index_db_path)
+    if _LC is None or events_dir is None:
+        return
+    record = {
+        "ts": _LC._recorded_at(),
+        "session_id": str(provenance.get("session_id") or ""),
+        "project_slug": str(provenance.get("project_slug") or ""),
+        "filed_slug": filed_slug,
+        "filed_path": filed_path,
+    }
+    try:
+        _LC._atomic_append_jsonl(Path(os.path.join(events_dir, M3_FILED_FILE)),
+                                 _LC._compact_json(record))
+    except Exception:  # pragma: no cover — tracking is best-effort, never blocks filing
+        pass
+
+
 def _oplog(index_db_path, op, title, *, extra=None):
     log_path = _log_path_for(index_db_path)
     if _OPLOG is None or log_path is None:
@@ -586,6 +635,7 @@ def _file_new_page(index_db_path, provenance, title, scores, *, memory_dir=None,
                               _FILE_TYPE, related=[])
     _REM._atomic_write(path, content)
     _oplog(index_db_path, OP_FILED, title, extra=f"path={path} conf=0.40")
+    _track_filed_page(index_db_path, provenance, slug, path)
     return {"action": "filed", "path": path, "confidence": 0.40, "support": scores}
 
 
@@ -670,6 +720,110 @@ def affirm_filed_page(index_db_path, filed_path, affirmation, *, session_id=None
                               session_id=session_id or affirmation.get("session_id"))
 
 
+# --- FR-4 producer: verified_by_test from a real test-runner exit-0 -----------
+def _producer_enabled():
+    """The producer gate (spec §Dark-safe gating) — OFF by default. Signals still
+    accrue in JSONL; nothing reads them until this flag is on."""
+    return os.environ.get("EIDETIC_PRODUCER", "").strip().lower() in (
+        "1", "on", "true", "yes")
+
+
+def _read_jsonl(path):
+    """Read a metadata JSONL file into a list of dicts. Malformed lines are skipped
+    SILENTLY (metadata, fail toward no-lift); a missing/unreadable file ⇒ []."""
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(obj, dict):
+                    rows.append(obj)
+    except OSError:
+        return []
+    return rows
+
+
+def newest_test_signal_session(index_db_path, memory_system=None):
+    """Fallback correlation key for the indexer when the ambient EIDETIC_SESSION_ID
+    is absent: the session_id of the most recent `test_pass` signal. Best-effort —
+    returns '' when there is none. Never raises."""
+    if memory_system:
+        events_dir = os.path.join(str(memory_system), "events")
+    else:
+        events_dir = _events_dir_for(index_db_path)
+    if not events_dir:
+        return ""
+    for row in reversed(_read_jsonl(os.path.join(events_dir, TEST_SIGNALS_FILE))):
+        if row.get("signal") == "test_pass" and row.get("session_id"):
+            return row.get("session_id")
+    return ""
+
+
+def produce_test_affirmations(index_db_path, *, session_id, memory_system=None):
+    """FR-4: mint `verified_by_test` events on M3-filed pages that share a project
+    with a passing test THIS session. A RANKING signal ("a test suite passed in this
+    project"), not a claim-level safety gate — project-level correlation is the
+    contract (spec §Why this is different).
+
+    Algorithm: read `test_signals.jsonl` → the set of project_slugs with a
+    `test_pass` this session; read `m3_filed.jsonl` → this session's filed pages;
+    for each filed page whose (non-empty) project_slug is in the passing set, call
+    `affirm_filed_page` with a `kind="test_pass"` affirmation. `"test_pass"` is a
+    STRING LITERAL here — the unforgeable property; no caller input flows into it.
+
+    Robustness: gated OFF by default (EIDETIC_PRODUCER); malformed rows skipped;
+    missing files ⇒ []; NEVER raises out of the producer. affirm_filed_page is
+    itself `_active()`-gated, so when M3 is dark this mints nothing."""
+    if not _producer_enabled():
+        return []
+    if memory_system:
+        events_dir = os.path.join(str(memory_system), "events")
+    else:
+        events_dir = _events_dir_for(index_db_path)
+    if not events_dir:
+        return []
+
+    signals = _read_jsonl(os.path.join(events_dir, TEST_SIGNALS_FILE))
+    filed = _read_jsonl(os.path.join(events_dir, M3_FILED_FILE))
+
+    passing = {
+        (row.get("project_slug") or "")
+        for row in signals
+        if row.get("session_id") == session_id and row.get("signal") == "test_pass"
+    }
+    passing.discard("")  # an empty project_slug can never bind a filed page
+
+    results = []
+    for row in filed:
+        if row.get("session_id") != session_id:
+            continue
+        slug = row.get("project_slug") or ""
+        if not slug or slug not in passing:           # cross-project / no-project ⇒ no match
+            continue
+        filed_path = row.get("filed_path")
+        filed_slug = row.get("filed_slug")
+        if not filed_path or not filed_slug:
+            continue
+        affirmation = {
+            "kind": "test_pass",   # LITERAL — the unforgeable property (spec §Authenticity)
+            "target": filed_slug,
+            "session_id": session_id,
+        }
+        try:
+            res = affirm_filed_page(index_db_path, filed_path, affirmation,
+                                    session_id=session_id)
+        except Exception:  # pragma: no cover — never raise out of the producer
+            continue
+        results.append(res)
+    return results
+
+
 # --- the pipeline (FR-1/FR-2/FR-3/FR-7) --------------------------------------
 def file_recalled_answer(index_db_path, provenance, *, memory_dir=None, cwd=None,
                          support_fn=None, neighbors_fn=None, m2_handoff=None,
@@ -716,7 +870,10 @@ def file_recalled_answer(index_db_path, provenance, *, memory_dir=None, cwd=None
             sc = support_fn(claim, spans)
         except Exception:
             sc = None  # scorer error ⇒ fail toward REJECT
-        if sc is None or sc < support_min():
+        # B1-1: the support floor is EXCLUSIVE — a claim at EXACTLY support_min()
+        # (0.5 = half the claim tokens match a span) is subject-echo territory
+        # (shared topic words, possibly divergent assertion) and is REJECTED.
+        if sc is None or sc <= support_min():
             _oplog(index_db_path, OP_REJECTED, title,
                    extra=f"reason=unsupported_claim score={sc}")
             return {"action": "rejected", "reason": "unsupported_claim",

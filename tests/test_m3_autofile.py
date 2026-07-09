@@ -1065,5 +1065,310 @@ class S3NegationLexiconAnchorTest(R2Base):
                                     ["Read access is disabled."])["action"], "rejected")
 
 
+# --- B1-1: the support floor is EXCLUSIVE (AC-11) ----------------------------
+class B1SupportBoundaryTest(M3Base):
+    # 4 content tokens, exactly 2 covered by the cited span ⇒ overlap == 0.5.
+    ANSWER = "Alpha beta gamma delta."
+    SPANS = ["Alpha beta epsilon zeta."]
+
+    def test_scorer_returns_exactly_half(self):
+        # the pair is engineered so the deterministic scorer lands ON the floor.
+        self.assertAlmostEqual(m3.active_support()(self.ANSWER, self.SPANS), 0.5, places=6)
+        self.assertEqual(m3.support_min(), 0.5)
+
+    def test_ac11_fifty_percent_overlap_is_rejected(self):
+        before = sorted(os.listdir(self.mem))
+        out = m3.file_recalled_answer(
+            self.db, _prov(self.ANSWER, self.SPANS), memory_dir=self.mem,
+            neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "rejected")
+        self.assertEqual(out.get("reason"), "unsupported_claim")
+        self.assertAlmostEqual(out.get("score"), 0.5, places=6)
+        self.assertEqual(sorted(os.listdir(self.mem)), before)  # NO page filed
+
+    def test_ac11_revert_verify_boundary_is_load_bearing(self):
+        # REVERT-VERIFY: under the OLD `<` a score of exactly 0.5 would FILE; a
+        # score strictly above the floor (0.75) still files under the new `<=`.
+        strong = m3.file_recalled_answer(
+            self.db, _prov("Alpha beta gamma delta.", ["Alpha beta gamma zeta."]),
+            memory_dir=self.mem, neighbors_fn=self._no_neighbors)
+        self.assertEqual(strong["action"], "filed")  # 3/4 = 0.75 > 0.5 → filed
+
+
+# --- Step-3: structured filed-page tracking (events/m3_filed.jsonl) ----------
+import json as _json
+
+
+class FiledTrackingTest(M3Base):
+    ANSWER = "The auth service issues JWT access tokens for user sessions."
+    SPANS = ["The auth service issues JWT access tokens for user sessions."]
+
+    def _filed_path(self):
+        # <root>/events from <root>/db/index.db (mirrors _events_dir_for).
+        return os.path.join(os.path.dirname(os.path.dirname(self.db)), "events",
+                            "m3_filed.jsonl")
+
+    def _read_filed(self):
+        p = self._filed_path()
+        if not os.path.exists(p):
+            return []
+        with open(p, encoding="utf-8") as f:
+            return [_json.loads(line) for line in f if line.strip()]
+
+    def _prov_full(self, query="auth token policy"):
+        prov = _prov(self.ANSWER, self.SPANS, query=query, session="sess-track")
+        prov["project_slug"] = "project_deadbeef"
+        return prov
+
+    def test_filing_writes_exactly_one_m3_filed_line(self):
+        out = m3.file_recalled_answer(
+            self.db, self._prov_full(), memory_dir=self.mem,
+            neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "filed")
+        rows = self._read_filed()
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["session_id"], "sess-track")
+        self.assertEqual(row["project_slug"], "project_deadbeef")
+        self.assertEqual(row["filed_path"], out["path"])
+        self.assertTrue(row["filed_slug"])
+        self.assertIn("ts", row)
+
+    def test_missing_provenance_keys_write_empty_strings(self):
+        # session_id/project_slug absent ⇒ empty strings (producer never matches).
+        prov = {"answer_text": self.ANSWER,
+                "sources": [{"card_id": "c0", "span": self.SPANS[0]}],
+                "recall_query": "no ids here"}
+        out = m3.file_recalled_answer(self.db, prov, memory_dir=self.mem,
+                                      neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "filed")
+        rows = self._read_filed()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["session_id"], "")
+        self.assertEqual(rows[0]["project_slug"], "")
+
+    def test_dark_mode_writes_no_m3_filed_line(self):
+        os.environ.pop("EIDETIC_CONFIDENCE_EVENTS", None)  # M3 dark
+        out = m3.file_recalled_answer(
+            self.db, self._prov_full(), memory_dir=self.mem,
+            neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "noop")
+        self.assertEqual(self._read_filed(), [])       # nothing filed ⇒ nothing tracked
+
+    def test_rejected_answer_writes_no_m3_filed_line(self):
+        # a rejected answer never reaches the OP_FILED site ⇒ no tracker row.
+        bad = _prov("The datastore is PostgreSQL on port 9999.",
+                    ["The auth service issues JWT access tokens."], session="sess-track")
+        bad["project_slug"] = "project_deadbeef"
+        out = m3.file_recalled_answer(self.db, bad, memory_dir=self.mem,
+                                      neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "rejected")
+        self.assertEqual(self._read_filed(), [])
+
+
+# --- Step-4: the FR-4 producer (AC-4/6/7/8/9/10/12) --------------------------
+class ProducerTest(M3Base):
+    ANSWER = "The auth service issues JWT access tokens for user sessions."
+    SPANS = ["The auth service issues JWT access tokens for user sessions."]
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(lambda: os.environ.pop("EIDETIC_PRODUCER", None))
+
+    def _events_dir(self):
+        d = os.path.join(os.path.dirname(os.path.dirname(self.db)), "events")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _write_signal(self, session, project_slug, signal="test_pass"):
+        row = {"ts": "2026-07-08T10:00:00.000Z", "session_id": session,
+               "project_slug": project_slug, "signal": signal}
+        with open(os.path.join(self._events_dir(), "test_signals.jsonl"), "a",
+                  encoding="utf-8") as f:
+            f.write(_json.dumps(row) + "\n")
+
+    def _file(self, project_slug, session, query="auth token policy"):
+        prov = _prov(self.ANSWER, self.SPANS, query=query, session=session)
+        prov["project_slug"] = project_slug
+        out = m3.file_recalled_answer(self.db, prov, memory_dir=self.mem,
+                                      neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "filed")
+        return out
+
+    # AC-8: matching test + filed page → 1 affirmation, verified_by_test on card.
+    def test_ac8_matching_test_and_filed_mints_verified_by_test(self):
+        out = self._file("project_alpha", "sess-1")
+        self._write_signal("sess-1", "project_alpha")
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        results = m3.produce_test_affirmations(self.db, session_id="sess-1")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["promoted"], "verified_by_test")
+        self.assertEqual([e["event_type"] for e in _events(out["path"])],
+                         ["verified_by_test"])
+        self.assertAlmostEqual(self._index_conf(out["path"]), 0.55, places=6)  # 0.40+0.15
+
+    # AC-9: idempotent — a 2nd producer run mints no duplicate event.
+    def test_ac9_idempotent_second_run_no_duplicate(self):
+        out = self._file("project_alpha", "sess-1")
+        self._write_signal("sess-1", "project_alpha")
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        m3.produce_test_affirmations(self.db, session_id="sess-1")
+        again = m3.produce_test_affirmations(self.db, session_id="sess-1")
+        self.assertEqual(again[0]["reason"], "idempotent_skip")
+        self.assertEqual([e["event_type"] for e in _events(out["path"])],
+                         ["verified_by_test"])   # still exactly one
+        self.assertAlmostEqual(self._index_conf(out["path"]), 0.55, places=6)
+
+    # AC-4: gated OFF by default (EIDETIC_PRODUCER unset) → [].
+    def test_ac4_gated_off_returns_empty(self):
+        out = self._file("project_alpha", "sess-1")
+        self._write_signal("sess-1", "project_alpha")
+        os.environ.pop("EIDETIC_PRODUCER", None)   # OFF
+        self.assertEqual(m3.produce_test_affirmations(self.db, session_id="sess-1"), [])
+        self.assertEqual(_events(out["path"]), [])   # no event minted
+
+    # AC-6: filed page but NO test signal → 0 affirmations.
+    def test_ac6_no_test_signal_no_affirmation(self):
+        out = self._file("project_alpha", "sess-1")
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        self.assertEqual(m3.produce_test_affirmations(self.db, session_id="sess-1"), [])
+        self.assertEqual(_events(out["path"]), [])
+
+    # AC-7: test signal but NO filed page → 0 affirmations.
+    def test_ac7_test_signal_no_filed_page(self):
+        self._write_signal("sess-1", "project_alpha")
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        self.assertEqual(m3.produce_test_affirmations(self.db, session_id="sess-1"), [])
+
+    # AC-10: cross-project — test in A, page filed from B → NO affirmation.
+    def test_ac10_cross_project_no_match(self):
+        out = self._file("project_beta", "sess-1")     # page filed in project B
+        self._write_signal("sess-1", "project_alpha")  # test passed in project A
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        self.assertEqual(m3.produce_test_affirmations(self.db, session_id="sess-1"), [])
+        self.assertEqual(_events(out["path"]), [])
+
+    # AC-10b: a signal with an EMPTY project_slug never binds (non-empty guard).
+    def test_ac10b_empty_project_slug_never_binds(self):
+        out = self._file("", "sess-1")                 # filed with no project binding
+        self._write_signal("sess-1", "")               # signal with no project binding
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        self.assertEqual(m3.produce_test_affirmations(self.db, session_id="sess-1"), [])
+        self.assertEqual(_events(out["path"]), [])
+
+    # cross-session: same project, different session → NO affirmation.
+    def test_cross_session_no_match(self):
+        out = self._file("project_alpha", "sess-A")
+        self._write_signal("sess-B", "project_alpha")
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        self.assertEqual(m3.produce_test_affirmations(self.db, session_id="sess-A"), [])
+        self.assertEqual(_events(out["path"]), [])
+
+    # AC-12: all dark (M3 off) — producer mints nothing on any card.
+    def test_ac12_dark_mints_nothing(self):
+        out = self._file("project_alpha", "sess-1")     # filed while flags on
+        self._write_signal("sess-1", "project_alpha")
+        os.environ.pop("EIDETIC_CONFIDENCE_EVENTS", None)  # M3 dark now
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        results = m3.produce_test_affirmations(self.db, session_id="sess-1")
+        self.assertTrue(all(r["promoted"] is None for r in results))
+        self.assertEqual(_events(out["path"]), [])       # no event on the card
+        self.assertAlmostEqual(self._index_conf(out["path"]), 0.40, places=6)
+
+    # robustness: malformed JSONL lines are skipped, the good row still matches.
+    def test_malformed_jsonl_skipped(self):
+        out = self._file("project_alpha", "sess-1")
+        d = self._events_dir()
+        with open(os.path.join(d, "test_signals.jsonl"), "a", encoding="utf-8") as f:
+            f.write("{ this is not json\n")
+            f.write("\n")
+        self._write_signal("sess-1", "project_alpha")
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        results = m3.produce_test_affirmations(self.db, session_id="sess-1")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["promoted"], "verified_by_test")
+
+    # kind is a LITERAL — a forged signal cannot smuggle a different event kind.
+    def test_forged_signal_kind_ignored(self):
+        out = self._file("project_alpha", "sess-1")
+        # a signal row carrying an attacker-chosen "kind"/"signal" is irrelevant:
+        # the producer only reads project_slug/session_id/signal=="test_pass" and
+        # hardcodes kind="test_pass" at the affirm site.
+        self._write_signal("sess-1", "project_alpha", signal="test_pass")
+        d = self._events_dir()
+        with open(os.path.join(d, "test_signals.jsonl"), "a", encoding="utf-8") as f:
+            f.write(_json.dumps({"session_id": "sess-1", "project_slug": "project_alpha",
+                                 "signal": "test_pass", "kind": "confirmed"}) + "\n")
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        m3.produce_test_affirmations(self.db, session_id="sess-1")
+        types = [e["event_type"] for e in _events(out["path"])]
+        self.assertEqual(types, ["verified_by_test"])
+        self.assertNotIn("confirmed", types)
+
+
+# --- Step-6: the producer wired into the incremental index pipeline ----------
+class ProducerWiringTest(M3Base):
+    ANSWER = "The auth service issues JWT access tokens for user sessions."
+    SPANS = ["The auth service issues JWT access tokens for user sessions."]
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(lambda: os.environ.pop("EIDETIC_PRODUCER", None))
+        self.addCleanup(lambda: os.environ.pop("EIDETIC_SESSION_ID", None))
+
+    def _events_dir(self):
+        d = os.path.join(os.path.dirname(os.path.dirname(self.db)), "events")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _reindex(self, path):
+        conn = index_impl.init_db(self.db)
+        index_impl.run_incremental(conn, [path])
+        conn.close()
+
+    def test_producer_runs_after_m2_and_is_idempotent(self):
+        # (a) a filed page + a matching test_signal for the SAME session+project.
+        prov = _prov(self.ANSWER, self.SPANS, query="auth token policy", session="sess-wire")
+        prov["project_slug"] = "project_wired"
+        out = m3.file_recalled_answer(self.db, prov, memory_dir=self.mem,
+                                      neighbors_fn=self._no_neighbors)
+        self.assertEqual(out["action"], "filed")
+        with open(os.path.join(self._events_dir(), "test_signals.jsonl"), "a",
+                  encoding="utf-8") as f:
+            f.write(_json.dumps({"ts": "2026-07-08T10:00:00.000Z", "session_id": "sess-wire",
+                                 "project_slug": "project_wired", "signal": "test_pass"}) + "\n")
+
+        # (b) run the incremental index pipeline with the producer enabled; the
+        # session_id reaches the indexer via the ambient EIDETIC_SESSION_ID.
+        os.environ["EIDETIC_PRODUCER"] = "on"
+        os.environ["EIDETIC_SESSION_ID"] = "sess-wire"
+        self._reindex(out["path"])
+
+        # (c) the filed card gained EXACTLY one verified_by_test event.
+        self.assertEqual([e["event_type"] for e in _events(out["path"])],
+                         ["verified_by_test"])
+        # after a further reindex the fold materializes 0.40 + 0.15 = 0.55.
+        self.assertAlmostEqual(self._index_conf(out["path"]), 0.55, places=6)
+
+        # (d) idempotence — re-running the pipeline mints no duplicate.
+        self._reindex(out["path"])
+        self.assertEqual([e["event_type"] for e in _events(out["path"])],
+                         ["verified_by_test"])
+
+    def test_wiring_skips_when_producer_env_off(self):
+        prov = _prov(self.ANSWER, self.SPANS, query="cache policy", session="sess-off")
+        prov["project_slug"] = "project_off"
+        out = m3.file_recalled_answer(self.db, prov, memory_dir=self.mem,
+                                      neighbors_fn=self._no_neighbors)
+        with open(os.path.join(self._events_dir(), "test_signals.jsonl"), "a",
+                  encoding="utf-8") as f:
+            f.write(_json.dumps({"session_id": "sess-off", "project_slug": "project_off",
+                                 "signal": "test_pass"}) + "\n")
+        os.environ.pop("EIDETIC_PRODUCER", None)     # producer OFF
+        os.environ["EIDETIC_SESSION_ID"] = "sess-off"
+        self._reindex(out["path"])
+        self.assertEqual(_events(out["path"]), [])   # no event minted
+
+
 if __name__ == "__main__":
     unittest.main()

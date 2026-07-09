@@ -1405,6 +1405,29 @@ def run_incremental(conn, files):
         except Exception as e:
             print(f"WARN: M2 hook skipped: {e}", file=sys.stderr)
 
+    # FR-4 producer (spec §Wiring): AFTER the M2 pass, mint `verified_by_test` on
+    # M3-filed pages whose project had a passing test THIS session. Self-gated by
+    # EIDETIC_PRODUCER AND affirm_filed_page's own _active() gate — but skip the
+    # call entirely when the env is off to avoid overhead. The session_id is the
+    # ambient EIDETIC_SESSION_ID the SessionStart/Stop hook exports before
+    # index.sh --incremental (the SAME key lifecycle_signals stamps on
+    # test_signals); when it is absent the producer falls back to the newest
+    # session_id in the day's test_signals as the correlation key. Never raises
+    # into the indexer.
+    if changed_cards and os.environ.get("EIDETIC_PRODUCER", "").strip().lower() in (
+            "1", "on", "true", "yes"):
+        try:
+            import m3_autofile
+            row = conn.execute("PRAGMA database_list").fetchone()
+            db_file = row[2] if row else ""
+            if db_file:
+                sid = os.environ.get("EIDETIC_SESSION_ID") or \
+                    m3_autofile.newest_test_signal_session(db_file)
+                if sid:
+                    m3_autofile.produce_test_affirmations(db_file, session_id=sid)
+        except Exception as e:
+            print(f"WARN: producer hook skipped: {e}", file=sys.stderr)
+
     if force_backfill:
         print("Lifecycle metadata backfill: reindexed existing memory files")
     return indexed, skipped, removed

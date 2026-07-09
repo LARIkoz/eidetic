@@ -179,11 +179,18 @@ run_codex_cli_extraction() {
     out_dir=$(mktemp -d "${TMPDIR:-/tmp}/eidetic-codexcli-signals.XXXXXX")
     chmod 700 "$out_dir" 2>/dev/null || true
     status=0
+    # -c model_reasoning_summary=none: signal extraction parses the final message
+    # (-o out.md), never the reasoning summary. Summary-null models (e.g.
+    # gpt-5.3-codex-spark, default_summary=none) 400 when the user's global
+    # ~/.codex/config.toml forces model_reasoning_summary="detailed" — which
+    # silently killed signal extraction. Per-call override, safe for all models.
     if [ -n "${EIDETIC_SIGNAL_CODEX_CLI_MODEL:-}" ]; then
         run_with_codex_timeout "$codex_bin" exec --model "$EIDETIC_SIGNAL_CODEX_CLI_MODEL" -s read-only --skip-git-repo-check --color never \
+            -c 'model_reasoning_summary="none"' \
             -o "$out_dir/out.md" - < "$prompt_file" >/dev/null 2>&1 || status=$?
     else
         run_with_codex_timeout "$codex_bin" exec -s read-only --skip-git-repo-check --color never \
+            -c 'model_reasoning_summary="none"' \
             -o "$out_dir/out.md" - < "$prompt_file" >/dev/null 2>&1 || status=$?
     fi
     if [ "$status" -eq 0 ] && [ -s "$out_dir/out.md" ]; then
@@ -243,6 +250,21 @@ fi
 TSIZE=$(wc -c < "$TRANSCRIPT" 2>/dev/null || echo 0)
 if [ "$TSIZE" -lt 1000 ]; then
     exit 0
+fi
+
+# --- M3 auto-file driver (DARK; two independent locks) ------------------------
+# Mines this transcript for memory-recall answers and drives them through the
+# judge-gated filing pipeline (m3_hook.py). No-op unless EIDETIC_M3_DRIVER=on;
+# filing additionally requires EIDETIC_M3_AUTOFILE=on inside the gate.
+# Runs HERE (before the signal-extraction path) and in the BACKGROUND so it is
+# INDEPENDENT of that path — signal extraction has several early exits on empty/
+# failed codex output (lines below) that would otherwise starve M3 of ever firing.
+# Backgrounded + disowned so it survives this script's own exit; own loud log.
+if [ "${EIDETIC_M3_DRIVER:-}" = "on" ]; then
+    mkdir -p "$MEMORY_SYSTEM/events" 2>/dev/null || true
+    ( python3 "$MEMORY_SYSTEM/bin/m3_hook.py" "$TRANSCRIPT" \
+        >> "$MEMORY_SYSTEM/events/m3_driver.log" 2>&1 || true ) &
+    disown 2>/dev/null || true
 fi
 
 # Extract the end of the transcript for signal extraction (cost control).
@@ -419,5 +441,6 @@ else
     # Pass to compounding logic (now searches up-to-date index)
     printf '%s\n' "$RESULT" | python3 "$COMPOUND" "$(pwd)" 2>/dev/null || exit 0
 fi
+
 
 exit 0
