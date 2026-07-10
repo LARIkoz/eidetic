@@ -211,14 +211,21 @@ def _get_sdk():
     return _SDK
 
 
-def score(claim, spans):
-    """`register_support` scorer: 1.0 (file-eligible) / 0.0 (reject this claim).
+def verdict(claim, spans):
+    """Granular judge outcome, for callers that must distinguish a definitive
+    reject from a transient failure (the FR-3 acquisition dark lane):
 
-    Called only when the judge registered (SDK present). A persistent route error
-    ⇒ 0.0 (fail-toward-reject), NEVER a silent lexical fallback."""
+        'entailed'          — entailed AND passed the verbatim-quote gate
+        'not_entailed'      — definitive reject (incl. entailed-but-quote-fail
+                              and empty spans; fail-toward-reject)
+        'judge_unavailable' — SDK/route/provider failure (transient; retry ok)
+        'error'             — model replied but unparseable (transient-ish)
+
+    `score` folds this to 1.0/0.0 — byte-identical behavior and logging to the
+    pre-split scorer."""
     spans = [s for s in (spans or []) if (s or "").strip()]
     if not spans:
-        return 0.0
+        return "not_entailed"
     try:
         sdk = _get_sdk()
         res = sdk.chat_for_route(
@@ -231,24 +238,32 @@ def score(claim, spans):
         )
     except Exception as exc:  # infra/route error → reject this claim, loudly
         _log(f"ROUTE_ERROR claim={claim[:80]!r} err={exc!r}")
-        return 0.0
+        return "judge_unavailable"
     shape = res.get("response_shape") or {}
     if not shape.get("ok"):
         _log(f"PROVIDER_ERROR class={shape.get('provider_error_class')} claim={claim[:80]!r}")
-        return 0.0
-    verdict = _parse_verdict(res.get("content") or "")
-    if verdict is None:
+        return "judge_unavailable"
+    parsed = _parse_verdict(res.get("content") or "")
+    if parsed is None:
         _log(f"PARSE_FAIL claim={claim[:80]!r} raw={(res.get('content') or '')[:120]!r}")
-        return 0.0
-    ent = verdict.get("entailed")
+        return "error"
+    ent = parsed.get("entailed")
     if isinstance(ent, str):
         ent = ent.strip().lower() == "true"
-    quote = str(verdict.get("quote") or "")
+    quote = str(parsed.get("quote") or "")
     filed = bool(ent) and (not _REQUIRE_QUOTE or _quote_ok(quote, spans))
     # Auditable: every verdict, with the grounding quote (SPEC §NFR-4).
     _log(f"VERDICT entailed={bool(ent)} filed={filed} quote_ok={_quote_ok(quote, spans)} "
          f"claim={claim[:90]!r} quote={quote[:90]!r}")
-    return 1.0 if filed else 0.0
+    return "entailed" if filed else "not_entailed"
+
+
+def score(claim, spans):
+    """`register_support` scorer: 1.0 (file-eligible) / 0.0 (reject this claim).
+
+    Called only when the judge registered (SDK present). A persistent route error
+    ⇒ 0.0 (fail-toward-reject), NEVER a silent lexical fallback."""
+    return 1.0 if verdict(claim, spans) == "entailed" else 0.0
 
 
 def register(m3_autofile):

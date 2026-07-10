@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
-"""Stop-hook entry for the M3 auto-file loop (DARK by default).
+"""Stop-hook entry for the M3 loop (DARK by default) — v3: two lanes.
 
 Called from hooks/session-signals.sh with the transcript path, ONLY when
 EIDETIC_M3_DRIVER=on (and filing additionally requires EIDETIC_M3_AUTOFILE=on
 inside the gate — two independent locks). One bounded line of JSON to stdout
 per run (goes to events/m3_driver.log via the hook's redirect); never raises.
 
+v3 kind-routing (spec FR-3): `recall` candidates flow into the existing
+consolidation pipeline (m3_producer_driver.drive) unchanged; acquisition kinds
+(decision/finding/rule) go through the DARK lane (m3_acquisition — quote gate →
+judge → events/m3_acquisition_dark.jsonl, zero store writes until the D5 gate).
+Both lanes pass the FR-8 seen-cache first: a candidate with a definitive
+outcome this session is skipped BEFORE producer retrieval and the judge.
+
 The target memory dir is the transcript's own project
 (~/.claude/projects/<slug>/memory) — a recall filed where it was recalled.
-project_slug for producer minting is left empty for now: FR-3 graduation is a
+project_slug for producer minting is left empty for now: FR-4 graduation is a
 later arc; nothing is minted from auto-filed pages yet.
 """
 import json
@@ -69,8 +76,10 @@ def main(argv):
         return 0
     transcript = argv[1]
     try:
+        import m3_acquisition as acq
         import m3_producer_driver as drv
         import m3_recall_miner as miner
+        import m3_seen_cache as cache
 
         slug = os.path.basename(os.path.dirname(transcript))
         memory_dir = os.path.expanduser(f"~/.claude/projects/{slug}/memory")
@@ -81,16 +90,50 @@ def main(argv):
             print(json.dumps({"m3_driver": "skip", "reason": "no_store_or_memdir"}))
             return 0
         cands, meta = miner.mine_transcript(transcript)
-        if not cands:
-            print(json.dumps({"m3_driver": "ran", "mined": 0, "meta": meta}))
+        sid = os.path.basename(transcript).rsplit(".", 1)[0]  # = miner's sid
+
+        # FR-8: seen-cache — skip candidates already definitively judged this
+        # session BEFORE producer retrieval and the judge.
+        seen = cache.load_seen(ms, sid)
+        fresh = []
+        for c in cands:
+            k = cache.candidate_key(c)
+            if k in seen:
+                continue
+            fresh.append((c, k))
+        meta["skipped_seen"] = len(cands) - len(fresh)
+
+        if not fresh:
+            print(json.dumps({"m3_driver": "ran", "mined": len(cands),
+                              "meta": meta}, ensure_ascii=False))
             return 0
-        outcomes, judge_active = drv.drive(idb, cands, memory_dir=memory_dir)
-        tally = {}
-        for o in outcomes:
-            tally[o.get("action")] = tally.get(o.get("action"), 0) + 1
+
+        recall = [(c, k) for c, k in fresh
+                  if (c.get("kind") or miner.KIND_RECALL) == miner.KIND_RECALL]
+        acq_cands = [(c, k) for c, k in fresh if c.get("kind") in miner.ACQ_KINDS]
+
+        # Consolidation lane — unchanged pipeline. drive() is skipped entirely
+        # when no recall candidates survived (no judge-probe burned).
+        tally, judge_active = {}, False
+        if recall:
+            outcomes, judge_active = drv.drive(
+                idb, [c for c, _ in recall], memory_dir=memory_dir)
+            for (c, k), o in zip(recall, outcomes):
+                action = o.get("action")
+                tally[action] = tally.get(action, 0) + 1
+                cache.record(ms, sid, k, miner.KIND_RECALL, action)
+
+        # Acquisition lane — DARK (zero store writes; events/ only).
+        acq_tally = {}
+        if acq_cands:
+            acq_tally, acq_outcomes = acq.process(
+                transcript, [c for c, _ in acq_cands], memory_system=ms)
+            for (c, k), outcome in zip(acq_cands, acq_outcomes):
+                cache.record(ms, sid, k, c.get("kind"), outcome)
+
         print(json.dumps({"m3_driver": "ran", "mined": len(cands),
                           "judge_active": judge_active, "tally": tally,
-                          "meta": meta}, ensure_ascii=False))
+                          "acq": acq_tally, "meta": meta}, ensure_ascii=False))
     except Exception as exc:  # a Stop hook must never break the session close
         print(json.dumps({"m3_driver": "error", "error": repr(exc)[:200]}))
     return 0
