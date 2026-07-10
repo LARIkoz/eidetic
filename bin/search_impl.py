@@ -110,10 +110,11 @@ except ImportError:  # pragma: no cover
 
 
 def _confidence_ranking_on():
-    """Phase-A rollout flag (§10). DARK by default: OFF ⇒ conf_w ≡ 1.0 and the
-    injection gate is inactive, so ranking + injected context are byte-identical
-    to pre-1B. Flip EIDETIC_CONFIDENCE_RANKING on to let confidence enter the
-    formula (Phase B)."""
+    """Phase-A rollout flag (§10). DARK by default: OFF ⇒ conf_w ≡ 1.0, so
+    ranking + injected context are byte-identical to pre-1B. Flip
+    EIDETIC_CONFIDENCE_RANKING on to let confidence enter the RANKING formula
+    (conf_w, Phase B) — a rank weight only, not a read-time injection gate
+    (none exists; the only 0.55 constant is confidence.DECAY_FLOOR)."""
     return os.environ.get("EIDETIC_CONFIDENCE_RANKING", "").strip().lower() in (
         "1", "on", "true", "yes")
 

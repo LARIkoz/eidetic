@@ -3,8 +3,10 @@
 
 M3 closes Karpathy's loop — "good answers get filed back into the wiki as new
 pages" — but ONLY through a claim-support gate WITH TEETH, at the agent cold-start
-confidence (0.40, below the 0.55 injection gate), so filing can NEVER launder an
-unverified claim into a trusted, injected card.
+confidence (0.40 = confidence.COLD_AGENT_EXTRACTED). The gate is the
+anti-laundering mechanism; confidence is a trust MARK, not a runtime read gate —
+no "0.55 injection gate" exists (the only 0.55 is confidence.DECAY_FLOOR, and
+EIDETIC_CONFIDENCE_RANKING, when on, only WEIGHTS ranking via conf_w).
 
 Turn-1 CORE (the laundering-critical pipeline):
   * FR-1 dedup — probe the vector index (M1/M2's v1.1 door, S2); a top neighbor

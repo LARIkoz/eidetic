@@ -5,7 +5,9 @@ On ingest of a trigger card T, M2 touches the *related pages* (Karpathy's "an in
 updates 10–15 pages") — but surgically: it revises ONLY a user-invisible,
 sentinel-delimited AGENT synthesis region on each affected MANAGED page, preserving
 every user-authored byte verbatim, and it can add AT MOST one tier-1 `observed`
-event (never enough to launder a page across the 0.55 injection gate).
+event (a bounded confidence nudge; confidence is a rank weight under
+EIDETIC_CONFIDENCE_RANKING, not a read-time gate — no "0.55 injection gate"
+exists, the only 0.55 is confidence.DECAY_FLOOR).
 
 Reuses M1's rails with NO engine delta (ENGINE_API stays "1.1"): the v1.1 door
 (`Index.neighbors` via `m1_contradiction.neighbors_via_door`), M1's shared
