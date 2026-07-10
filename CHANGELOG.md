@@ -26,13 +26,32 @@ existing indexes stay valid.
   1400-card store before landing: same-project gate, cross-encoder relevance
   floor 0.75, supersession **suggestion-only** by default
   (`EIDETIC_M2_AUTOSUPERSEDE` guard) — the uncalibrated form over-fired ~24x.
-- **M3 auto-file consumer** (`bin/m3_autofile.py`): claim-support-gated filing
-  of recalled answers at cold-start confidence 0.40. Ships **dark and
-  driverless** — nothing in production constructs its input record (a
-  documented seam), and a 2026-07-08 real-corpus dry-run measured it
-  not-activation-viable (0 faithful answers filed; the deterministic gate
-  cannot separate a faithful recall from a confident-wrong one). Kept as a
-  consumer seam only.
+- **M3 auto-file loop** (`bin/m3_recall_miner.py` → `bin/m3_producer_driver.py`
+  → `bin/m3_judge.py` → `bin/m3_autofile.py`): session-end transcript mining
+  into judge-gated memory cards, driven end-to-end from the Stop hook
+  (`bin/m3_hook.py`). The 2026-07-08 dry-run verdict on the deterministic gate
+  stands (not activation-viable on its own); what earned the loop is the LLM
+  entailment judge at the `register_support` seam — claim ⊨ retrieved span,
+  verbatim-quote gate ON, eval-first (82.8% faithful / 0% noise raw, 71.9% in
+  verified mode; the kill criterion was ≥60/≤5). Dark behind TWO flags:
+  `EIDETIC_M3_DRIVER` + `EIDETIC_M3_AUTOFILE`.
+- **M3 v3 — two-lane knowledge expansion** (`docs/adr/0001`, 2026-07-10): one
+  miner prompt, a `kind` on every candidate. `recall` (asked-for OR
+  assistant-volunteered) keeps `/memory/`-grounded consolidation unchanged;
+  `decision` / `finding` / `rule` flow through a DARK acquisition lane
+  (`bin/m3_acquisition.py`) — the verbatim transcript quote is mechanically
+  verified against the same transcript (assistant turns only; injected blocks
+  unquotable by construction), judged as ONE unit, and appended to
+  `events/m3_acquisition_dark.jsonl` with ZERO store writes until a
+  ~20-session owner-eyeballed activation gate. Also in v3: a session-scoped
+  judged-candidate cache (`bin/m3_seen_cache.py` — consecutive Stop hooks no
+  longer re-judge the same candidate), the semantic dedup door un-blinded
+  inside the hook process (`bin/m3_door_probe.py`, an mlx-venv subprocess
+  probe — paraphrased duplicates now route to M2 instead of filing twice),
+  RU→Latin transliteration in `slugify` (readable card names for Cyrillic
+  recall queries; pure-ASCII output byte-identical), and the dark-run report
+  tool (`bin/m3_dark_report.py`) rendering the activation gate's marking
+  sheet and counters.
 - **Chunker H2-split** (spec FR-5): oversized-section splitting; embedded-content
   window 1500 (`HASH_SCHEME trunc1500-v3` — already the live scheme, no reindex).
 
