@@ -47,13 +47,31 @@ KIND_TO_TYPE = {
 }
 
 
+# FR-7 (M3 v3): RU→Latin transliteration BEFORE the ASCII strip. An
+# all-Cyrillic title used to collapse to empty → hash fallback
+# (`synthesis-note-<hash>`), so paraphrased RU recall queries produced
+# unreadable names and dodged same-slug dedup. Deterministic map ⇒ re-file
+# idempotence holds (same title → same slug); pure-ASCII input is
+# byte-identical to the old behavior. Non-RU non-ASCII (e.g. CJK) still
+# falls through to the hash (distinct titles never collide into one card).
+_RU2LAT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "j", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "shch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+
 def slugify(text, maxlen=70):
-    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    s = (text or "").lower()
+    s = "".join(_RU2LAT.get(ch, ch) for ch in s)
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
     s = s[:maxlen].rstrip("-")
     if not s:
-        # A title with no ASCII alphanumerics (e.g. all-Cyrillic) collapses to
-        # empty — derive a stable slug from a hash so distinct non-ASCII titles
-        # get distinct files instead of all merging into one "note" card.
+        # A title with no transliterable alphanumerics collapses to empty —
+        # derive a stable slug from a hash so distinct non-ASCII titles get
+        # distinct files instead of all merging into one "note" card.
         return "note-" + hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:10]
     return s
 
