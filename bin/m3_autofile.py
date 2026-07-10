@@ -461,10 +461,55 @@ def active_support():
 
 
 # --- dedup door (S2) + M2 hand-off -------------------------------------------
+_DOOR_PROBE_TIMEOUT = 120
+_door_subprocess_dead = False  # per-process: a dead venv/script is not retried per candidate
+
+
+def _subprocess_door_probe(index_db_path, probe_text, exclude_paths=()):
+    """FR-6: re-probe the door through `m3_door_probe.py` (which re-execs under
+    the mlx venv). Used when THIS interpreter is embed-blind: the M3 hook runs
+    under an SDK python without MLX, so the in-process door returns [] on a
+    store that HAS vectors — the mechanism behind the live dup pair. Soft: any
+    failure marks the seam dead for this process and returns []."""
+    global _door_subprocess_dead
+    if _door_subprocess_dead:
+        return []
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "m3_door_probe.py")
+    if not os.path.isfile(script):
+        _door_subprocess_dead = True
+        return []
+    import subprocess
+    try:
+        res = subprocess.run(
+            [sys.executable, script, index_db_path, json.dumps(sorted(exclude_paths))],
+            input=probe_text, capture_output=True, text=True,
+            timeout=_DOOR_PROBE_TIMEOUT)
+        if res.returncode == 0 and res.stdout.strip():
+            hits = json.loads(res.stdout)
+            if isinstance(hits, list):
+                return hits
+    except Exception as e:
+        print(f"WARN: M3 door subprocess probe failed: {e}", file=sys.stderr)
+    _door_subprocess_dead = True
+    return []
+
+
 def _default_neighbors(index_db_path, probe_text, exclude_paths=()):
     """FR-1 dedup via M1's v1.1 door (S2). SOFT: [] on an FTS-only store / no
-    model — so M3 files a paraphrase there (semantic dedup is vector-only)."""
-    return _M1.neighbors_via_door(index_db_path, probe_text, exclude_paths=exclude_paths)
+    model — so M3 files a paraphrase there (semantic dedup is vector-only).
+
+    FR-6: an in-process [] with a vectors.db ON DISK usually means this
+    interpreter cannot embed the probe (the hook's SDK python has no MLX), not
+    an empty store — re-probe once through the mlx-venv subprocess before
+    trusting []. A store with vectors and ANY cards returns top-K neighbors,
+    so the extra subprocess fires only on genuine blindness or an empty index."""
+    hits = _M1.neighbors_via_door(index_db_path, probe_text, exclude_paths=exclude_paths)
+    if hits:
+        return hits
+    vectors_db = index_db_path.replace("index.db", "vectors.db")
+    if os.path.exists(vectors_db):
+        return _subprocess_door_probe(index_db_path, probe_text, exclude_paths)
+    return []
 
 
 def _iso_date():
