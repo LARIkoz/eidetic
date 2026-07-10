@@ -106,12 +106,17 @@ def section_sheet(dark_rows):
 
 
 def section_counters(runs, filed_rows):
-    n = len(runs)
+    """Per-kind metrics are computed over V3 runs only (rows whose meta carries
+    raw_by_kind); pre-v3 driver rows lack the fields and would dilute the
+    candidates/session and page-rate the D5 gate reads. Legacy rows are shown
+    as the baseline they are."""
+    v3_runs = [r for r in runs if (r.get("meta") or {}).get("raw_by_kind") is not None]
+    legacy = [r for r in runs if r not in v3_runs]
     raw, kept = {}, {}
     pages = 0
     skipped_seen = 0
     tally_total = {}
-    for r in runs:
+    for r in v3_runs:
         meta = r.get("meta") or {}
         for k, v in (meta.get("raw_by_kind") or {}).items():
             raw[k] = raw.get(k, 0) + v
@@ -123,21 +128,30 @@ def section_counters(runs, filed_rows):
             tally_total[k] = tally_total.get(k, 0) + v
         if (t.get("filed", 0) + t.get("deduped_to_m2", 0)) > 0:
             pages += 1
+    n = len(v3_runs)
     kept_total = sum(kept.values())
+    legacy_kept = sum((r.get("meta") or {}).get("kept") or 0 for r in legacy)
+    legacy_pages = sum(
+        1 for r in legacy
+        if ((r.get("tally") or {}).get("filed", 0)
+            + (r.get("tally") or {}).get("deduped_to_m2", 0)) > 0)
     lines = [
-        "## 2. Consolidation counters (per kind)",
+        "## 2. Consolidation counters (per kind, v3 runs only)",
         "",
-        f"runs (ran): {n}",
+        f"v3 runs: {n} · legacy (pre-v3) runs: {len(legacy)}",
         f"raw by kind:  {json.dumps(raw, ensure_ascii=False)}",
         f"kept by kind: {json.dumps(kept, ensure_ascii=False)}",
         f"actions:      {json.dumps(tally_total, ensure_ascii=False)}",
         f"skipped_seen (FR-8 cache hits): {skipped_seen}",
         "",
-        f"candidates/session: {kept_total / n:.2f} (target ≥ 2.0 = 2x v2 baseline ~1.0)"
-        if n else "candidates/session: n/a (no runs)",
-        f"sessions producing a page (filed ∪ deduped_to_m2): {pages}/{n}"
-        f" = {100.0 * pages / n:.1f}%% (target ≥ 10%%, v2 baseline 5%%)"
-        if n else "page-rate: n/a",
+        (f"candidates/session (v3): {kept_total / n:.2f} (target ≥ 2.0 = 2x v2 baseline)"
+         if n else "candidates/session (v3): n/a (no v3 runs yet)"),
+        (f"sessions producing a page (filed ∪ deduped_to_m2, v3): {pages}/{n}"
+         f" = {100.0 * pages / n:.1f}% (target ≥ 10%)"
+         if n else "page-rate (v3): n/a"),
+        (f"legacy baseline: {legacy_kept / len(legacy):.2f} cand/session, "
+         f"page-rate {100.0 * legacy_pages / len(legacy):.1f}%"
+         if legacy else "legacy baseline: none"),
         f"filed pages total (m3_filed.jsonl): {len(filed_rows)}",
     ]
     return "\n".join(lines)
