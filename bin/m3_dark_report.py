@@ -4,9 +4,11 @@
 Reads `events/m3_acquisition_dark.jsonl` + `events/m3_driver.log` (+
 `events/m3_filed.jsonl`) and prints the owner-eyeball report, four sections:
 
-  1. WOULD-FILE MARKING SHEET — deduped by the FR-8 candidate key; one block
-     per would-file card (claim + quote + session) with keep / noise /
-     dangerous-wrong checkboxes for the owner.
+  1. WOULD-FILE MARKING SHEET — deduped by the FR-8 candidate key, then
+     paraphrase-clustered (the cache keys EXACT normalized text, so the same
+     knowledge re-worded on a later Stop logs again); one block per knowledge
+     item (claim + quote + re-wordings) with keep / noise / dangerous-wrong
+     checkboxes for the owner.
   2. CONSOLIDATION COUNTERS, per kind — the shared 4-slot cap lets acquisition
      displace recall candidates, so totals are attributed per kind; "producing
      a page" counts filed ∪ deduped_to_m2 (else the FR-6 door suppresses the
@@ -37,8 +39,14 @@ if _BIN not in sys.path:
     sys.path.insert(0, _BIN)
 
 import m3_acquisition as _acq  # noqa: E402
+import m3_judge as _judge  # noqa: E402  (_norm_tokens — the one dialect, NFR-6)
 import m3_recall_miner as _miner  # noqa: E402
 import m3_seen_cache as _cache  # noqa: E402
+
+# Live-data calibration 2026-07-11 (104 dark rows / 69 would-file): at 0.4 all
+# 12 multi-clusters are true paraphrases; 0.5 already splits known re-wordings
+# (en-CA-primary ×3) — so 0.4, the stricter of the two equivalent settings.
+CLUSTER_JACCARD = 0.4
 
 
 def _ms_root(arg):
@@ -86,21 +94,58 @@ def _dedup_dark(rows):
     return out, dups
 
 
+def _claim_tokens(row):
+    return set(_judge._norm_tokens(row.get("claim") or "").split())
+
+
+def _cluster_paraphrases(rows, threshold=CLUSTER_JACCARD):
+    """Group rows whose claims are the same knowledge re-worded — the FR-8 key
+    is exact-text, so paraphrases slip past it (observed live: en-CA-primary
+    ×3, T-A ×3). Representative-linkage on claim-token Jaccard, within kind
+    only (kind is part of the candidate key's identity). Report-side ONLY —
+    gates and the seen-cache are untouched (V1 fix 1)."""
+    clusters = []
+    for r in rows:
+        toks = _claim_tokens(r)
+        for c in clusters:
+            rep = c[0]
+            if rep.get("kind") != r.get("kind"):
+                continue
+            rep_toks = _claim_tokens(rep)
+            union = toks | rep_toks
+            if union and len(toks & rep_toks) / len(union) >= threshold:
+                c.append(r)
+                break
+        else:
+            clusters.append([r])
+    return clusters
+
+
 def section_sheet(dark_rows):
     uniq, _ = _dedup_dark(dark_rows)
     would = [r for r in uniq if r.get("would_file")]
-    lines = [f"## 1. Would-file marking sheet — {len(would)} cards "
-             f"(dedup'd from {len(dark_rows)} dark rows)", ""]
-    for i, r in enumerate(would, 1):
-        lines += [
-            f"### {i}. [{r.get('kind')}] session={r.get('session_id', '')[:12]} "
-            f"project={r.get('project_slug') or '-'}",
-            f"CLAIM: {r.get('claim')}",
-            f"QUOTE: {r.get('transcript_quote')}",
-            "MARK:  [ ] keep   [ ] noise   [ ] dangerous-wrong",
-            "",
-        ]
-    if not would:
+    clusters = _cluster_paraphrases(would)
+    lines = [f"## 1. Would-file marking sheet — {len(clusters)} knowledge items "
+             f"({len(would)} would-file rows, dedup'd from {len(dark_rows)} dark "
+             f"rows; paraphrases clustered at claim-token Jaccard ≥ "
+             f"{CLUSTER_JACCARD})", ""]
+    for i, c in enumerate(clusters, 1):
+        r = c[0]
+        sessions = []
+        for m in c:
+            s = (m.get("session_id") or "")[:12]
+            if s and s not in sessions:
+                sessions.append(s)
+        head = (f"### {i}. [{r.get('kind')}] session={','.join(sessions)} "
+                f"project={r.get('project_slug') or '-'}")
+        if len(c) > 1:
+            head += f" ×{len(c)} re-worded"
+        lines += [head,
+                  f"CLAIM: {r.get('claim')}",
+                  f"QUOTE: {r.get('transcript_quote')}"]
+        lines += [f"  ALSO: {m.get('claim')}" for m in c[1:]]
+        lines += ["MARK:  [ ] keep   [ ] noise   [ ] dangerous-wrong", ""]
+    if not clusters:
         lines.append("(no would-file rows yet)")
     return "\n".join(lines)
 

@@ -15,8 +15,11 @@ outcome this session is skipped BEFORE producer retrieval and the judge.
 
 The target memory dir is the transcript's own project
 (~/.claude/projects/<slug>/memory) — a recall filed where it was recalled.
-project_slug for producer minting is left empty for now: FR-4 graduation is a
-later arc; nothing is minted from auto-filed pages yet.
+The same transcript-derived slug is stamped on every candidate as
+project_slug (D5 report fix 2): dark rows and filed-page provenance carry
+the real project, so the FR-5 report can group findings by it. The FR-4
+test-affirmation path that reads filed-page slugs stays gated by
+EIDETIC_PRODUCER (off ⇒ nothing is minted from them).
 """
 import json
 import os
@@ -89,7 +92,7 @@ def main(argv):
         if not (os.path.isdir(memory_dir) and os.path.isfile(idb)):
             print(json.dumps({"m3_driver": "skip", "reason": "no_store_or_memdir"}))
             return 0
-        cands, meta = miner.mine_transcript(transcript)
+        cands, meta = miner.mine_transcript(transcript, project_slug=slug)
         sid = os.path.basename(transcript).rsplit(".", 1)[0]  # = miner's sid
 
         # FR-8: seen-cache — skip candidates already definitively judged this

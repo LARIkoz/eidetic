@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bin"))
 
 import m3_acquisition as acq  # noqa: E402
 import m3_autofile as m3  # noqa: E402
+import m3_dark_report as report  # noqa: E402
 import m3_hook  # noqa: E402
 import m3_judge  # noqa: E402
 import m3_recall_miner as miner  # noqa: E402
@@ -350,6 +351,20 @@ class HookRoutingTest(unittest.TestCase):
         self.assertEqual(len(process_calls), 2)  # retried once, then cached
         self.assertEqual(third["meta"]["skipped_seen"], 1)
 
+    def test_hook_stamps_transcript_slug_on_mining(self):
+        # D5 report fix 2 — the transcript-derived project slug reaches
+        # mine_transcript, so dark rows / provenance carry the real project.
+        got = {}
+
+        def fake_mine(transcript, **kw):
+            got.update(kw)
+            return [], {"turns": 2}
+
+        with mock.patch.object(sys.modules["m3_recall_miner"], "mine_transcript",
+                               side_effect=fake_mine):
+            self._run_hook()
+        self.assertEqual(got.get("project_slug"), "proj-x")
+
 
 class SlugifyTranslitTest(unittest.TestCase):
     """FR-7 — RU→Latin before the ASCII strip; ASCII byte-identical."""
@@ -502,6 +517,40 @@ class JudgeVerdictMappingTest(unittest.TestCase):
 
     def test_empty_spans_definitive_reject(self):
         self.assertEqual(m3_judge.verdict("claim", []), "not_entailed")
+
+
+class DarkReportClusterTest(unittest.TestCase):
+    """D5 report fix 1 — the marking sheet clusters paraphrased claims (the
+    FR-8 cache keys exact normalized text; re-worded knowledge logs again)."""
+
+    @staticmethod
+    def _row(claim, kind="decision", sid="sess-1"):
+        return {"kind": kind, "claim": claim, "session_id": sid,
+                "transcript_quote": "a verbatim quote of enough tokens",
+                "would_file": True}
+
+    def test_paraphrases_merge_within_kind(self):
+        a = self._row("Назначить en-CA primary локалью и заполнить зеркалом en-US")
+        b = self._row("Назначен en-CA primary локалью и заполнен зеркалом en-US")
+        c = self._row("Совершенно другое решение про таймауты codex в council")
+        sizes = sorted(len(x) for x in report._cluster_paraphrases([a, b, c]))
+        self.assertEqual(sizes, [1, 2])
+
+    def test_same_claim_different_kind_never_merges(self):
+        a = self._row("одно и то же знание про индекс локалей", kind="decision")
+        b = self._row("одно и то же знание про индекс локалей", kind="finding")
+        self.assertEqual(len(report._cluster_paraphrases([a, b])), 2)
+
+    def test_sheet_renders_one_mark_per_knowledge_item(self):
+        a = self._row("Назначить en-CA primary локалью и заполнить зеркалом en-US")
+        b = self._row("Назначен en-CA primary локалью и заполнен зеркалом en-US",
+                      sid="sess-2")
+        sheet = report.section_sheet([a, b])
+        self.assertEqual(sheet.count("MARK:"), 1)
+        self.assertIn("×2 re-worded", sheet)
+        self.assertIn("ALSO:", sheet)
+        self.assertIn("sess-1", sheet)
+        self.assertIn("sess-2", sheet)
 
 
 if __name__ == "__main__":
