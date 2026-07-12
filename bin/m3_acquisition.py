@@ -60,31 +60,41 @@ def quote_in_assistant_turns(quote, turns):
                for role, text in turns or [])
 
 
-def _append_dark(memory_system, record):
+def _append_dark(memory_system, record, dark_file=None):
     """Dark-log append via the shared O_APPEND helper (the m3_filed.jsonl
-    pattern). Best-effort — a log miss never blocks the lane."""
+    pattern). Best-effort on the main lane — a log miss never blocks it; the
+    agent lane passes its own `dark_file` (D3) and treats the returned bool
+    as an acknowledgement (FR-3)."""
     if _LC is None:
         return False
     try:
-        return _LC._atomic_append_jsonl(
-            Path(os.path.join(_events_dir(memory_system), DARK_FILE)),
-            _LC._compact_json(record))
+        return bool(_LC._atomic_append_jsonl(
+            Path(os.path.join(_events_dir(memory_system), dark_file or DARK_FILE)),
+            _LC._compact_json(record)))
     except Exception:
         return False
 
 
-def _process_one(cand, turns, memory_system):
-    """→ outcome ∈ would_file | would_reject | judge_unavailable | error.
-    would_file / would_reject are DEFINITIVE (seen-cacheable, FR-8); the other
-    two are transient — retried on the next Stop."""
+def _process_one(cand, turns, memory_system, dark_file=None, extra_fields=None,
+                 stats=None):
+    """→ outcome ∈ would_file | would_reject | judge_unavailable | error,
+    plus dark_append_failed on the acknowledged agent transport (FR-3).
+    would_file / would_reject are DEFINITIVE (seen-cacheable, FR-8); the
+    others are transient — retried on a later Stop. With `dark_file` set the
+    append's boolean result PROPAGATES: a failed append returns the transient
+    dark_append_failed, so no cache record and no ledger `done` can ever hide
+    a missing dark row (worst case on retry is a duplicate row, which the
+    report's key-dedup collapses). Defaults keep the main lane byte-identical."""
     claim = (cand.get("claim") or "").strip()
     quote = (cand.get("transcript_quote") or "").strip()
     quote_ok = bool(claim) and quote_in_assistant_turns(quote, turns)
     judge = None  # null in the dark log = judge never called (quote gate failed)
     if quote_ok:
+        if stats is not None:
+            stats["judge_calls"] = stats.get("judge_calls", 0) + 1
         judge = m3_judge.verdict(claim, [quote])
     would_file = bool(quote_ok and judge == "entailed")
-    _append_dark(memory_system, {
+    record = {
         "ts": _LC._recorded_at() if _LC else "",
         "session_id": str(cand.get("session_id") or ""),
         "project_slug": str(cand.get("project_slug") or ""),
@@ -94,7 +104,12 @@ def _process_one(cand, turns, memory_system):
         "quote_ok": quote_ok,
         "judge": judge,
         "would_file": would_file,
-    })
+    }
+    if extra_fields:
+        record.update(extra_fields)
+    appended = _append_dark(memory_system, record, dark_file)
+    if dark_file is not None and not appended:
+        return "dark_append_failed"
     if would_file:
         return "would_file"
     if not quote_ok or judge == "not_entailed":
@@ -104,14 +119,21 @@ def _process_one(cand, turns, memory_system):
     return "error"
 
 
-def process(transcript_path, candidates, *, memory_system=None, turns=None):
+def process(transcript_path, candidates, *, memory_system=None, turns=None,
+            dark_file=None, extra_fields=None, stats=None):
     """Run acquisition candidates through the dark lane.
 
     Returns (tally, outcomes): tally for the hook's one-line JSON, outcomes
     aligned 1:1 with `candidates` for the FR-8 seen-cache. `turns` may be
     injected (tests); default = re-read the SAME transcript via the miner's
     own `read_turns` (identical cleaning — the quote is checked against
-    exactly what was minable)."""
+    exactly what was minable).
+
+    Agent-lane transport (FR-3, defaults preserve main-lane behavior
+    byte-identically): `dark_file` targets a separate dark log and switches
+    appends to acknowledged mode; `extra_fields` merges the agent metadata
+    into every row; `stats` (a dict) accumulates `judge_calls` for the
+    driver-line agent block."""
     tally = {}
     outcomes = []
     if turns is None:
@@ -121,7 +143,8 @@ def process(transcript_path, candidates, *, memory_system=None, turns=None):
             turns = []
     for cand in candidates or []:
         try:
-            outcome = _process_one(cand, turns, memory_system)
+            outcome = _process_one(cand, turns, memory_system,
+                                   dark_file, extra_fields, stats)
         except Exception:  # one candidate never kills the run (hook contract)
             outcome = "error"
         tally[outcome] = tally.get(outcome, 0) + 1

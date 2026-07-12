@@ -95,6 +95,21 @@ def main(argv):
         cands, meta = miner.mine_transcript(transcript, project_slug=slug)
         sid = os.path.basename(transcript).rsplit(".", 1)[0]  # = miner's sid
 
+        def _agent_block():
+            """FR-4 (spec-m3-agent-lane-plumbing): the agent-lane drain, AFTER
+            the two v3 lanes, gated by its OWN flag (D7 — EIDETIC_M3_DRIVER
+            alone must NOT enable it; secondary boxes keep it inert). Flag off
+            ⇒ None ⇒ the driver line is byte-identical to today. The drain's
+            failure never kills the hook."""
+            if os.environ.get("EIDETIC_M3_AGENT_LANE", "").strip().lower() \
+                    not in ("1", "on", "true", "yes"):
+                return None
+            try:
+                import m3_agent_lane
+                return m3_agent_lane.drain(transcript, slug, ms)
+            except Exception as exc:
+                return {"status": "error", "error": repr(exc)[:200]}
+
         # FR-8: seen-cache — skip candidates already definitively judged this
         # session BEFORE producer retrieval and the judge.
         seen = cache.load_seen(ms, sid)
@@ -107,8 +122,11 @@ def main(argv):
         meta["skipped_seen"] = len(cands) - len(fresh)
 
         if not fresh:
-            print(json.dumps({"m3_driver": "ran", "mined": len(cands),
-                              "meta": meta}, ensure_ascii=False))
+            out = {"m3_driver": "ran", "mined": len(cands), "meta": meta}
+            agent = _agent_block()
+            if agent is not None:
+                out["agent"] = agent
+            print(json.dumps(out, ensure_ascii=False))
             return 0
 
         recall = [(c, k) for c, k in fresh
@@ -134,9 +152,13 @@ def main(argv):
             for (c, k), outcome in zip(acq_cands, acq_outcomes):
                 cache.record(ms, sid, k, c.get("kind"), outcome)
 
-        print(json.dumps({"m3_driver": "ran", "mined": len(cands),
-                          "judge_active": judge_active, "tally": tally,
-                          "acq": acq_tally, "meta": meta}, ensure_ascii=False))
+        out = {"m3_driver": "ran", "mined": len(cands),
+               "judge_active": judge_active, "tally": tally,
+               "acq": acq_tally, "meta": meta}
+        agent = _agent_block()
+        if agent is not None:
+            out["agent"] = agent
+        print(json.dumps(out, ensure_ascii=False))
     except Exception as exc:  # a Stop hook must never break the session close
         print(json.dumps({"m3_driver": "error", "error": repr(exc)[:200]}))
     return 0

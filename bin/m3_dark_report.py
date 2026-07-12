@@ -202,6 +202,41 @@ def section_counters(runs, filed_rows):
     return "\n".join(lines)
 
 
+def _coverage_probe(transcript, use_judge):
+    """Re-mine turns −60..−30 of ONE transcript with the live miner prompt;
+    → (had_prev_window, would-file-worthy count). Shared by both lanes —
+    only path RESOLUTION differs (NFR-6)."""
+    turns60 = _miner.read_turns(transcript, max_turns=60)
+    prev_window = turns60[:max(0, len(turns60) - 30)]
+    if not prev_window:
+        return False, 0
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False,
+                                     encoding="utf-8") as tf:
+        for role, text in prev_window:
+            tf.write(json.dumps({"type": role, "message": {
+                "content": [{"type": "text", "text": text}]}},
+                ensure_ascii=False) + "\n")
+        tmp_path = tf.name
+    try:
+        cands, _meta = _miner.mine_transcript(tmp_path)
+        acq_cands = [c for c in cands if c.get("kind") in _miner.ACQ_KINDS]
+        passed = 0
+        for c in acq_cands:
+            if _acq.quote_in_assistant_turns(
+                    c.get("transcript_quote"), prev_window):
+                if not use_judge:
+                    passed += 1
+                else:
+                    import m3_judge
+                    if m3_judge.verdict(c.get("claim"),
+                                        [c.get("transcript_quote")]) == "entailed":
+                        passed += 1
+        return True, passed
+    finally:
+        os.unlink(tmp_path)
+
+
 def section_coverage(dark_rows, sample, use_judge):
     """Re-mine turns −60..−30 of the most recent dark-run sessions whose
     transcripts still exist; count acquisition candidates that pass the
@@ -224,38 +259,11 @@ def section_coverage(dark_rows, sample, use_judge):
         if not matches:
             missing += 1
             continue
-        transcript = matches[0]
-        turns60 = _miner.read_turns(transcript, max_turns=60)
-        prev_window = turns60[:max(0, len(turns60) - 30)]
-        if not prev_window:
+        had, passed = _coverage_probe(matches[0], use_judge)
+        if not had:
             continue
         inside += 1
-        # Mine the PRECEDING window with the live miner prompt.
-        import tempfile
-        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False,
-                                         encoding="utf-8") as tf:
-            for role, text in prev_window:
-                tf.write(json.dumps({"type": role, "message": {
-                    "content": [{"type": "text", "text": text}]}},
-                    ensure_ascii=False) + "\n")
-            tmp_path = tf.name
-        try:
-            cands, _meta = _miner.mine_transcript(tmp_path)
-            acq_cands = [c for c in cands if c.get("kind") in _miner.ACQ_KINDS]
-            passed = 0
-            for c in acq_cands:
-                if _acq.quote_in_assistant_turns(
-                        c.get("transcript_quote"), prev_window):
-                    if not use_judge:
-                        passed += 1
-                    else:
-                        import m3_judge
-                        if m3_judge.verdict(c.get("claim"),
-                                            [c.get("transcript_quote")]) == "entailed":
-                            passed += 1
-            outside += passed
-        finally:
-            os.unlink(tmp_path)
+        outside += passed
     lines += [
         f"sessions sampled: {len(sessions)} (transcript missing: {missing})",
         f"would-file-worthy candidates found OUTSIDE the 30-turn window: {outside}",
@@ -289,6 +297,273 @@ def section_dups(dark_rows, filed_rows):
     return "\n".join(lines)
 
 
+# --- FR-5 agent lane (spec-m3-agent-lane-plumbing) ---------------------------
+# Read-side D3 purity: --lane agent reads m3_agent_dark.jsonl + the agent
+# ledger + driver agent blocks (+ main dark rows for D8 comparison only);
+# the default --lane main path is byte-compatible with the pre-change report.
+
+
+def _row_definitive(r):
+    """Definitive dark row: entailed (would_file), judged not_entailed, or a
+    quote-gate reject (judge null + quote_ok false). judge_unavailable (or
+    anything else) is transient — health evidence, never a gate item."""
+    if r.get("would_file"):
+        return True
+    if r.get("judge") == "not_entailed":
+        return True
+    if not r.get("quote_ok") and r.get("judge") is None:
+        return True
+    return False
+
+
+def _resolve_attempts(rows):
+    """Outcome-aware attempt resolution (FR-5): group retries/concurrent
+    attempts by (project_slug, agent_file, candidate_key); a LATER definitive
+    outcome outranks earlier transients; conflicting definitive outcomes are
+    unresolved — loud and gate-excluded, never silently \"keep first\".
+    → (resolved rows, health {transient_only, dup_attempts, conflicts})."""
+    groups, order = {}, []
+    for r in rows:
+        key = (r.get("project_slug") or "", r.get("agent_file") or "",
+               _cache.candidate_key(r))
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+    resolved, conflicts = [], []
+    transient_only = dup_attempts = 0
+    for key in order:
+        g = groups[key]
+        dup_attempts += len(g) - 1
+        defs = [r for r in g if _row_definitive(r)]
+        if not defs:
+            transient_only += 1
+            continue
+        if len({bool(r.get("would_file")) for r in defs}) > 1:
+            conflicts.append(defs[-1])
+            continue
+        resolved.append(defs[-1])
+    return resolved, {"transient_only": transient_only,
+                      "dup_attempts": dup_attempts, "conflicts": conflicts}
+
+
+def _tag_seen_main(clusters, main_rows):
+    """D8 report-time cross-lane accounting: an agent cluster whose claim
+    clusters with ANY main-lane dark claim (same kind, same Jaccard) is
+    already_seen_main — one item in the QUALITY denominator, zero in the
+    incremental/net-new counters. → [bool] aligned with clusters."""
+    main_by_kind = {}
+    for r in main_rows:
+        main_by_kind.setdefault(r.get("kind"), []).append(_claim_tokens(r))
+    tags = []
+    for c in clusters:
+        rep = c[0]
+        toks = _claim_tokens(rep)
+        seen = False
+        for mt in main_by_kind.get(rep.get("kind"), []):
+            union = toks | mt
+            if union and len(toks & mt) / len(union) >= CLUSTER_JACCARD:
+                seen = True
+                break
+        tags.append(seen)
+    return tags
+
+
+def section_agent_sheet(resolved, main_rows, total_rows):
+    """Marking sheet on RESOLVED rows: FR-8-key dedup happened in resolution;
+    paraphrase clustering reused; grouped by project_slug + agent_kind; each
+    item shows claim + quote + re-wordings + transcript_mtime (the found-at
+    lifecycle anchor). → (text, clusters, seen_main tags)."""
+    would = [r for r in resolved if r.get("would_file")]
+    clusters = _cluster_paraphrases(would)
+    tags = _tag_seen_main(clusters, main_rows)
+    lines = [f"## 1. Agent would-file marking sheet — {len(clusters)} knowledge "
+             f"items ({len(would)} resolved would-file rows from {total_rows} "
+             f"agent dark rows; paraphrases clustered at claim-token Jaccard ≥ "
+             f"{CLUSTER_JACCARD})", ""]
+    order = sorted(range(len(clusters)),
+                   key=lambda i: (clusters[i][0].get("project_slug") or "",
+                                  clusters[i][0].get("agent_kind") or ""))
+    for n, i in enumerate(order, 1):
+        c = clusters[i]
+        r = c[0]
+        head = (f"### {n}. [{r.get('kind')}] "
+                f"project={r.get('project_slug') or '-'} "
+                f"agent_kind={r.get('agent_kind') or '-'} "
+                f"session={(r.get('session_id') or '')[:24]} "
+                f"mtime={r.get('transcript_mtime') or '-'}")
+        if len(c) > 1:
+            head += f" ×{len(c)} re-worded"
+        if tags[i]:
+            head += "  [already_seen_main]"
+        lines += [head,
+                  f"CLAIM: {r.get('claim')}",
+                  f"QUOTE: {r.get('transcript_quote')}"]
+        lines += [f"  ALSO: {m.get('claim')}" for m in c[1:]]
+        lines += ["MARK:  [ ] keep   [ ] noise   [ ] dangerous-wrong", ""]
+    if not clusters:
+        lines.append("(no resolved would-file rows yet)")
+    return "\n".join(lines), clusters, tags
+
+
+def section_agent_counters(agent_runs, resolved, done_rows, dark_rows,
+                           clusters, tags):
+    """Lane counters (FR-5): scanned/eligible/mined/recall-dropped/judge
+    calls SUMMED across per-fire agent blocks; backlog depth + oldest age
+    from the LATEST snapshot per project (sum depth, max age); density =
+    unique clustered would-file items per mined agent-session (the V5 bar
+    re-check at the production cap); accumulation bar = distinct parent
+    sessions with ≥1 definitive row."""
+    sums = {k: 0 for k in ("scanned", "eligible", "mined_files",
+                           "recall_dropped", "judge_calls", "skipped_seen")}
+    latest_by_project = {}
+    for b in agent_runs:
+        for k in sums:
+            sums[k] += b.get(k) or 0
+        latest_by_project[b.get("project_slug") or "?"] = b  # later fire wins
+    backlog_total = sum((b.get("backlog") or 0)
+                        for b in latest_by_project.values())
+    oldest_max = max([b.get("oldest_eligible_s") or 0
+                      for b in latest_by_project.values()] or [0])
+    per = {}
+    for r in resolved:
+        if not r.get("would_file"):
+            continue
+        key = (f"{r.get('kind')}/{r.get('agent_kind') or '-'}"
+               f"/{r.get('project_slug') or '-'}")
+        per[key] = per.get(key, 0) + 1
+    mined_sessions = {r.get("agent_file") for r in dark_rows
+                      if r.get("agent_file")}
+    mined_sessions |= {d.get("agent_file") for d in done_rows
+                       if d.get("agent_file")}
+    net_new = sum(1 for t in tags if not t)
+    density = (len(clusters) / len(mined_sessions)) if mined_sessions else 0.0
+    parents = {r.get("parent_session_id") for r in resolved
+               if r.get("parent_session_id")}
+    return "\n".join([
+        "## 2. Agent lane counters",
+        "",
+        f"fires (agent blocks): {len(agent_runs)}",
+        f"files scanned: {sums['scanned']} · eligible: {sums['eligible']} · "
+        f"mined: {sums['mined_files']}",
+        f"backlog depth (latest per project, summed): {backlog_total} · "
+        f"oldest eligible age: {oldest_max}s",
+        f"recall_dropped: {sums['recall_dropped']} · judge calls: "
+        f"{sums['judge_calls']} · skipped_seen (FR-8): {sums['skipped_seen']}",
+        f"would-file per kind/agent_kind/project: "
+        f"{json.dumps(per, ensure_ascii=False, sort_keys=True)}",
+        f"knowledge items (clustered): {len(clusters)} · net-new vs main: "
+        f"{net_new} · already_seen_main: {len(clusters) - net_new}",
+        f"UNIQUE would-file per mined agent-session (cap "
+        f"{_miner.MAX_CANDIDATES}): {density:.2f} — V5 bar ≥ 0.5 feeds "
+        f"kill/iterate regardless of keep-rate",
+        f"distinct parent sessions with ≥1 definitive agent row: "
+        f"{len(parents)} (accumulation bar: ≥ 20)",
+    ])
+
+
+def section_agent_coverage(dark_rows, done_rows, sample, use_judge):
+    """Window coverage over AGENT transcripts: resolve each nested transcript
+    from project_slug + agent_file (ledger join allowed — done rows carry
+    both), covering plain and workflow layouts; skip-and-say-so otherwise."""
+    lines = [f"## 3. Window coverage sample (turns -60..-30, "
+             f"{'judge ON' if use_judge else 'mechanical gate only'})", ""]
+    seen_files = {}
+    for r in list(done_rows) + list(dark_rows):
+        slug, af = r.get("project_slug"), r.get("agent_file")
+        if slug and af:
+            seen_files.setdefault((slug, af), None)
+    pairs = list(seen_files)[-sample:] if sample else []
+    if not pairs:
+        lines.append("(skipped — no agent files sampled)")
+        return "\n".join(lines)
+    outside = missing = plain = wf = 0
+    for slug, af in pairs:
+        path = os.path.expanduser(f"~/.claude/projects/{slug}/{af}")
+        if not os.path.isfile(path):
+            missing += 1
+            continue
+        if any(p.startswith("wf_") for p in af.split("/")):
+            wf += 1
+        else:
+            plain += 1
+        had, passed = _coverage_probe(path, use_judge)
+        if had:
+            outside += passed
+    lines += [
+        f"agent files sampled: {len(pairs)} (plain: {plain} · workflow: {wf} "
+        f"· missing: {missing})",
+        f"would-file-worthy candidates found OUTSIDE the 30-turn window: "
+        f"{outside}",
+        "verdict: widen the window ONLY if this number says so.",
+    ]
+    return "\n".join(lines)
+
+
+def section_agent_dups(health, tags):
+    """Dup & health visibility (D8 explicit, not decorative): duplicate
+    attempts by key, transient-only keys, cross-lane restatements, and
+    conflicting definitive outcomes (loud, gate-excluded)."""
+    lines = ["## 4. Dup & health visibility", "",
+             f"duplicate attempts collapsed by (scope, key): "
+             f"{health['dup_attempts']}",
+             f"transient-only keys (health counters, never gate items): "
+             f"{health['transient_only']}",
+             f"cross-lane restatements (already_seen_main clusters): "
+             f"{sum(1 for t in tags if t)}",
+             f"CONFLICTING definitive outcomes — gate-EXCLUDED until "
+             f"adjudicated: {len(health['conflicts'])}"]
+    lines += [f"  ! [{r.get('kind')}] {r.get('project_slug')}"
+              f"/{r.get('agent_file')}: {(r.get('claim') or '')[:100]}"
+              for r in health["conflicts"]]
+    return "\n".join(lines)
+
+
+def _run_agent_lane(ms, events, args):
+    import m3_agent_lane as _lane
+    dark = _read_jsonl(os.path.join(events, _lane.DARK_FILE))
+    ledger_rows = _read_jsonl(os.path.join(events, _lane.LEDGER_FILE))
+    init_row = next((r for r in ledger_rows if r.get("type") == "init"), None)
+    done_rows = [r for r in ledger_rows if r.get("type") == "done"]
+    main_dark = _read_jsonl(os.path.join(events, _acq.DARK_FILE))
+    agent_runs = [r["agent"] for r in _driver_runs(events)
+                  if isinstance(r.get("agent"), dict)]
+    window_start = (init_row or {}).get("ts") or ""
+    if window_start:  # the agent window starts at the authoritative init
+        dark = [r for r in dark if (r.get("ts") or "") >= window_start]
+        agent_runs = [b for b in agent_runs
+                      if (b.get("ts") or "") >= window_start]
+    resolved, health = _resolve_attempts(dark)
+
+    print(f"# M3 AGENT-lane dark-run report — {ms}")
+    if init_row is None:
+        print("!! LEDGER INIT MISSING (state_lost) — window start unknown; "
+              "showing all rows")
+    else:
+        print(f"window start (init floor): "
+              f"{init_row.get('mtime_floor') or init_row.get('ts')}")
+    print(f"agent dark rows: {len(dark)} · agent fires: {len(agent_runs)} · "
+          f"done files: {len(done_rows)}")
+    print()
+    sheet, clusters, tags = section_agent_sheet(resolved, main_dark, len(dark))
+    print(sheet)
+    print()
+    print(section_agent_counters(agent_runs, resolved, done_rows, dark,
+                                 clusters, tags))
+    print()
+    print(section_agent_coverage(dark, done_rows, args.coverage, args.judge))
+    print()
+    print(section_agent_dups(health, tags))
+    print()
+    print("Agent-D5 gate (D4; dangerous-wrong budget frozen at the spec gate, "
+          "default (a) ≤1/round): activate ≥70% keep AND budget held · kill "
+          "<50% keep · between → iterate. Bar: ≥2–4 days AND ≥20 distinct "
+          "parent sessions with definitive rows. Owner verdict recorded "
+          "BEFORE any activation work (spec §5).")
+    print("NB: this report contains verbatim claims/quotes — local material, "
+          "never commit it (NFR-4).")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--memory-system", default=None)
@@ -296,10 +571,17 @@ def main():
                     help="sessions for the window-coverage sample (0 = skip)")
     ap.add_argument("--judge", action="store_true",
                     help="entail coverage-sample candidates (≤4 calls/session)")
+    ap.add_argument("--lane", choices=("main", "agent"), default="main",
+                    help="agent = the agent-lane report (FR-5; default main "
+                         "stays byte-compatible with today)")
     args = ap.parse_args()
 
     ms = _ms_root(args.memory_system)
     events = os.path.join(ms, "events")
+
+    if args.lane == "agent":
+        _run_agent_lane(ms, events, args)
+        return
     dark = _read_jsonl(os.path.join(events, _acq.DARK_FILE))
     runs = _driver_runs(events)
     filed = _read_jsonl(os.path.join(events, "m3_filed.jsonl"))
