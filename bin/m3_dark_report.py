@@ -538,6 +538,71 @@ def section_agent_dups(health, tags):
     return "\n".join(lines)
 
 
+class LedgerStateLost(RuntimeError):
+    """Agent-lane ledger failed D6 validation — no gate data may be derived."""
+
+
+def collect_lane_items(ms, lane):
+    """Machine-readable clustered would-file items for a lane — the ONE
+    collection path shared by the text report, `--json`, and the commission
+    (brief-m3-commission-gate). → (items, meta).
+
+    item = {key, lane, kind, claim, quote, rewordings, project_slug,
+    session_id, agent_kind, workflow_id, transcript_mtime, seen_main}.
+    `key` = the FR-8 candidate key of the cluster representative — stable
+    across runs, so commission verdicts can resume against it. Agent lane
+    inherits D6 fail-closed: state_lost raises LedgerStateLost (P1-3
+    discipline on every read path)."""
+    events = os.path.join(ms, "events")
+    if lane == "agent":
+        import m3_agent_lane as _lane
+        _floor, _done, status = _lane.read_ledger(ms)
+        if status != "ok":
+            raise LedgerStateLost(
+                "agent ledger state_lost — repair before any gate work")
+        ledger_rows = _read_jsonl(os.path.join(events, _lane.LEDGER_FILE))
+        init_row = next(r for r in ledger_rows if r.get("type") == "init")
+        dark = _read_jsonl(os.path.join(events, _lane.DARK_FILE))
+        window_start = init_row.get("ts") or ""
+        if window_start:
+            dark = [r for r in dark if (r.get("ts") or "") >= window_start]
+        resolved, health = _resolve_attempts(dark)
+        would = [r for r in resolved if r.get("would_file")]
+        clusters = _cluster_paraphrases(would)
+        main_rows = _read_jsonl(os.path.join(events, _acq.DARK_FILE))
+        tags = _tag_seen_main(clusters, main_rows)
+        meta = {"lane": lane, "dark_rows": len(dark),
+                "resolved": len(resolved), "conflicts":
+                len(health["conflicts"]), "transient_only":
+                health["transient_only"]}
+    else:
+        dark = _read_jsonl(os.path.join(events, _acq.DARK_FILE))
+        uniq, _dups = _dedup_dark(dark)
+        would = [r for r in uniq if r.get("would_file")]
+        clusters = _cluster_paraphrases(would)
+        tags = [False] * len(clusters)  # cross-lane tagging is agent-side only
+        meta = {"lane": lane, "dark_rows": len(dark), "resolved": len(uniq)}
+    items = []
+    for c, seen in zip(clusters, tags):
+        r = c[0]
+        items.append({
+            "key": _cache.candidate_key(r),
+            "lane": lane,
+            "kind": r.get("kind"),
+            "claim": r.get("claim"),
+            "quote": r.get("transcript_quote"),
+            "rewordings": [m.get("claim") for m in c[1:]],
+            "project_slug": r.get("project_slug"),
+            "session_id": r.get("session_id"),
+            "agent_kind": r.get("agent_kind"),
+            "workflow_id": r.get("workflow_id"),
+            "transcript_mtime": r.get("transcript_mtime"),
+            "seen_main": bool(seen),
+        })
+    meta["items"] = len(items)
+    return items, meta
+
+
 def _run_agent_lane(ms, events, args):
     import m3_agent_lane as _lane
     dark = _read_jsonl(os.path.join(events, _lane.DARK_FILE))
@@ -601,10 +666,19 @@ def main():
     ap.add_argument("--lane", choices=("main", "agent"), default="main",
                     help="agent = the agent-lane report (FR-5; default main "
                          "stays byte-compatible with today)")
+    ap.add_argument("--json", action="store_true",
+                    help="print the lane's clustered would-file items as "
+                         "JSON (the commission's input) instead of the "
+                         "human report")
     args = ap.parse_args()
 
     ms = _ms_root(args.memory_system)
     events = os.path.join(ms, "events")
+
+    if args.json:
+        items, meta = collect_lane_items(ms, args.lane)
+        print(json.dumps({"meta": meta, "items": items}, ensure_ascii=False))
+        return
 
     if args.lane == "agent":
         _run_agent_lane(ms, events, args)
