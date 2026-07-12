@@ -182,6 +182,25 @@ class InitFloorTest(_Base):
         self.assertEqual(res2["status"], "refused")
         self.assertEqual(self._ledger_rows(), rows1)  # no mutation
 
+    def test_init_short_write_is_recoverable(self):
+        """Review P2-6: a short os.write must NOT report 'initialized' and
+        must NOT leave a partial init occupying the O_EXCL path (that state
+        was permanently refused + state_lost). It fails controlled and a
+        retry succeeds."""
+        real_write = os.write
+        with mock.patch.object(lane.os, "write",
+                               side_effect=lambda fd, data:
+                               real_write(fd, data[:len(data) - 1])):
+            res = lane.init_floor(self.ms)
+        self.assertEqual(res["status"], "error")
+        self.assertEqual(res["error"], "short_write")
+        self.assertFalse(os.path.isfile(
+            os.path.join(self.ms, "events", lane.LEDGER_FILE)))
+        res2 = lane.init_floor(self.ms)  # retry works
+        self.assertEqual(res2["status"], "initialized")
+        _floor, _done, status = lane.read_ledger(self.ms)
+        self.assertEqual(status, "ok")
+
     def test_flag_on_absent_init_is_state_lost_zero_scan(self):
         self._plain_agent()
         with mock.patch.object(lane, "enumerate_eligible") as en:
@@ -267,14 +286,15 @@ class EnumerationTest(_Base):
             b1 = self._drain()
         self.assertEqual(b1["mined_files"], 3)
         self.assertEqual(b1["backlog"], 2)
-        mined1 = {c.args[0] for c in fake.call_args_list}
+        # the miner receives SNAPSHOT paths (P1-2) — assert by session stem
+        mined1 = {c.kwargs["session_id"] for c in fake.call_args_list}
         # newest three first
-        self.assertEqual(mined1, {paths[0][0], paths[1][0], paths[2][0]})
+        self.assertEqual(mined1, {"agent-c0", "agent-c1", "agent-c2"})
         with self._mine_returns([]) as fake2:
             b2 = self._drain()
         self.assertEqual(b2["mined_files"], 2)  # remaining two, no re-mine
-        mined2 = {c.args[0] for c in fake2.call_args_list}
-        self.assertEqual(mined2, {paths[3][0], paths[4][0]})
+        mined2 = {c.kwargs["session_id"] for c in fake2.call_args_list}
+        self.assertEqual(mined2, {"agent-c3", "agent-c4"})
 
     def test_warm_file_skipped_then_picked_up_quiescent(self):
         self._init(floor_ns=1)
@@ -323,27 +343,64 @@ class EnumerationTest(_Base):
         fake.assert_not_called()
 
     def test_same_relpath_two_projects_distinct_scopes(self):
-        """Two projects, same agent_file relpath → distinct cache scopes;
-        neither suppresses the other's dark row."""
+        """Two projects, same agent_file relpath and the SAME st_mtime_ns →
+        distinct done-ledger keys and cache scopes; neither suppresses the
+        other (review P1-1: a bare-relpath done key made the second project's
+        equal-or-older file silently 'processed'; equal mtimes make this test
+        adversarial instead of accidentally green via a fresher mtime)."""
         self._init(floor_ns=1)
         slug2 = "-proj-beta"
         proj2 = os.path.join(self.tmp, ".claude", "projects", slug2)
         parent2 = os.path.join(proj2, f"{self.sid}.jsonl")
         _write_agent_transcript(parent2)
-        self._plain_agent()  # project 1
+        p1, m1 = self._plain_agent()  # project 1
         p2 = os.path.join(proj2, self.sid, "subagents", "agent-p1.jsonl")
         _write_agent_transcript(p2)
-        _age(p2, QUIET_NS)
+        os.utime(p2, ns=(m1, m1))  # EXACTLY the same mtime as project 1
         with self._mine_returns([VALID_ACQ]), self._judge_entailed():
-            lane.drain(self.parent_transcript, self.slug, self.ms)
-            lane.drain(parent2, slug2, self.ms)
+            b1 = lane.drain(self.parent_transcript, self.slug, self.ms)
+            b2 = lane.drain(parent2, slug2, self.ms)
+        self.assertEqual(b1["mined_files"], 1)
+        self.assertEqual(b2["mined_files"], 1)  # NOT suppressed by A's done
         rows = self._dark_rows()
         self.assertEqual(len(rows), 2)  # no cross-project suppression
-        scopes = {json.loads(ln)["session_id"]
-                  for ln in open(os.path.join(self.ms, "events",
-                                              cache.JUDGED_FILE))}
+        with open(os.path.join(self.ms, "events", cache.JUDGED_FILE),
+                  encoding="utf-8") as f:
+            scopes = {json.loads(ln)["session_id"] for ln in f if ln.strip()}
         self.assertEqual(scopes, {f"{self.slug}/{self.sid}/subagents/agent-p1.jsonl",
                                   f"{slug2}/{self.sid}/subagents/agent-p1.jsonl"})
+
+    def test_snapshot_isolates_quote_gate_from_growing_transcript(self):
+        """Review P1-2: the miner and the quote gate must read ONE immutable
+        snapshot. The live transcript gains 35 turns mid-drain (after mining,
+        before the gate); with two reads of the live path the mined quote
+        slides out of the 30-turn window → false-definitive would_reject,
+        cached forever. With the snapshot the candidate must pass."""
+        self._init(floor_ns=1)
+        p, _ = self._plain_agent()
+
+        def fake_mine(path, *, session_id=None, project_slug=""):
+            # grow the ORIGINAL file mid-drain (the miner received a snapshot)
+            junk = [("assistant", f"filler turn {i} nothing to see here")
+                    for i in range(35)]
+            with open(p, "a", encoding="utf-8") as f:
+                for role, text in junk:
+                    f.write(json.dumps({"type": role, "message": {
+                        "content": [{"type": "text", "text": text}]}},
+                        ensure_ascii=False) + "\n")
+            c = dict(VALID_ACQ)
+            c["session_id"] = session_id
+            c["project_slug"] = project_slug
+            return [c], {"turns": 2, "error": None}
+
+        with mock.patch.object(lane.miner, "mine_transcript",
+                               side_effect=fake_mine), self._judge_entailed():
+            block = self._drain()
+        self.assertEqual(block["tally"].get("would_file"), 1,
+                         block["tally"])  # gate saw the snapshot, not the tail
+        rows = self._dark_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["quote_ok"])
 
     def test_selected_file_deleted_before_drain_counted_not_fatal(self):
         self._init(floor_ns=1)
@@ -585,13 +642,17 @@ class DarkFilePurityTest(_Base):
         idb = os.path.join(db_dir, "index.db")
         with open(idb, "wb") as f:
             f.write(b"DBBYTES")
-        before_page = open(page, "rb").read()
-        before_db = open(idb, "rb").read()
+        with open(page, "rb") as f:
+            before_page = f.read()
+        with open(idb, "rb") as f:
+            before_db = f.read()
         with self._mine_returns([VALID_ACQ, VALID_RECALL]), \
                 self._judge_entailed():
             self._drain()
-        self.assertEqual(open(page, "rb").read(), before_page)
-        self.assertEqual(open(idb, "rb").read(), before_db)
+        with open(page, "rb") as f:
+            self.assertEqual(f.read(), before_page)
+        with open(idb, "rb") as f:
+            self.assertEqual(f.read(), before_db)
         self.assertTrue(self._dark_rows())  # events/ DID gain appends
 
 
@@ -818,6 +879,84 @@ class ReportLaneTest(_Base):
         self.assertIn("[already_seen_main]", out)
         self.assertIn("knowledge items (clustered): 1 · net-new vs main: 0 "
                       "· already_seen_main: 1", out)
+
+    def test_report_duplicate_init_suppresses_gate(self):
+        """Review P1-3: the report must inherit D6 fail-closed — duplicate
+        init is state_lost at runtime, so the report must NOT render gate
+        sections from it."""
+        self._init(floor_ns=1)
+        with open(os.path.join(self.ms, "events", lane.LEDGER_FILE), "a",
+                  encoding="utf-8") as f:
+            f.write(json.dumps({"type": "init", "mtime_floor_ns": 2}) + "\n")
+        self._write_rows(lane.DARK_FILE, [_agent_row()])
+        out = self._render()
+        self.assertIn("STATE LOST", out)
+        self.assertIn("gate rendering SUPPRESSED", out)
+        self.assertNotIn("## 1. Agent would-file marking sheet", out)
+        self.assertNotIn("Agent-D5 gate", out)
+
+    def test_density_d8_net_new_numerator(self):
+        """Review P1-4a: already_seen_main clusters stay in the quality
+        denominator but are EXCLUDED from the density numerator (D8)."""
+        r1 = _agent_row()
+        r2 = _agent_row(claim="Second wholly different finding about the "
+                              "shard planner splitting by key range",
+                        agent_file="sid-2/subagents/agent-z9.jsonl",
+                        parent_session_id="sid-2")
+        clusters = report._cluster_paraphrases([r1, r2])
+        self.assertEqual(len(clusters), 2)
+        text = report.section_agent_counters(
+            [], [r1, r2], [], [r1, r2], clusters, [True, False])
+        # 1 net-new / 2 mined sessions = 0.50 (was 1.00 with the D8 bug)
+        self.assertIn("NET-NEW would-file per mined agent-session (cap 4): "
+                      "0.50", text)
+        self.assertIn("net-new vs main: 1 · already_seen_main: 1", text)
+
+    def test_density_denominator_scoped_by_project(self):
+        """Review P1-4b: same agent_file relpath in TWO projects = two mined
+        sessions, not one (canonical identity in the denominator)."""
+        r1 = _agent_row()
+        r2 = _agent_row(claim="Second wholly different finding about the "
+                              "shard planner splitting by key range",
+                        project_slug="-proj-beta")  # SAME agent_file relpath
+        clusters = report._cluster_paraphrases([r1, r2])
+        text = report.section_agent_counters(
+            [], [r1, r2], [], [r1, r2], clusters, [False, False])
+        # 2 net-new / 2 scoped sessions = 1.00 (bare-relpath bug gave 2.00)
+        self.assertIn("(cap 4): 1.00", text)
+
+    def test_latest_snapshot_by_ts_not_row_order(self):
+        """Review P2-5: concurrent drains append out of order — the latest
+        snapshot per project is the MAX agent-block ts, not the last row."""
+        newer = {"status": "ran", "ts": "2026-07-12T05:00:00.000Z",
+                 "project_slug": "-proj-alpha", "scanned": 1, "eligible": 1,
+                 "backlog": 7, "oldest_eligible_s": 700, "mined_files": 0,
+                 "tally": {}, "skipped_seen": 0, "recall_dropped": 0,
+                 "judge_calls": 0}
+        older_late_row = {"status": "ran", "ts": "2026-07-12T04:00:00.000Z",
+                          "project_slug": "-proj-alpha", "scanned": 1,
+                          "eligible": 1, "backlog": 2, "oldest_eligible_s": 9,
+                          "mined_files": 0, "tally": {}, "skipped_seen": 0,
+                          "recall_dropped": 0, "judge_calls": 0}
+        text = report.section_agent_counters(
+            [newer, older_late_row], [], [], [], [], [])
+        self.assertIn("backlog depth (latest per project, summed): 7", text)
+        self.assertIn("oldest eligible age: 700s", text)
+
+    def test_infra_health_tallies_rendered(self):
+        """Review P2-7: file-level failures must surface in the report, not
+        hide in the driver log — infra failure must not read as low yield."""
+        b = {"status": "ran", "ts": "2026-07-12T05:00:00.000Z",
+             "project_slug": "-proj-alpha", "scanned": 3, "eligible": 3,
+             "backlog": 0, "oldest_eligible_s": 0, "mined_files": 1,
+             "tally": {"miner_error": 2, "dark_append_failed": 1,
+                       "would_file": 1},
+             "skipped_seen": 0, "recall_dropped": 0, "judge_calls": 1}
+        text = report.section_agent_counters([b], [], [], [], [], [])
+        self.assertIn('"dark_append_failed": 1', text)
+        self.assertIn('"miner_error": 2', text)
+        self.assertNotIn('"would_file"', text.split("infra health")[1]
+                         .splitlines()[0])  # yield keys stay out of infra
 
     def test_counter_aggregation_sum_vs_latest_and_parent_bar(self):
         """Multiple projects/fires: sums for scanned/mined/judge; backlog +

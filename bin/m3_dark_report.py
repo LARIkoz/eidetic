@@ -417,10 +417,21 @@ def section_agent_counters(agent_runs, resolved, done_rows, dark_rows,
     sums = {k: 0 for k in ("scanned", "eligible", "mined_files",
                            "recall_dropped", "judge_calls", "skipped_seen")}
     latest_by_project = {}
+    infra = {}
     for b in agent_runs:
         for k in sums:
             sums[k] += b.get(k) or 0
-        latest_by_project[b.get("project_slug") or "?"] = b  # later fire wins
+        for k, v in (b.get("tally") or {}).items():
+            # Review P2-7: infra failures must not masquerade as poor yield.
+            if k in ("miner_error", "missing", "error", "dark_append_failed",
+                     "cache_record_failed", "ledger_append_failed"):
+                infra[k] = infra.get(k, 0) + v
+        slug = b.get("project_slug") or "?"
+        prev = latest_by_project.get(slug)
+        # Review P2-5: concurrent drains can append out of order — the latest
+        # SNAPSHOT is the max agent-block ts, not the last JSONL row.
+        if prev is None or (b.get("ts") or "") >= (prev.get("ts") or ""):
+            latest_by_project[slug] = b
     backlog_total = sum((b.get("backlog") or 0)
                         for b in latest_by_project.values())
     oldest_max = max([b.get("oldest_eligible_s") or 0
@@ -432,12 +443,17 @@ def section_agent_counters(agent_runs, resolved, done_rows, dark_rows,
         key = (f"{r.get('kind')}/{r.get('agent_kind') or '-'}"
                f"/{r.get('project_slug') or '-'}")
         per[key] = per.get(key, 0) + 1
-    mined_sessions = {r.get("agent_file") for r in dark_rows
-                      if r.get("agent_file")}
-    mined_sessions |= {d.get("agent_file") for d in done_rows
-                       if d.get("agent_file")}
+    # Review P1-4: canonical (project_slug, agent_file) identity — a bare
+    # relpath would merge same-relpath sessions across projects.
+    mined_sessions = {(r.get("project_slug") or "", r.get("agent_file"))
+                      for r in dark_rows if r.get("agent_file")}
+    mined_sessions |= {(d.get("project_slug") or "", d.get("agent_file"))
+                       for d in done_rows if d.get("agent_file")}
     net_new = sum(1 for t in tags if not t)
-    density = (len(clusters) / len(mined_sessions)) if mined_sessions else 0.0
+    # Review P1-4 / D8: already_seen_main clusters stay in the QUALITY
+    # denominator but are excluded from incremental density — the V5 bar is
+    # recomputed on NET-NEW items only.
+    density = (net_new / len(mined_sessions)) if mined_sessions else 0.0
     parents = {r.get("parent_session_id") for r in resolved
                if r.get("parent_session_id")}
     return "\n".join([
@@ -450,13 +466,16 @@ def section_agent_counters(agent_runs, resolved, done_rows, dark_rows,
         f"oldest eligible age: {oldest_max}s",
         f"recall_dropped: {sums['recall_dropped']} · judge calls: "
         f"{sums['judge_calls']} · skipped_seen (FR-8): {sums['skipped_seen']}",
+        f"infra health (file-level failures across fires): "
+        f"{json.dumps(infra, ensure_ascii=False, sort_keys=True)}",
         f"would-file per kind/agent_kind/project: "
         f"{json.dumps(per, ensure_ascii=False, sort_keys=True)}",
         f"knowledge items (clustered): {len(clusters)} · net-new vs main: "
         f"{net_new} · already_seen_main: {len(clusters) - net_new}",
-        f"UNIQUE would-file per mined agent-session (cap "
+        f"NET-NEW would-file per mined agent-session (cap "
         f"{_miner.MAX_CANDIDATES}): {density:.2f} — V5 bar ≥ 0.5 feeds "
-        f"kill/iterate regardless of keep-rate",
+        f"kill/iterate regardless of keep-rate (D8: already_seen_main "
+        f"excluded from the numerator)",
         f"distinct parent sessions with ≥1 definitive agent row: "
         f"{len(parents)} (accumulation bar: ≥ 20)",
     ])
@@ -523,25 +542,33 @@ def _run_agent_lane(ms, events, args):
     import m3_agent_lane as _lane
     dark = _read_jsonl(os.path.join(events, _lane.DARK_FILE))
     ledger_rows = _read_jsonl(os.path.join(events, _lane.LEDGER_FILE))
-    init_row = next((r for r in ledger_rows if r.get("type") == "init"), None)
     done_rows = [r for r in ledger_rows if r.get("type") == "done"]
+    # Review P1-3: the report inherits D6 fail-closed via the SAME runtime
+    # validator (one fact, one place) — a duplicate/non-first/malformed init
+    # must not silently produce gate metrics.
+    _floor_ns, _done_map, ledger_status = _lane.read_ledger(ms)
+    print(f"# M3 AGENT-lane dark-run report — {ms}")
+    if ledger_status != "ok":
+        print("!! LEDGER STATE LOST (missing/duplicate/non-first/malformed "
+              "init) — gate rendering SUPPRESSED (D6 fail-closed). Repair "
+              "the ledger from preserved evidence before reading any gate "
+              "numbers.")
+        print(f"raw rows on disk: agent dark {len(dark)} · ledger "
+              f"{len(ledger_rows)} (done {len(done_rows)})")
+        return
+    init_row = next(r for r in ledger_rows if r.get("type") == "init")
     main_dark = _read_jsonl(os.path.join(events, _acq.DARK_FILE))
     agent_runs = [r["agent"] for r in _driver_runs(events)
                   if isinstance(r.get("agent"), dict)]
-    window_start = (init_row or {}).get("ts") or ""
+    window_start = init_row.get("ts") or ""
     if window_start:  # the agent window starts at the authoritative init
         dark = [r for r in dark if (r.get("ts") or "") >= window_start]
         agent_runs = [b for b in agent_runs
                       if (b.get("ts") or "") >= window_start]
     resolved, health = _resolve_attempts(dark)
 
-    print(f"# M3 AGENT-lane dark-run report — {ms}")
-    if init_row is None:
-        print("!! LEDGER INIT MISSING (state_lost) — window start unknown; "
-              "showing all rows")
-    else:
-        print(f"window start (init floor): "
-              f"{init_row.get('mtime_floor') or init_row.get('ts')}")
+    print(f"window start (init floor): "
+          f"{init_row.get('mtime_floor') or init_row.get('ts')}")
     print(f"agent dark rows: {len(dark)} · agent fires: {len(agent_runs)} · "
           f"done files: {len(done_rows)}")
     print()

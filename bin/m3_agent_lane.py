@@ -51,7 +51,9 @@ not rows). Zero writes outside events/ until the agent-D5 gate (NFR-2).
 import argparse
 import json
 import os
+import shutil
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from glob import glob as _glob
@@ -110,12 +112,15 @@ def _append_ledger(memory_system, row):
 def read_ledger(memory_system):
     """→ (mtime_floor_ns, done_map, "ok") | (None, {}, "state_lost").
 
-    done_map: agent_file → MAX mtime_ns across that file's `done` rows
-    (delta 3 — reading any earlier row would re-queue the file every fire,
-    not once per advance). The init row must be the FIRST non-empty line and
-    the ONLY `init` in the file; anything else about it — missing ledger,
-    malformed first line, duplicate init — is state_lost (fail closed, D6).
-    Malformed `done` lines are skipped: fail toward re-mine (NFR-3)."""
+    done_map: (project_slug, agent_file) → MAX mtime_ns across that file's
+    `done` rows (delta 3 — reading any earlier row would re-queue the file
+    every fire, not once per advance). The key is the CANONICAL identity —
+    bare agent_file would let one project's done row silently suppress a
+    same-relpath file in another project (review P1-1). The init row must be
+    the FIRST non-empty line and the ONLY `init` in the file; anything else
+    about it — missing ledger, malformed first line, duplicate init — is
+    state_lost (fail closed, D6). Malformed `done` lines are skipped: fail
+    toward re-mine (NFR-3)."""
     try:
         with open(_ledger_path(memory_system), encoding="utf-8") as f:
             lines = [ln.strip() for ln in f if ln.strip()]
@@ -142,9 +147,9 @@ def read_ledger(memory_system):
             return None, {}, "state_lost"  # duplicate init
         if row.get("type") == "done" and row.get("agent_file") \
                 and isinstance(row.get("mtime_ns"), int):
-            af = row["agent_file"]
-            if row["mtime_ns"] > done.get(af, -1):
-                done[af] = row["mtime_ns"]
+            key = (str(row.get("project_slug") or ""), row["agent_file"])
+            if row["mtime_ns"] > done.get(key, -1):
+                done[key] = row["mtime_ns"]
     return floor, done, "ok"
 
 
@@ -170,9 +175,21 @@ def init_floor(memory_system, now_ns=None):
     except OSError as exc:
         return {"status": "error", "error": repr(exc)[:200]}
     try:
-        os.write(fd, data)
+        written = os.write(fd, data)
+    except OSError:
+        written = -1
     finally:
         os.close(fd)
+    if written != len(data):
+        # Review P2-6: a short write would report "initialized", leave a
+        # corrupt init occupying the O_EXCL path (state_lost + every retry
+        # refused). Remove the partial file so init can be retried.
+        try:
+            os.unlink(path)
+            return {"status": "error", "error": "short_write", "ledger": path}
+        except OSError:
+            return {"status": "error",
+                    "error": "short_write_partial_init_left", "ledger": path}
     return {"status": "initialized", "mtime_floor_ns": now_ns,
             "mtime_floor": row["mtime_floor"], "ledger": path}
 
@@ -189,10 +206,11 @@ def _classify(project_dir, path):
     return rel, parent_sid, ("workflow" if wf else "plain"), wf, stem
 
 
-def enumerate_eligible(project_dir, floor_ns, done_map, now_ns):
+def enumerate_eligible(project_dir, project_slug, floor_ns, done_map, now_ns):
     """One directory walk (NFR-5) → (selected ≤DRAIN_CAP newest-mtime-first,
     counters). Eligibility = the four FR-1 rules; `eligible` counts pre-cap,
-    `backlog` what this fire leaves behind."""
+    `backlog` what this fire leaves behind. done_map is keyed by the
+    canonical (project_slug, agent_file) identity (review P1-1)."""
     pattern = os.path.join(project_dir, "*", "subagents", "**", "agent-*.jsonl")
     scanned = []
     for p in _glob(pattern, recursive=True):
@@ -205,7 +223,8 @@ def enumerate_eligible(project_dir, floor_ns, done_map, now_ns):
         if m <= floor_ns:
             continue  # D6: pre-deploy files stay dark forever
         rel = os.path.relpath(p, project_dir)
-        if rel in done_map and m <= done_map[rel]:
+        done_ns = done_map.get((project_slug, rel))
+        if done_ns is not None and m <= done_ns:
             continue  # done at this mtime; a later advance re-queues (delta 3)
         if now_ns - m < QUIESCENCE_NS:
             continue  # warm — stays in the backlog (delta 4)
@@ -242,59 +261,78 @@ def _drain_one(path, mtime_ns, project_dir, slug, memory_system):
     if not os.path.isfile(path):  # deleted between select and drain
         bump("missing")
         return out
+    # ONE immutable snapshot feeds BOTH the miner and the quote gate (review
+    # P1-2): the live file can gain turns between two reads of `path`; the
+    # 30-turn window would then slide past the mined quote and cache a
+    # false-definitive would_reject that a later re-queue can never heal.
+    snap_fd, snap_path = tempfile.mkstemp(prefix=f"{stem}-snap-",
+                                          suffix=".jsonl")
+    os.close(snap_fd)
     try:
-        cands, meta = miner.mine_transcript(
-            path, session_id=stem, project_slug=slug)
-    except Exception:
-        bump("miner_error")
-        return out
-    if meta.get("error"):  # FR-2: transient even with candidates=[] — no done
-        bump("miner_error")
-        return out
-    out["mined"] = True
+        try:
+            shutil.copyfile(path, snap_path)
+        except OSError:  # vanished between isfile and copy — never fatal
+            bump("missing")
+            return out
+        try:
+            cands, meta = miner.mine_transcript(
+                snap_path, session_id=stem, project_slug=slug)
+        except Exception:
+            bump("miner_error")
+            return out
+        if meta.get("error"):  # FR-2: transient even with candidates=[]
+            bump("miner_error")
+            return out
+        out["mined"] = True
 
-    recalls = [c for c in cands
-               if (c.get("kind") or miner.KIND_RECALL) == miner.KIND_RECALL]
-    acq_cands = [c for c in cands if c.get("kind") in miner.ACQ_KINDS]
-    out["recall_dropped"] = len(recalls)  # delta 2: dropped + counted, loud
+        recalls = [c for c in cands
+                   if (c.get("kind") or miner.KIND_RECALL) == miner.KIND_RECALL]
+        acq_cands = [c for c in cands if c.get("kind") in miner.ACQ_KINDS]
+        out["recall_dropped"] = len(recalls)  # delta 2: dropped + counted
 
-    all_ok = True
-    if acq_cands:
-        seen = cache.load_seen(memory_system, scope)
-        fresh = []
-        for c in acq_cands:
-            k = cache.candidate_key(c)
-            if k in seen:
-                out["skipped_seen"] += 1
-                continue
-            fresh.append((c, k))
-        if fresh:
-            extra = {
-                "parent_session_id": parent_sid,
-                "agent_kind": agent_kind,
-                "workflow_id": wf_id,
-                "agent_file": rel,
-                "transcript_mtime": _iso_from_ns(mtime_ns),
-            }
-            stats = {"judge_calls": 0}
-            tally, outcomes = acq.process(
-                path, [c for c, _ in fresh], memory_system=memory_system,
-                dark_file=DARK_FILE, extra_fields=extra, stats=stats)
-            out["judge_calls"] = stats.get("judge_calls", 0)
-            for k2, v in tally.items():
-                bump(k2, v)
-            for (c, key), oc in zip(fresh, outcomes):
-                if oc in cache.DEFINITIVE:
-                    # Acknowledged cache record AFTER the acknowledged dark
-                    # append (order inherited, FR-3): a crash between the two
-                    # leaves a re-judgeable cache MISS, never a cache hit
-                    # hiding a missing dark row.
-                    if not cache.record(memory_system, scope, key,
-                                        c.get("kind"), oc):
-                        bump("cache_record_failed")
-                        all_ok = False
-                else:
-                    all_ok = False  # transient — the file retries later
+        all_ok = True
+        if acq_cands:
+            seen = cache.load_seen(memory_system, scope)
+            fresh = []
+            for c in acq_cands:
+                k = cache.candidate_key(c)
+                if k in seen:
+                    out["skipped_seen"] += 1
+                    continue
+                fresh.append((c, k))
+            if fresh:
+                extra = {
+                    "parent_session_id": parent_sid,
+                    "agent_kind": agent_kind,
+                    "workflow_id": wf_id,
+                    "agent_file": rel,
+                    "transcript_mtime": _iso_from_ns(mtime_ns),
+                }
+                stats = {"judge_calls": 0}
+                tally, outcomes = acq.process(
+                    snap_path, [c for c, _ in fresh],
+                    memory_system=memory_system,
+                    dark_file=DARK_FILE, extra_fields=extra, stats=stats)
+                out["judge_calls"] = stats.get("judge_calls", 0)
+                for k2, v in tally.items():
+                    bump(k2, v)
+                for (c, key), oc in zip(fresh, outcomes):
+                    if oc in cache.DEFINITIVE:
+                        # Acknowledged cache record AFTER the acknowledged
+                        # dark append (order inherited, FR-3): a crash between
+                        # the two leaves a re-judgeable cache MISS, never a
+                        # cache hit hiding a missing dark row.
+                        if not cache.record(memory_system, scope, key,
+                                            c.get("kind"), oc):
+                            bump("cache_record_failed")
+                            all_ok = False
+                    else:
+                        all_ok = False  # transient — the file retries later
+    finally:
+        try:
+            os.unlink(snap_path)
+        except OSError:
+            pass
     if all_ok:
         done_row = {"type": "done", "ts": _now_iso(), "agent_file": rel,
                     "session_id": stem, "project_slug": slug,
@@ -323,7 +361,7 @@ def drain(transcript, slug, memory_system):
         return block
     project_dir = os.path.dirname(os.path.abspath(transcript))
     selected, counters = enumerate_eligible(
-        project_dir, floor_ns, done_map, time.time_ns())
+        project_dir, slug, floor_ns, done_map, time.time_ns())
     block.update(counters)
     for path, mtime_ns in selected:
         try:
