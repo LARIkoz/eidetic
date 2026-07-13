@@ -210,6 +210,29 @@ class GateMathTest(_Base):
         self.assertIn(f"round: `{ROUND}`", text)
         self.assertIn("codex_cli/gpt-5.3-codex-spark", text)
 
+    def test_partial_coverage_can_never_emit_activation(self):
+        gate = comm.apply_coverage_gate(
+            comm.gate_math(self._mk(5, 0, 0)), total_items=269)
+        self.assertEqual(gate["verdict"], "smoke_only")
+        self.assertEqual(gate["provisional_verdict"], "activate")
+        self.assertEqual(gate["resolved"], 5)
+        self.assertEqual(gate["total_items"], 269)
+        text = comm.render_summary(self._mk(5, 0, 0), gate, "main")
+        self.assertIn("GATE VERDICT: SMOKE_ONLY", text)
+        self.assertIn("coverage: 5/269", text)
+        self.assertIn("решения пока нет", text)
+
+    def test_zero_coverage_stays_no_data(self):
+        gate = comm.apply_coverage_gate(comm.gate_math([]), total_items=269)
+        self.assertEqual(gate["verdict"], "no_data")
+        self.assertTrue(gate["partial"])
+
+    def test_full_coverage_preserves_gate_verdict(self):
+        gate = comm.apply_coverage_gate(
+            comm.gate_math(self._mk(7, 3, 0)), total_items=10)
+        self.assertEqual(gate["verdict"], "activate")
+        self.assertFalse(gate["partial"])
+
 
 class RoundIsolationTest(_Base):
     def test_old_model_rows_do_not_mix_with_new_round(self):
@@ -311,7 +334,7 @@ class ProviderProfileTest(unittest.TestCase):
             spark = comm._judges()["codex53spark"]
 
         self.assertIn("gpt-5.3-codex-spark", spark.argv)
-        self.assertIn('model_reasoning_effort="high"', spark.argv)
+        self.assertIn('model_reasoning_effort="xhigh"', spark.argv)
         self.assertIn('model_reasoning_summary="none"', spark.argv)
         self.assertIn("read-only", spark.argv)
         self.assertIn("--ephemeral", spark.argv)

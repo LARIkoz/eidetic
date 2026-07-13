@@ -14,7 +14,7 @@ OpenAI):
   gemini31  Gemini 3.1 Pro (High)   via agy-p (PTY wrapper, prompt on stdin)
   grok45    grok-4.5 @ max effort   via grok CLI (prompt-file, JSON output,
                                     file tools ENABLED for evidence checks)
-  codex53spark  gpt-5.3-codex-spark @ high via codex CLI, MAIN account. Exact
+  codex53spark  gpt-5.3-codex-spark @ xhigh via codex CLI, MAIN account. Exact
                                     route re-smoked live 2026-07-13 (rc=0,
                                     ROUTE_OK). `model_reasoning_summary=none`
                                     is pinned because Spark rejects detailed.
@@ -211,7 +211,7 @@ def _judges():
             argv=["codex", "-a", "never", "exec",
                   "--skip-git-repo-check", "-s", "read-only", "--ephemeral",
                   "--color", "never", "-m", "gpt-5.3-codex-spark",
-                  "-c", 'model_reasoning_effort="high"',
+                  "-c", 'model_reasoning_effort="xhigh"',
                   "-c", 'model_reasoning_summary="none"',
                   "-c", "features.codex_hooks=false", "-"],
             timeout=VOICE_TIMEOUT["codex53spark"]),
@@ -470,6 +470,20 @@ def gate_math(outcomes):
             "keep_rate": round(keep_rate, 4), "verdict": verdict}
 
 
+def apply_coverage_gate(gate, total_items):
+    """A partial commission can show provisional math but cannot activate."""
+    out = dict(gate)
+    total = max(0, int(total_items))
+    resolved = min(out.get("resolved", 0), total)
+    out["total_items"] = total
+    out["coverage_rate"] = round(resolved / total, 4) if total else 0.0
+    out["partial"] = resolved < total
+    if out["partial"] and resolved:
+        out["provisional_verdict"] = out["verdict"]
+        out["verdict"] = "smoke_only"
+    return out
+
+
 def render_summary(outcomes, gate, lane, rng=None,
                    round_id=DEFAULT_ROUND_ID, active_judges=None):
     rng = rng or random.Random(0)  # deterministic sampling for re-renders
@@ -492,6 +506,27 @@ def render_summary(outcomes, gate, lane, rng=None,
                          f"{r.get('evidence_note') or ''}")
         return "\n".join(lines)
 
+    coverage = (f"coverage: {gate['resolved']}/{gate['total_items']} "
+                f"({gate['coverage_rate']:.0%})") \
+        if "total_items" in gate else None
+    if gate.get("partial") and gate.get("resolved"):
+        gate_line = (
+            "## GATE VERDICT: SMOKE_ONLY "
+            f"(provisional math: {gate.get('provisional_verdict', '?').upper()}; "
+            "full decision disabled until every item has quorum)")
+        owner_line = (
+            "OWNER: решения пока нет — это partial smoke; продолжить окна до "
+            "полного quorum, затем применять D4.")
+    else:
+        gate_line = (
+            f"## GATE VERDICT: {gate['verdict'].upper()} "
+            f"(activate ≥{ACTIVATE_KEEP:.0%} keep AND dangerous ≤"
+            f"{DANGEROUS_BUDGET}; kill <{KILL_KEEP:.0%}; between → iterate)")
+        owner_line = (
+            "OWNER: одно слово — «включай» (activate) или «не верю» (тогда "
+            "iterate/разбор). Плюс правило D4: пост-фактум смена бюджета = "
+            "новый раунд, не ретро-пропуск.")
+
     lines = [
         f"# M3 commission summary — lane {lane}",
         "",
@@ -499,6 +534,10 @@ def render_summary(outcomes, gate, lane, rng=None,
         "roster: " + ", ".join(
             f"`{name}` ({_judge_model(name)})" for name in roster),
         "",
+    ]
+    if coverage:
+        lines += [coverage, ""]
+    lines += [
         f"items: {len(outcomes)} · resolved: {gate['resolved']} · "
         f"unresolved (quorum<{MIN_DEFINITIVE}, gate-excluded, loud): "
         f"{gate['unresolved']}",
@@ -506,9 +545,7 @@ def render_summary(outcomes, gate, lane, rng=None,
         f"{gate['noise']} · dangerous-wrong: {gate['dangerous_wrong']} "
         f"(budget (a): ≤{DANGEROUS_BUDGET}/round)",
         "",
-        f"## GATE VERDICT: {gate['verdict'].upper()} "
-        f"(activate ≥{ACTIVATE_KEEP:.0%} keep AND dangerous ≤"
-        f"{DANGEROUS_BUDGET}; kill <{KILL_KEEP:.0%}; between → iterate)",
+        gate_line,
         "",
         "## Dangerous-wrong (each with judge evidence)",
         ""]
@@ -528,9 +565,7 @@ def render_summary(outcomes, gate, lane, rng=None,
     lines += [
         "",
         "---",
-        "OWNER: одно слово — «включай» (activate) или «не верю» (тогда "
-        "iterate/разбор). Плюс правило D4: пост-фактум смена бюджета = новый "
-        "раунд, не ретро-пропуск.",
+        owner_line,
         "NB: verbatim claims/quotes — LOCAL material, never commit (NFR-4).",
     ]
     return "\n".join(lines)
@@ -586,7 +621,7 @@ def main():
 
     outcomes = resolve_items(items, ms, lane=args.lane, round_id=round_id,
                              active_judges=names)
-    gate = gate_math(outcomes)
+    gate = apply_coverage_gate(gate_math(outcomes), meta["items"])
     summary = render_summary(outcomes, gate, args.lane, round_id=round_id,
                              active_judges=names)
     out_path = os.path.join(_events_dir(ms), SUMMARY_FILE)
