@@ -14,15 +14,18 @@ OpenAI):
   gemini31  Gemini 3.1 Pro (High)   via agy-p (PTY wrapper, prompt on stdin)
   grok45    grok-4.5 @ max effort   via grok CLI (prompt-file, JSON output,
                                     file tools ENABLED for evidence checks)
-  codex55   gpt-5.5 @ high          via codex CLI, MAIN account (the same
-                                    account council voices run on — NOT spark,
-                                    whose pool is separate by config). The
-                                    owner picked "codex 5.3": retired for
-                                    ChatGPT accounts at the 5.6 rollout
-                                    (live 400, 07-12). Account #2 was tried
-                                    first and is a free tier with its usage
-                                    cap exhausted until Aug 8 (live-verified
-                                    same day) — main it is.
+  codex55   gpt-5.5 @ high          via codex CLI, MAIN account. The owner
+                                    picked "codex 5.3" (= spark, his daily
+                                    model) — CORRECTION 07-13: spark and bare
+                                    gpt-5.3-codex are not retired; they are
+                                    plan-gated. The account dropped to
+                                    `prolite` at the 07-10 10:47Z token
+                                    refresh (last spark OK 10:36Z — 11 min
+                                    before); under prolite both 5.3 ids 400
+                                    while 5.5/5.6 still serve. After the
+                                    subscription renews, re-smoke spark and
+                                    swap it in as this voice. Acc#2 dead end:
+                                    free tier, cap till Aug 8.
 
 Each judge is told to REFUTE the card against live evidence (repos, git,
 memory pages). Aggregation per item: `keep` needs ≥2/3 keep votes and zero
@@ -164,11 +167,11 @@ def _judges():
             auth_fail_marker="not authenticated",
             timeout=VOICE_TIMEOUT["grok45"]),
         # MAIN codex account — pinned model+effort (a judge voice must not
-        # float on a user-editable default). NOT spark (separate personal
-        # pool); NOT gpt-5.3-codex (retired for ChatGPT accounts at the 5.6
-        # rollout — live 400, 2026-07-12); NOT acc#2 (free tier, usage cap
-        # exhausted until Aug 8 — live-verified the same day). Parallelism 2:
-        # the councils' proven safe concurrent load on this account.
+        # float on a user-editable default). Spark/5.3 are PLAN-GATED off
+        # this account since 07-10 (prolite), not retired — swap spark in
+        # after the subscription renews (owner's original pick). Acc#2 =
+        # free tier, cap till Aug 8. Parallelism 2: the councils' proven
+        # safe concurrent load on this account.
         "codex55": Provider(
             name="codex55", bin="codex", family="openai",
             argv=["codex", "exec", "--skip-git-repo-check",

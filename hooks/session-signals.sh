@@ -238,6 +238,23 @@ run_codex_extraction() {
     rm -rf "$out_dir"
 }
 
+run_codex_extraction_with_fallback() {
+    # Owner call 2026-07-13: the configured model (spark) stays PRIMARY — it
+    # comes back by itself with the renewed subscription; gpt-5.4-mini is the
+    # AUTOMATIC fallback so a plan-gated 400 (prolite since 07-10 silently
+    # killed signals for 3 days) degrades to a cheaper model instead of the
+    # silent-EMPTY loss. Loud stderr marker on every fallback use. Disable
+    # with an explicitly empty EIDETIC_SIGNAL_CODEX_FALLBACK_MODEL.
+    local prompt_file="$1" rc=0
+    run_codex_extraction "$prompt_file" && return 0 || rc=$?
+    local fb="${EIDETIC_SIGNAL_CODEX_FALLBACK_MODEL-gpt-5.4-mini}"
+    [ -n "$fb" ] || return "$rc"
+    [ "$fb" != "$SIGNAL_CODEX_MODEL" ] || return "$rc"
+    echo "session-signals: codex model '$SIGNAL_CODEX_MODEL' failed (rc=$rc) — retrying with fallback '$fb'" >&2
+    SIGNAL_CODEX_MODEL="$fb" EIDETIC_SIGNAL_CODEX_CLI_MODEL="$fb" \
+        run_codex_extraction "$prompt_file"
+}
+
 # Read transcript path from stdin JSON
 INPUT=$(cat)
 TRANSCRIPT=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('transcript_path',''))" 2>/dev/null || echo "")
@@ -372,7 +389,7 @@ if [ -z "${EIDETIC_SIGNAL_SKIP_CLAUDE:-}" ] && CLAUDE_RESULT=$(run_claude_extrac
     RESULT=$(filter_signal_lines "$CLAUDE_RESULT")
 fi
 if is_empty_result "$RESULT"; then
-    CODEX_RESULT=$(run_codex_extraction "$PROMPT_FILE" || echo "EMPTY")
+    CODEX_RESULT=$(run_codex_extraction_with_fallback "$PROMPT_FILE" || echo "EMPTY")
     RESULT=$(filter_signal_lines "$CODEX_RESULT")
 fi
 rm -f "$PROMPT_FILE"
