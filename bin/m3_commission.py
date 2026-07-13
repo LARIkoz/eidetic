@@ -14,18 +14,10 @@ OpenAI):
   gemini31  Gemini 3.1 Pro (High)   via agy-p (PTY wrapper, prompt on stdin)
   grok45    grok-4.5 @ max effort   via grok CLI (prompt-file, JSON output,
                                     file tools ENABLED for evidence checks)
-  codex55   gpt-5.5 @ high          via codex CLI, MAIN account. The owner
-                                    picked "codex 5.3" (= spark, his daily
-                                    model) — CORRECTION 07-13: spark and bare
-                                    gpt-5.3-codex are not retired; they are
-                                    plan-gated. The account dropped to
-                                    `prolite` at the 07-10 10:47Z token
-                                    refresh (last spark OK 10:36Z — 11 min
-                                    before); under prolite both 5.3 ids 400
-                                    while 5.5/5.6 still serve. After the
-                                    subscription renews, re-smoke spark and
-                                    swap it in as this voice. Acc#2 dead end:
-                                    free tier, cap till Aug 8.
+  codex53spark  gpt-5.3-codex-spark @ high via codex CLI, MAIN account. Exact
+                                    route re-smoked live 2026-07-13 (rc=0,
+                                    ROUTE_OK). `model_reasoning_summary=none`
+                                    is pinned because Spark rejects detailed.
 
 Each judge is told to REFUTE the card against live evidence (repos, git,
 memory pages). Aggregation per item: `keep` needs ≥2/3 keep votes and zero
@@ -37,8 +29,9 @@ gate-excluded). Fail-toward-reject throughout.
 Transport reuses cli-council's `council.providers.invoke` (one fact, one
 place for PTY/auth-preflight/prompt-file/extract quirks); the commission owns
 only its judge-mode Provider profiles (tools ON — councils deliberately deny
-them). Verdicts append to `events/m3_commission.jsonl` (resume-safe: an
-(item, judge) pair with an ok row is never re-asked); raw judge outputs to
+them). Verdicts append to `events/m3_commission.jsonl` (resume-safe within an
+exact round: an (round, item, judge) tuple with an ok row is never re-asked);
+raw judge outputs to
 `events/m3_commission_raw.jsonl`; the owner page to
 `events/m3_commission_summary.md`. Everything under events/ is LOCAL material
 (NFR-4). ZERO writes outside events/ — the commission marks, activation stays
@@ -78,10 +71,33 @@ MIN_DEFINITIVE = 2       # below → unresolved, gate-excluded, loud
 ACTIVATE_KEEP = 0.70     # D4 math, unchanged
 KILL_KEEP = 0.50
 DANGEROUS_BUDGET = 1     # frozen option (a), 2026-07-12
+DEFAULT_ROUND_ID = "m3-d5-spark-v1"
+DEFAULT_JUDGE_NAMES = ("gemini31", "grok45", "codex53spark")
+DEFAULT_WINDOW_ITEMS = 5
+VOICE_ERROR_CIRCUIT = 2
+
+JUDGE_MODELS = {
+    "gemini31": "antigravity_cli/gemini-3.1-pro-high",
+    "grok45": "grok_cli/grok-4.5",
+    "codex53spark": "codex_cli/gpt-5.3-codex-spark",
+}
 
 # Per-voice call ceilings and parallelism (agy is the slowest house).
-VOICE_TIMEOUT = {"gemini31": 600.0, "grok45": 600.0, "codex55": 600.0}
-VOICE_PARALLEL = {"gemini31": 2, "grok45": 2, "codex55": 2}
+VOICE_TIMEOUT = {
+    "gemini31": 600.0,
+    "grok45": 600.0,
+    "codex53spark": 600.0,
+}
+VOICE_PARALLEL = {
+    # Antigravity and Spark are admitted here as attended single-shot routes;
+    # do not turn either subscription CLI into an unbounded batch surface.
+    "gemini31": 1,
+    "grok45": 2,
+    # Only single-call liveness is currently proven for Spark in this task.
+    "codex53spark": 1,
+}
+
+_ROUND_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 PROMPT = """You are one independent judge on a 3-model commission verifying knowledge cards mined from coding-session transcripts before they enter a persistent memory wiki. Your job is to try to REFUTE the card against the LIVE evidence on this machine.
 
@@ -114,6 +130,25 @@ def _events_dir(memory_system):
 
 def _now_iso():
     return _LC._recorded_at() if _LC else ""
+
+
+def _validate_round_id(round_id):
+    if not isinstance(round_id, str) or not _ROUND_ID_RE.fullmatch(round_id):
+        raise ValueError(
+            "round_id must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+    return round_id
+
+
+def _judge_model(judge_name):
+    return JUDGE_MODELS.get(judge_name, judge_name)
+
+
+def _roster_matches(row, active_judges):
+    """A subset smoke is not evidence for a full-roster commission."""
+    roster = row.get("roster")
+    active = tuple(active_judges)
+    return isinstance(roster, list) and len(roster) == len(active) and \
+        set(roster) == set(active)
 
 
 def _append(memory_system, fname, row):
@@ -166,18 +201,20 @@ def _judges():
             auth_check=["grok", "models"],
             auth_fail_marker="not authenticated",
             timeout=VOICE_TIMEOUT["grok45"]),
-        # MAIN codex account — pinned model+effort (a judge voice must not
-        # float on a user-editable default). Spark/5.3 are PLAN-GATED off
-        # this account since 07-10 (prolite), not retired — swap spark in
-        # after the subscription renews (owner's original pick). Acc#2 =
-        # free tier, cap till Aug 8. Parallelism 2: the councils' proven
-        # safe concurrent load on this account.
-        "codex55": Provider(
-            name="codex55", bin="codex", family="openai",
-            argv=["codex", "exec", "--skip-git-repo-check",
-                  "-c", 'model="gpt-5.5"',
-                  "-c", "model_reasoning_effort=high", "-"],
-            timeout=VOICE_TIMEOUT["codex55"]),
+        # MAIN codex account — owner-picked Spark daily route. Pin every
+        # relevant knob so a user-editable default/profile cannot silently
+        # change the judge identity. Read-only + ephemeral prevents a judge
+        # from mutating evidence or polluting persistent Codex history; its
+        # own hooks are disabled to avoid the memory system observing itself.
+        "codex53spark": Provider(
+            name="codex53spark", bin="codex", family="openai",
+            argv=["codex", "-a", "never", "exec",
+                  "--skip-git-repo-check", "-s", "read-only", "--ephemeral",
+                  "--color", "never", "-m", "gpt-5.3-codex-spark",
+                  "-c", 'model_reasoning_effort="high"',
+                  "-c", 'model_reasoning_summary="none"',
+                  "-c", "features.codex_hooks=false", "-"],
+            timeout=VOICE_TIMEOUT["codex53spark"]),
     }
 
 
@@ -224,8 +261,13 @@ def build_prompt(item):
     )
 
 
-def load_done(memory_system, lane):
-    """(item_key, judge) pairs with an ok verdict row — never re-asked."""
+def load_done(memory_system, lane, round_id=DEFAULT_ROUND_ID,
+              active_judges=None):
+    """(item_key, judge) pairs with an ok row in this exact round/roster."""
+    round_id = _validate_round_id(round_id)
+    active_roster = tuple(active_judges) \
+        if active_judges is not None else None
+    active = set(active_roster) if active_roster is not None else None
     done = set()
     path = os.path.join(_events_dir(memory_system), VERDICTS_FILE)
     try:
@@ -239,8 +281,14 @@ def load_done(memory_system, lane):
                 except Exception:
                     continue
                 if isinstance(row, dict) and row.get("ok") and \
-                        row.get("lane") == lane and row.get("item_key") \
-                        and row.get("judge"):
+                        row.get("lane") == lane and \
+                        row.get("round_id") == round_id and \
+                        row.get("item_key") and row.get("judge") and \
+                        row.get("judge_model") == \
+                        _judge_model(row.get("judge")) and \
+                        (active is None or (
+                            row.get("judge") in active and
+                            _roster_matches(row, active_roster))):
                     done.add((row["item_key"], row["judge"]))
     except OSError:
         pass
@@ -248,64 +296,116 @@ def load_done(memory_system, lane):
 
 
 def judge_items(items, memory_system, judges=None, lane="main",
-                parallel=None):
-    """Fan (item × judge) out with per-voice parallelism caps; append one
-    verdict row per completed ask. Resume-safe; a voice failure is a transient
-    row (ok=false) and re-asked on the next run. → counters dict."""
+                parallel=None, round_id=DEFAULT_ROUND_ID,
+                window_items=DEFAULT_WINDOW_ITEMS):
+    """Judge bounded item windows with per-voice parallelism caps.
+
+    A voice with repeated transport failures is circuit-broken for the rest of
+    this process; its transient rows are re-asked on the next run. This keeps a
+    provider outage from consuming the entire commission. → counters dict.
+    """
+    round_id = _validate_round_id(round_id)
+    if not isinstance(window_items, int) or window_items < 1:
+        raise ValueError("window_items must be a positive integer")
+    items = list(items)
     providers = judges if judges is not None else _judges()
-    done = load_done(memory_system, lane)
+    roster = tuple(providers)
+    done = load_done(memory_system, lane, round_id=round_id,
+                     active_judges=roster)
     sems = {name: threading.BoundedSemaphore(
         (parallel or VOICE_PARALLEL).get(name, 2)) for name in providers}
-    tasks = [(it, name) for it in items for name in providers
-             if (it["key"], name) not in done]
+    pending = sum(1 for it in items for name in providers
+                  if (it["key"], name) not in done)
     counters = {"asked": 0, "ok": 0, "voice_error": 0, "parse_fail": 0,
-                "skipped_done": len(items) * len(providers) - len(tasks)}
+                "skipped_done": len(items) * len(providers) - pending,
+                "skipped_circuit": 0, "windows": 0, "circuit_open": 0}
 
     def one(it, name):
         prov = providers[name]
         timeout = VOICE_TIMEOUT.get(name, 600.0)
-        with sems[name]:
-            ok, text = _invoke_voice(name, prov, build_prompt(it), timeout)
+        try:
+            with sems[name]:
+                ok, text = _invoke_voice(name, prov, build_prompt(it), timeout)
+        except Exception as exc:
+            ok, text = False, f"{type(exc).__name__}: {exc}"
         _append(memory_system, RAW_FILE, {
-            "ts": _now_iso(), "lane": lane, "item_key": it["key"],
-            "judge": name, "ok": ok, "raw": (text or "")[:20000]})
+            "ts": _now_iso(), "lane": lane, "round_id": round_id,
+            "roster": list(roster), "item_key": it["key"],
+            "judge": name, "judge_model": _judge_model(name),
+            "ok": ok, "raw": (text or "")[:20000]})
         if not ok:
             _append(memory_system, VERDICTS_FILE, {
-                "ts": _now_iso(), "lane": lane, "item_key": it["key"],
-                "judge": name, "ok": False, "error": (text or "")[:300]})
+                "ts": _now_iso(), "lane": lane, "round_id": round_id,
+                "roster": list(roster), "item_key": it["key"],
+                "judge": name, "judge_model": _judge_model(name),
+                "ok": False, "error": (text or "")[:300]})
             return "voice_error"
         v = parse_verdict(text)
         if v is None:
             _append(memory_system, VERDICTS_FILE, {
-                "ts": _now_iso(), "lane": lane, "item_key": it["key"],
-                "judge": name, "ok": False, "error": "parse_fail"})
+                "ts": _now_iso(), "lane": lane, "round_id": round_id,
+                "roster": list(roster), "item_key": it["key"],
+                "judge": name, "judge_model": _judge_model(name),
+                "ok": False, "error": "parse_fail"})
             return "parse_fail"
         _append(memory_system, VERDICTS_FILE, {
-            "ts": _now_iso(), "lane": lane, "item_key": it["key"],
-            "judge": name, "ok": True, "verdict": v["verdict"],
+            "ts": _now_iso(), "lane": lane, "round_id": round_id,
+            "roster": list(roster), "item_key": it["key"],
+            "judge": name, "judge_model": _judge_model(name),
+            "ok": True, "verdict": v["verdict"],
             "confidence": v.get("confidence"),
             "evidence_ref": str(v.get("evidence_ref") or "")[:300],
             "evidence_note": str(v.get("evidence_note") or "")[:500],
             "reason": str(v.get("reason") or "")[:500]})
         return "ok"
 
-    if tasks:
-        workers = sum((parallel or VOICE_PARALLEL).get(n, 2)
-                      for n in providers)
+    workers = sum((parallel or VOICE_PARALLEL).get(n, 2)
+                  for n in providers)
+    circuited = set()
+    failure_streak = {name: 0 for name in providers}
+    for start in range(0, len(items), window_items):
+        window = items[start:start + window_items]
+        eligible = [(it, name) for it in window for name in providers
+                    if (it["key"], name) not in done]
+        tasks = [(it, name) for it, name in eligible
+                 if name not in circuited]
+        counters["skipped_circuit"] += len(eligible) - len(tasks)
+        if not tasks:
+            continue
+        counters["windows"] += 1
+        statuses = {name: [] for name in providers}
         with concurrent.futures.ThreadPoolExecutor(
                 max_workers=max(1, workers)) as ex:
-            futs = [ex.submit(one, it, name) for it, name in tasks]
+            futs = {ex.submit(one, it, name): name for it, name in tasks}
             for f in concurrent.futures.as_completed(futs):
+                name = futs[f]
                 counters["asked"] += 1
                 try:
-                    counters[f.result()] += 1
+                    status = f.result()
                 except Exception:
-                    counters["voice_error"] += 1
+                    status = "voice_error"
+                counters[status] += 1
+                statuses[name].append(status)
+        for name, voice_statuses in statuses.items():
+            if not voice_statuses:
+                continue
+            if all(status == "voice_error" for status in voice_statuses):
+                failure_streak[name] += len(voice_statuses)
+            else:
+                failure_streak[name] = 0
+            if failure_streak[name] >= VOICE_ERROR_CIRCUIT:
+                circuited.add(name)
+        counters["circuit_open"] = len(circuited)
     return counters
 
 
-def resolve_items(items, memory_system, lane="main"):
+def resolve_items(items, memory_system, lane="main",
+                  round_id=DEFAULT_ROUND_ID, active_judges=None):
     """Aggregate verdict rows → per-item outcome (brief rules)."""
+    round_id = _validate_round_id(round_id)
+    active_roster = tuple(DEFAULT_JUDGE_NAMES if active_judges is None
+                          else active_judges)
+    active = set(active_roster)
     rows = []
     path = os.path.join(_events_dir(memory_system), VERDICTS_FILE)
     try:
@@ -319,7 +419,11 @@ def resolve_items(items, memory_system, lane="main"):
                 except Exception:
                     continue
                 if isinstance(r, dict) and r.get("ok") and \
-                        r.get("lane") == lane:
+                        r.get("lane") == lane and \
+                        r.get("round_id") == round_id and \
+                        r.get("judge") in active and \
+                        r.get("judge_model") == _judge_model(r.get("judge")) and \
+                        _roster_matches(r, active_roster):
                     rows.append(r)
     except OSError:
         pass
@@ -366,8 +470,11 @@ def gate_math(outcomes):
             "keep_rate": round(keep_rate, 4), "verdict": verdict}
 
 
-def render_summary(outcomes, gate, lane, rng=None):
+def render_summary(outcomes, gate, lane, rng=None,
+                   round_id=DEFAULT_ROUND_ID, active_judges=None):
     rng = rng or random.Random(0)  # deterministic sampling for re-renders
+    roster = tuple(DEFAULT_JUDGE_NAMES if active_judges is None
+                   else active_judges)
     keeps = [o for o in outcomes if o["outcome"] == "keep"]
     noises = [o for o in outcomes if o["outcome"] == "noise"]
     dangers = [o for o in outcomes if o["outcome"] == "dangerous_wrong"]
@@ -387,6 +494,10 @@ def render_summary(outcomes, gate, lane, rng=None):
 
     lines = [
         f"# M3 commission summary — lane {lane}",
+        "",
+        f"round: `{round_id}`",
+        "roster: " + ", ".join(
+            f"`{name}` ({_judge_model(name)})" for name in roster),
         "",
         f"items: {len(outcomes)} · resolved: {gate['resolved']} · "
         f"unresolved (quorum<{MIN_DEFINITIVE}, gate-excluded, loud): "
@@ -433,10 +544,20 @@ def main():
                     help="judge only the first N items (smoke)")
     ap.add_argument("--judges", default="",
                     help="csv subset/override, e.g. gemini31,grok45")
+    ap.add_argument("--round-id", default=DEFAULT_ROUND_ID,
+                    help="stable append-only commission round identifier")
+    ap.add_argument("--window-items", type=int, default=DEFAULT_WINDOW_ITEMS,
+                    help="items per attended provider window (default: 5)")
     ap.add_argument("--summary-only", action="store_true",
                     help="recompute aggregation + summary from existing "
                          "verdict rows; no CLI calls")
     args = ap.parse_args()
+    try:
+        round_id = _validate_round_id(args.round_id)
+    except ValueError as exc:
+        ap.error(str(exc))
+    if args.window_items < 1:
+        ap.error("--window-items must be a positive integer")
     ms = args.memory_system or os.environ.get(
         "EIDETIC_MEMORY_SYSTEM", os.path.expanduser("~/.claude/memory-system"))
 
@@ -446,20 +567,28 @@ def main():
     print(json.dumps({"stage": "collect", **meta,
                       "judged_now": len(items)}, ensure_ascii=False))
 
-    if not args.summary_only:
-        judges = _judges()
-        if args.judges:
-            names = [n.strip() for n in args.judges.split(",") if n.strip()]
-            unknown = [n for n in names if n not in judges]
-            if unknown:
-                ap.error(f"unknown judges: {unknown}")
-            judges = {n: judges[n] for n in names}
-        counters = judge_items(items, ms, judges=judges, lane=args.lane)
-        print(json.dumps({"stage": "judge", **counters}, ensure_ascii=False))
+    names = [n.strip() for n in args.judges.split(",") if n.strip()] \
+        if args.judges else list(DEFAULT_JUDGE_NAMES)
+    if not names:
+        ap.error("--judges must name at least one judge")
+    unknown = [n for n in names if n not in DEFAULT_JUDGE_NAMES]
+    if unknown:
+        ap.error(f"unknown judges: {unknown}")
 
-    outcomes = resolve_items(items, ms, lane=args.lane)
+    if not args.summary_only:
+        all_judges = _judges()
+        judges = {n: all_judges[n] for n in names}
+        counters = judge_items(items, ms, judges=judges, lane=args.lane,
+                               round_id=round_id,
+                               window_items=args.window_items)
+        print(json.dumps({"stage": "judge", "round_id": round_id,
+                          **counters}, ensure_ascii=False))
+
+    outcomes = resolve_items(items, ms, lane=args.lane, round_id=round_id,
+                             active_judges=names)
     gate = gate_math(outcomes)
-    summary = render_summary(outcomes, gate, args.lane)
+    summary = render_summary(outcomes, gate, args.lane, round_id=round_id,
+                             active_judges=names)
     out_path = os.path.join(_events_dir(ms), SUMMARY_FILE)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(summary + "\n")

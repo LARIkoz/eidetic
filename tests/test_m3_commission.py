@@ -11,7 +11,8 @@ Safety ACs baked in:
     downgrades to a noise vote (one flaky judge cannot kill a round).
   * quorum: <2 definitive votes = unresolved — loud and gate-EXCLUDED,
     never silently kept or dropped.
-  * resume: an (item, judge) pair with an ok row is never re-asked.
+  * resume: a (round, item, judge) tuple with an ok row is never re-asked.
+  * round/roster isolation: historic models cannot leak into a new commission.
   * gate math = D4 unchanged (≥70% keep AND dangerous ≤1 → activate;
     <50% → kill; between → iterate).
   * zero writes outside events/.
@@ -22,6 +23,7 @@ import os
 import shutil
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -32,6 +34,7 @@ import m3_commission as comm  # noqa: E402
 import m3_dark_report as report  # noqa: E402
 
 JUDGES = {"gemini31": object(), "grok45": object(), "codex53": object()}
+ROUND = "test-round-v1"
 
 
 def _item(key="k1", claim=None):
@@ -70,10 +73,12 @@ class _Base(unittest.TestCase):
             return a
         with mock.patch.object(comm, "_invoke_voice", side_effect=fake):
             return comm.judge_items(items, self.ms, judges=JUDGES,
-                                    lane="main")
+                                    lane="main", round_id=ROUND)
 
     def _outcomes(self, items):
-        return comm.resolve_items(items, self.ms, lane="main")
+        return comm.resolve_items(items, self.ms, lane="main",
+                                  round_id=ROUND,
+                                  active_judges=JUDGES)
 
 
 class QuorumTest(_Base):
@@ -143,7 +148,8 @@ class ResumeTest(_Base):
             calls.append(name)
             return True, _verdict("noise")
         with mock.patch.object(comm, "_invoke_voice", side_effect=fake):
-            c2 = comm.judge_items(items, self.ms, judges=JUDGES, lane="main")
+            c2 = comm.judge_items(items, self.ms, judges=JUDGES, lane="main",
+                                  round_id=ROUND)
         self.assertEqual(calls, ["grok45"])  # only the transient re-asked
         self.assertEqual(c2["skipped_done"], 2)
         o = self._outcomes(items)[0]
@@ -155,7 +161,8 @@ class ResumeTest(_Base):
                               "grok45": (True, _verdict("keep")),
                               "codex53": (True, _verdict("keep"))})
         self.assertEqual(c["parse_fail"], 1)
-        done = comm.load_done(self.ms, "main")
+        done = comm.load_done(self.ms, "main", round_id=ROUND,
+                              active_judges=JUDGES)
         self.assertNotIn(("k1", "gemini31"), done)  # will be re-asked
         self.assertEqual(self._outcomes(items)[0]["outcome"], "keep")
 
@@ -195,11 +202,158 @@ class GateMathTest(_Base):
             {"judge": "codex53", "evidence_ref": "cfg.toml:3",
              "evidence_note": "current config says otherwise"}]
         gate = comm.gate_math(out)
-        text = comm.render_summary(out, gate, "main")
+        text = comm.render_summary(out, gate, "main", round_id=ROUND)
         self.assertIn("GATE VERDICT", text)
         self.assertIn("cfg.toml:3", text)
         self.assertIn("OWNER:", text)
         self.assertIn("dangerous-wrong: 1", text)
+        self.assertIn(f"round: `{ROUND}`", text)
+        self.assertIn("codex_cli/gpt-5.3-codex-spark", text)
+
+
+class RoundIsolationTest(_Base):
+    def test_old_model_rows_do_not_mix_with_new_round(self):
+        items = [_item()]
+        old = {"gemini31": object(), "grok45": object(),
+               "codex55": object()}
+        new = {"gemini31": object(), "grok45": object(),
+               "codex53spark": object()}
+
+        def run(judges, round_id, verdicts):
+            def fake(name, prov, prompt, timeout):
+                return True, _verdict(verdicts[name])
+            with mock.patch.object(comm, "_invoke_voice", side_effect=fake):
+                comm.judge_items(items, self.ms, judges=judges, lane="main",
+                                 round_id=round_id)
+
+        run(old, "legacy-gpt55", {n: "noise" for n in old})
+        run(new, "spark-v1", {"gemini31": "keep", "grok45": "keep",
+                              "codex53spark": "noise"})
+        out = comm.resolve_items(items, self.ms, lane="main",
+                                 round_id="spark-v1",
+                                 active_judges=new)
+        self.assertEqual(out[0]["outcome"], "keep")
+        self.assertEqual({v["judge"] for v in out[0]["votes"]}, set(new))
+        self.assertNotIn("codex55", {v["judge"] for v in out[0]["votes"]})
+
+    def test_legacy_row_without_round_is_ignored(self):
+        path = os.path.join(self.ms, "events", comm.VERDICTS_FILE)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"lane": "main", "item_key": "k1",
+                                "judge": "codex55", "ok": True,
+                                "verdict": "dangerous_wrong",
+                                "evidence_ref": "cfg.toml:1"}) + "\n")
+        out = comm.resolve_items([_item()], self.ms, lane="main",
+                                 round_id=ROUND,
+                                 active_judges=JUDGES)
+        self.assertEqual(out[0]["outcome"], "unresolved")
+        self.assertEqual(out[0]["votes"], [])
+
+    def test_wrong_model_identity_in_same_round_is_ignored(self):
+        items = [_item()]
+        self._run(items, {name: (True, _verdict("keep")) for name in JUDGES})
+        path = os.path.join(self.ms, "events", comm.VERDICTS_FILE)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"lane": "main", "round_id": ROUND,
+                                "item_key": "k1", "judge": "codex53",
+                                "judge_model": "codex_cli/gpt-5.5",
+                                "ok": True, "verdict": "dangerous_wrong",
+                                "evidence_ref": "cfg.toml:1"}) + "\n")
+        out = self._outcomes(items)
+        self.assertEqual(out[0]["outcome"], "keep")
+        self.assertEqual(len(out[0]["votes"]), 3)
+
+    def test_subset_smoke_in_same_round_is_not_full_roster_evidence(self):
+        items = [_item()]
+        subset = {"codex53": object()}
+        with mock.patch.object(
+                comm, "_invoke_voice",
+                return_value=(True, _verdict("dangerous_wrong",
+                                             ref="cfg.toml:1"))):
+            comm.judge_items(items, self.ms, judges=subset, lane="main",
+                             round_id=ROUND)
+        done = comm.load_done(self.ms, "main", round_id=ROUND,
+                              active_judges=JUDGES)
+        self.assertNotIn(("k1", "codex53"), done)
+        out = self._outcomes(items)
+        self.assertEqual(out[0]["outcome"], "unresolved")
+        self.assertEqual(out[0]["votes"], [])
+
+    def test_rows_record_round_roster_and_model_identity(self):
+        items = [_item()]
+        self._run(items, {name: (True, _verdict("keep")) for name in JUDGES})
+        path = os.path.join(self.ms, "events", comm.VERDICTS_FILE)
+        with open(path, encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual({r["round_id"] for r in rows}, {ROUND})
+        self.assertTrue(all(r["roster"] == list(JUDGES) for r in rows))
+        self.assertEqual({r["judge_model"] for r in rows},
+                         {comm._judge_model(name) for name in JUDGES})
+
+    def test_invalid_round_id_fails_closed(self):
+        with self.assertRaises(ValueError):
+            comm.judge_items([_item()], self.ms, judges=JUDGES,
+                             round_id="../escape")
+
+
+class ProviderProfileTest(unittest.TestCase):
+    def test_spark_route_is_exact_read_only_and_ephemeral(self):
+        class Provider:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        package = types.ModuleType("council")
+        providers = types.ModuleType("council.providers")
+        providers.Provider = Provider
+        package.providers = providers
+        with mock.patch.dict(sys.modules, {
+                "council": package, "council.providers": providers}):
+            spark = comm._judges()["codex53spark"]
+
+        self.assertIn("gpt-5.3-codex-spark", spark.argv)
+        self.assertIn('model_reasoning_effort="high"', spark.argv)
+        self.assertIn('model_reasoning_summary="none"', spark.argv)
+        self.assertIn("read-only", spark.argv)
+        self.assertIn("--ephemeral", spark.argv)
+        self.assertIn("features.codex_hooks=false", spark.argv)
+        self.assertNotIn("gpt-5.5", " ".join(spark.argv))
+
+
+class WindowingTest(_Base):
+    def test_items_are_processed_in_bounded_windows(self):
+        items = [_item(f"k{i}", claim=f"Specific claim number {i} with "
+                       "enough detail to be judged independently")
+                 for i in range(5)]
+        judges = {"codex53": object()}
+        with mock.patch.object(
+                comm, "_invoke_voice",
+                return_value=(True, _verdict("keep"))):
+            counters = comm.judge_items(
+                items, self.ms, judges=judges, lane="main", round_id=ROUND,
+                window_items=2)
+        self.assertEqual(counters["asked"], 5)
+        self.assertEqual(counters["windows"], 3)
+        self.assertEqual(counters["circuit_open"], 0)
+
+    def test_repeated_voice_errors_open_circuit_until_next_run(self):
+        items = [_item(f"k{i}", claim=f"Specific claim number {i} with "
+                       "enough detail to be judged independently")
+                 for i in range(5)]
+        judges = {"codex53": object()}
+        with mock.patch.object(
+                comm, "_invoke_voice", return_value=(False, "timeout")):
+            counters = comm.judge_items(
+                items, self.ms, judges=judges, lane="main", round_id=ROUND,
+                window_items=1)
+        self.assertEqual(counters["asked"], 2)
+        self.assertEqual(counters["voice_error"], 2)
+        self.assertEqual(counters["skipped_circuit"], 3)
+        self.assertEqual(counters["circuit_open"], 1)
+
+    def test_invalid_window_size_fails_closed(self):
+        with self.assertRaises(ValueError):
+            comm.judge_items([_item()], self.ms, judges=JUDGES,
+                             lane="main", round_id=ROUND, window_items=0)
 
 
 class ZeroWriteTest(_Base):
