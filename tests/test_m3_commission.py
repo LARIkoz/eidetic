@@ -11,8 +11,12 @@ Safety ACs baked in:
     downgrades to a noise vote (one flaky judge cannot kill a round).
   * quorum: <2 definitive votes = unresolved — loud and gate-EXCLUDED,
     never silently kept or dropped.
-  * resume: a (round, item, judge) tuple with an ok row is never re-asked.
+  * resume: an exact (round, item, judge, effort, phase) ok tuple is never
+    re-asked; transient attempts are durably capped.
   * round/roster isolation: historic models cannot leak into a new commission.
+  * Spark high is baseline; Spark xhigh replaces that same voice only on
+    escalation and never becomes a fourth quorum vote.
+  * a write-once round manifest freezes the exact item universe.
   * gate math = D4 unchanged (≥70% keep AND dangerous ≤1 → activate;
     <50% → kill; between → iterate).
   * zero writes outside events/.
@@ -33,7 +37,8 @@ import m3_agent_lane as lane  # noqa: E402
 import m3_commission as comm  # noqa: E402
 import m3_dark_report as report  # noqa: E402
 
-JUDGES = {"gemini31": object(), "grok45": object(), "codex53": object()}
+JUDGES = {"gemini31": object(), "grok45": object(),
+          "codex53spark": object()}
 ROUND = "test-round-v1"
 
 
@@ -86,7 +91,7 @@ class QuorumTest(_Base):
         items = [_item()]
         self._run(items, {"gemini31": (True, _verdict("keep")),
                           "grok45": (True, _verdict("keep")),
-                          "codex53": (True, _verdict("noise"))})
+                          "codex53spark": (True, _verdict("noise"))})
         out = self._outcomes(items)
         self.assertEqual(out[0]["outcome"], "keep")
 
@@ -94,7 +99,7 @@ class QuorumTest(_Base):
         items = [_item()]
         self._run(items, {"gemini31": (True, _verdict("keep")),
                           "grok45": (True, _verdict("noise")),
-                          "codex53": (True, _verdict("noise"))})
+                          "codex53spark": (True, _verdict("noise"))})
         self.assertEqual(self._outcomes(items)[0]["outcome"], "noise")
 
     def test_evidenced_dangerous_overrides_two_keeps(self):
@@ -102,7 +107,7 @@ class QuorumTest(_Base):
         self._run(items, {
             "gemini31": (True, _verdict("keep")),
             "grok45": (True, _verdict("keep")),
-            "codex53": (True, _verdict("dangerous_wrong",
+            "codex53spark": (True, _verdict("dangerous_wrong",
                                        ref="bin/m3_hook.py:42",
                                        note="config contradicts claim"))})
         o = self._outcomes(items)[0]
@@ -115,17 +120,40 @@ class QuorumTest(_Base):
         items = [_item()]
         self._run(items, {"gemini31": (True, _verdict("keep")),
                           "grok45": (True, _verdict("keep")),
-                          "codex53": (True, _verdict("dangerous_wrong",
+                          "codex53spark": (True, _verdict("dangerous_wrong",
                                                      ref="none"))})
         o = self._outcomes(items)[0]
         self.assertEqual(o["outcome"], "keep")
         self.assertEqual(o["evidenced_dangerous"], [])
 
+    def test_prose_evidence_ref_is_not_checkable(self):
+        items = [_item()]
+        self._run(items, {
+            "gemini31": (True, _verdict("keep")),
+            "grok45": (True, _verdict("keep")),
+            "codex53spark": (True, _verdict(
+                "dangerous_wrong", ref="trust me I checked it")),
+        })
+        out = self._outcomes(items)[0]
+        self.assertEqual(out["outcome"], "keep")
+        self.assertEqual(out["evidenced_dangerous"], [])
+
+    def test_supported_evidence_ref_shapes_are_checkable(self):
+        refs = (
+            "bin/m3_hook.py:42",
+            "cfg.toml:3",
+            "git:abcdef1234567",
+            "memory:handoff-2026-07-13",
+            "/tmp/a.md:10-12 | ~/.codex/config.toml:3-4",
+        )
+        self.assertTrue(all(comm._evidenced({"evidence_ref": ref})
+                            for ref in refs))
+
     def test_below_quorum_is_unresolved_and_gate_excluded(self):
         items = [_item()]
         self._run(items, {"gemini31": (True, _verdict("keep")),
                           "grok45": (False, "grok: timeout after 600s"),
-                          "codex53": (False, "codex53: exit 1: boom")})
+                          "codex53spark": (False, "codex53: exit 1: boom")})
         out = self._outcomes(items)
         self.assertEqual(out[0]["outcome"], "unresolved")
         gate = comm.gate_math(out)
@@ -139,7 +167,7 @@ class ResumeTest(_Base):
         items = [_item()]
         c1 = self._run(items, {"gemini31": (True, _verdict("keep")),
                                "grok45": (False, "grok: timeout"),
-                               "codex53": (True, _verdict("keep"))})
+                               "codex53spark": (True, _verdict("keep"))})
         self.assertEqual(c1["ok"], 2)
         self.assertEqual(c1["voice_error"], 1)
         calls = []
@@ -159,12 +187,29 @@ class ResumeTest(_Base):
         items = [_item()]
         c = self._run(items, {"gemini31": (True, "utter prose, no json"),
                               "grok45": (True, _verdict("keep")),
-                              "codex53": (True, _verdict("keep"))})
+                              "codex53spark": (True, _verdict("keep"))})
         self.assertEqual(c["parse_fail"], 1)
         done = comm.load_done(self.ms, "main", round_id=ROUND,
                               active_judges=JUDGES)
         self.assertNotIn(("k1", "gemini31"), done)  # will be re-asked
         self.assertEqual(self._outcomes(items)[0]["outcome"], "keep")
+
+    def test_transient_attempts_are_capped_across_invocations(self):
+        items = [_item()]
+        judges = {"codex53spark": object()}
+        with mock.patch.object(
+                comm, "_invoke_voice", return_value=(False, "exit 1")) as call:
+            first = comm.judge_items(
+                items, self.ms, judges=judges, lane="main", round_id=ROUND)
+            second = comm.judge_items(
+                items, self.ms, judges=judges, lane="main", round_id=ROUND)
+            third = comm.judge_items(
+                items, self.ms, judges=judges, lane="main", round_id=ROUND)
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(first["voice_error"], 1)
+        self.assertEqual(second["voice_error"], 1)
+        self.assertEqual(third["asked"], 0)
+        self.assertEqual(third["skipped_attempt_cap"], 1)
 
 
 class GateMathTest(_Base):
@@ -196,10 +241,10 @@ class GateMathTest(_Base):
 
     def test_summary_renders_and_carries_owner_question(self):
         out = self._mk(3, 1, 1)
-        out[-1]["votes"] = [{"judge": "codex53",
+        out[-1]["votes"] = [{"judge": "codex53spark",
                              "verdict": "dangerous_wrong", "reason": "stale"}]
         out[-1]["evidenced_dangerous"] = [
-            {"judge": "codex53", "evidence_ref": "cfg.toml:3",
+            {"judge": "codex53spark", "evidence_ref": "cfg.toml:3",
              "evidence_note": "current config says otherwise"}]
         gate = comm.gate_math(out)
         text = comm.render_summary(out, gate, "main", round_id=ROUND)
@@ -278,7 +323,7 @@ class RoundIsolationTest(_Base):
         path = os.path.join(self.ms, "events", comm.VERDICTS_FILE)
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps({"lane": "main", "round_id": ROUND,
-                                "item_key": "k1", "judge": "codex53",
+                                "item_key": "k1", "judge": "codex53spark",
                                 "judge_model": "codex_cli/gpt-5.5",
                                 "ok": True, "verdict": "dangerous_wrong",
                                 "evidence_ref": "cfg.toml:1"}) + "\n")
@@ -288,7 +333,7 @@ class RoundIsolationTest(_Base):
 
     def test_subset_smoke_in_same_round_is_not_full_roster_evidence(self):
         items = [_item()]
-        subset = {"codex53": object()}
+        subset = {"codex53spark": object()}
         with mock.patch.object(
                 comm, "_invoke_voice",
                 return_value=(True, _verdict("dangerous_wrong",
@@ -297,7 +342,7 @@ class RoundIsolationTest(_Base):
                              round_id=ROUND)
         done = comm.load_done(self.ms, "main", round_id=ROUND,
                               active_judges=JUDGES)
-        self.assertNotIn(("k1", "codex53"), done)
+        self.assertNotIn(("k1", "codex53spark"), done)
         out = self._outcomes(items)
         self.assertEqual(out[0]["outcome"], "unresolved")
         self.assertEqual(out[0]["votes"], [])
@@ -312,15 +357,180 @@ class RoundIsolationTest(_Base):
         self.assertTrue(all(r["roster"] == list(JUDGES) for r in rows))
         self.assertEqual({r["judge_model"] for r in rows},
                          {comm._judge_model(name) for name in JUDGES})
+        self.assertEqual({r["judge_phase"] for r in rows}, {"baseline"})
+        self.assertEqual(
+            {r["judge_effort"] for r in rows}, {"high", "max"})
+        self.assertTrue(all(
+            r["judge_config"] == comm._judge_config(
+                r["judge"], "baseline", r["judge_effort"])
+            for r in rows))
 
     def test_invalid_round_id_fails_closed(self):
         with self.assertRaises(ValueError):
             comm.judge_items([_item()], self.ms, judges=JUDGES,
                              round_id="../escape")
 
+    def test_wrong_effort_in_same_round_is_ignored(self):
+        items = [_item()]
+        self._run(items, {name: (True, _verdict("keep")) for name in JUDGES})
+        path = os.path.join(self.ms, "events", comm.VERDICTS_FILE)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "lane": "main", "round_id": ROUND,
+                "roster": list(JUDGES), "item_key": "k1",
+                "judge": "gemini31",
+                "judge_model": comm._judge_model("gemini31"),
+                "judge_effort": "xhigh", "judge_phase": "baseline",
+                "ok": True, "verdict": "dangerous_wrong",
+                "evidence_ref": "cfg.toml:1",
+            }) + "\n")
+        out = self._outcomes(items)[0]
+        self.assertEqual(out["outcome"], "keep")
+        self.assertEqual(len(out["votes"]), 3)
+
+
+class EscalationTest(_Base):
+    def _baseline(self, items, answers):
+        self._run(items, answers)
+
+    def _escalate(self, items, answer):
+        candidates = comm.select_escalation_items(
+            items, self.ms, lane="main", round_id=ROUND,
+            active_judges=JUDGES)
+        with mock.patch.object(comm, "_invoke_voice", return_value=answer):
+            counters = comm.judge_items(
+                candidates, self.ms, judges={"codex53spark": object()},
+                lane="main", round_id=ROUND,
+                phase=comm.ESCALATION_PHASE,
+                effort_overrides={"codex53spark": "xhigh"},
+                ledger_roster=JUDGES,
+                prompt_builder=comm.build_escalation_prompt)
+        return candidates, counters
+
+    def test_unanimous_confident_item_is_not_escalated(self):
+        items = [_item()]
+        self._baseline(items, {
+            name: (True, _verdict("keep")) for name in JUDGES})
+        self.assertEqual(comm.select_escalation_items(
+            items, self.ms, lane="main", round_id=ROUND,
+            active_judges=JUDGES), [])
+
+    def test_conflict_low_confidence_danger_and_missing_quorum_trigger(self):
+        items = [_item(key, claim=f"Specific independently judgeable {key} "
+                       "claim with enough technical detail")
+                 for key in ("conflict", "low", "danger", "missing")]
+
+        def answer_for(name):
+            def answer(key):
+                if key == "conflict":
+                    return True, _verdict(
+                        "keep" if name != "grok45" else "noise")
+                if key == "low":
+                    payload = json.loads(_verdict("keep"))
+                    payload["confidence"] = 0.5 if name == "gemini31" else 0.9
+                    return True, json.dumps(payload)
+                if key == "danger":
+                    return True, _verdict(
+                        "dangerous_wrong" if name == "grok45" else "keep",
+                        ref="cfg.toml:1" if name == "grok45" else "none")
+                if name == "gemini31":
+                    return True, _verdict("keep")
+                return False, "timeout"
+            return answer
+
+        self._baseline(items, {name: answer_for(name) for name in JUDGES})
+        selected = comm.select_escalation_items(
+            items, self.ms, lane="main", round_id=ROUND,
+            active_judges=JUDGES)
+        by_key = {it["key"]: it["_escalation_reasons"] for it in selected}
+        self.assertIn("voice_conflict", by_key["conflict"])
+        self.assertIn("low_confidence", by_key["low"])
+        self.assertIn("evidenced_dangerous", by_key["danger"])
+        self.assertIn("missing_quorum", by_key["missing"])
+
+    def test_xhigh_replaces_spark_vote_and_does_not_add_fourth_vote(self):
+        items = [_item()]
+        self._baseline(items, {
+            "gemini31": (True, _verdict("keep")),
+            "grok45": (True, _verdict("noise")),
+            "codex53spark": (True, _verdict("keep")),
+        })
+        candidates, counters = self._escalate(
+            items, (True, _verdict("noise")))
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(counters["ok"], 1)
+        out = self._outcomes(items)[0]
+        self.assertEqual(out["outcome"], "noise")
+        self.assertEqual(len(out["votes"]), 3)
+        spark = [row for row in out["votes"]
+                 if row["judge"] == "codex53spark"]
+        self.assertEqual(len(spark), 1)
+        self.assertEqual(spark[0]["judge_effort"], "xhigh")
+        self.assertEqual(spark[0]["judge_phase"], "escalation")
+
+    def test_missing_two_other_voices_stays_unresolved_after_xhigh(self):
+        items = [_item()]
+        self._baseline(items, {
+            "gemini31": (False, "timeout"),
+            "grok45": (False, "timeout"),
+            "codex53spark": (True, _verdict("keep")),
+        })
+        self._escalate(items, (True, _verdict("keep")))
+        out = self._outcomes(items)[0]
+        self.assertEqual(out["outcome"], "unresolved")
+        self.assertEqual(len(out["votes"]), 1)
+
+
+class ManifestTest(_Base):
+    def test_manifest_is_write_once_and_freezes_full_items(self):
+        original = [_item("k1"), _item("k2")]
+        manifest = comm.load_or_create_round_manifest(
+            self.ms, "main", ROUND, JUDGES, original,
+            source_meta={"items": 2})
+        self.assertEqual(manifest["item_count"], 2)
+        self.assertEqual(
+            manifest["judge_configs"]["codex53spark"],
+            comm._judge_config("codex53spark", "baseline"))
+        self.assertEqual(
+            manifest["arbiter_config"],
+            comm._judge_config("codex53spark", "escalation"))
+        path = comm._manifest_path(self.ms, ROUND)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+
+        changed = [_item("different")]
+        again = comm.load_or_create_round_manifest(
+            self.ms, "main", ROUND, JUDGES, changed,
+            source_meta={"items": 1})
+        self.assertEqual([it["key"] for it in again["items"]], ["k1", "k2"])
+
+    def test_manifest_roster_mismatch_fails_closed(self):
+        comm.load_or_create_round_manifest(
+            self.ms, "main", ROUND, JUDGES, [_item()])
+        with self.assertRaises(RuntimeError):
+            comm.load_or_create_round_manifest(
+                self.ms, "main", ROUND, {"gemini31": object()}, [_item()])
+
+    def test_manifest_config_drift_requires_new_round(self):
+        comm.load_or_create_round_manifest(
+            self.ms, "main", ROUND, JUDGES, [_item()])
+        with mock.patch.object(comm, "JUDGE_CONFIG_VERSION",
+                               "m3-judge-config.drift"):
+            with self.assertRaises(RuntimeError):
+                comm.load_or_create_round_manifest(
+                    self.ms, "main", ROUND, JUDGES, [_item()])
+
+    def test_rows_without_manifest_require_new_round(self):
+        path = os.path.join(self.ms, "events", comm.VERDICTS_FILE)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"lane": "main", "round_id": ROUND,
+                                "item_key": "k1"}) + "\n")
+        with self.assertRaises(RuntimeError):
+            comm.load_or_create_round_manifest(
+                self.ms, "main", ROUND, JUDGES, [_item()])
+
 
 class ProviderProfileTest(unittest.TestCase):
-    def test_spark_route_is_exact_read_only_and_ephemeral(self):
+    def _providers(self):
         class Provider:
             def __init__(self, **kwargs):
                 self.__dict__.update(kwargs)
@@ -331,15 +541,26 @@ class ProviderProfileTest(unittest.TestCase):
         package.providers = providers
         with mock.patch.dict(sys.modules, {
                 "council": package, "council.providers": providers}):
-            spark = comm._judges()["codex53spark"]
+            return comm._judges(), comm._xhigh_arbiter()
+
+    def test_spark_baseline_is_high_exact_read_only_and_ephemeral(self):
+        judges, _arbiter = self._providers()
+        spark = judges["codex53spark"]
 
         self.assertIn("gpt-5.3-codex-spark", spark.argv)
-        self.assertIn('model_reasoning_effort="xhigh"', spark.argv)
+        self.assertIn('model_reasoning_effort="high"', spark.argv)
+        self.assertNotIn('model_reasoning_effort="xhigh"', spark.argv)
         self.assertIn('model_reasoning_summary="none"', spark.argv)
         self.assertIn("read-only", spark.argv)
         self.assertIn("--ephemeral", spark.argv)
         self.assertIn("features.codex_hooks=false", spark.argv)
         self.assertNotIn("gpt-5.5", " ".join(spark.argv))
+
+    def test_spark_arbiter_is_same_route_at_xhigh(self):
+        _judges, arbiter = self._providers()
+        self.assertIn("gpt-5.3-codex-spark", arbiter.argv)
+        self.assertIn('model_reasoning_effort="xhigh"', arbiter.argv)
+        self.assertIn('model_reasoning_summary="none"', arbiter.argv)
 
 
 class WindowingTest(_Base):
@@ -347,7 +568,7 @@ class WindowingTest(_Base):
         items = [_item(f"k{i}", claim=f"Specific claim number {i} with "
                        "enough detail to be judged independently")
                  for i in range(5)]
-        judges = {"codex53": object()}
+        judges = {"codex53spark": object()}
         with mock.patch.object(
                 comm, "_invoke_voice",
                 return_value=(True, _verdict("keep"))):
@@ -362,7 +583,7 @@ class WindowingTest(_Base):
         items = [_item(f"k{i}", claim=f"Specific claim number {i} with "
                        "enough detail to be judged independently")
                  for i in range(5)]
-        judges = {"codex53": object()}
+        judges = {"codex53spark": object()}
         with mock.patch.object(
                 comm, "_invoke_voice", return_value=(False, "timeout")):
             counters = comm.judge_items(
@@ -389,7 +610,7 @@ class ZeroWriteTest(_Base):
         items = [_item()]
         self._run(items, {"gemini31": (True, _verdict("keep")),
                           "grok45": (True, _verdict("keep")),
-                          "codex53": (True, _verdict("keep"))})
+                          "codex53spark": (True, _verdict("keep"))})
         with open(page) as f:
             self.assertEqual(f.read(), "orig")
         ev = os.listdir(os.path.join(self.ms, "events"))
