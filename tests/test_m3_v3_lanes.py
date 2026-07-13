@@ -102,8 +102,37 @@ class MinerAcceptTest(unittest.TestCase):
         self.assertEqual(len(out), 1, meta)
         self.assertEqual(out[0]["kind"], "decision")
         self.assertEqual(out[0]["claim"], VALID_ACQ["claim"])
+        self.assertEqual(out[0]["miner_policy"], miner.MINER_POLICY_VERSION)
+        self.assertEqual(meta["miner_policy"], miner.MINER_POLICY_VERSION)
         self.assertEqual(meta["raw_by_kind"], {"decision": 1})
         self.assertEqual(meta["kept_by_kind"], {"decision": 1})
+
+    def test_durability_classifier_rejects_known_transient_shapes(self):
+        cases = (
+            dict(VALID_ACQ,
+                 claim="Решено начать T-A как следующий этап проекта",
+                 transcript_quote="Рекомендую T-A как следующий этап проекта в следующей сессии"),
+            dict(VALID_ACQ,
+                 claim="Базовая модель в конфиге изменена на Spark",
+                 transcript_quote="Базовая модель в config изменена на Spark для этого запуска"),
+            dict(VALID_ACQ, kind="finding",
+                 claim="Карточка PRIM1-200 выполнена и имеет status completed",
+                 transcript_quote="Карточка PRIM1-200 выполнена и теперь имеет status completed"),
+            dict(VALID_ACQ,
+                 claim="Для M3 рекомендуется подтвердить дефолтную настройку",
+                 transcript_quote="Рекомендую подтвердить дефолтную настройку на всех боксах"),
+            dict(VALID_ACQ, kind="rule",
+                 claim="Для gpt-5.3-codex-spark нужно использовать "
+                       "model_reasoning_summary = none",
+                 transcript_quote="Для Spark параметр model_reasoning_summary = none "
+                                  "сейчас предотвращает ошибку маршрута"),
+        )
+        self.assertEqual(
+            [miner.durability_reject_reason(c) for c in cases],
+            ["next_step_or_recommendation", "live_config_or_route",
+             "task_or_ticket_status", "recommendation_or_proposal",
+             "live_config_or_route"])
+        self.assertIsNone(miner.durability_reject_reason(VALID_ACQ))
 
     def test_recall_and_kindless_v2_shape_accepted(self):
         kindless = {k: v for k, v in VALID_RECALL.items() if k != "kind"}
@@ -152,7 +181,8 @@ class AcquisitionLaneTest(unittest.TestCase):
             return [json.loads(line) for line in f if line.strip()]
 
     def _cand(self, **over):
-        c = dict(VALID_ACQ, session_id="sess-1", project_slug="proj")
+        c = dict(VALID_ACQ, session_id="sess-1", project_slug="proj",
+                 miner_policy=miner.MINER_POLICY_VERSION)
         c.update(over)
         return c
 
@@ -181,6 +211,30 @@ class AcquisitionLaneTest(unittest.TestCase):
         self.assertFalse(row["quote_ok"])
         self.assertIsNone(row["judge"])
         self.assertFalse(row["would_file"])
+
+    def test_durability_rejects_before_judge_and_logs_reason(self):
+        quote = ("Рекомендую T-A как следующий этап проекта в следующей "
+                 "сессии после завершения текущей волны")
+        cand = self._cand(
+            claim="Решено начать T-A как следующий этап проекта",
+            transcript_quote=quote)
+        called = []
+        stats = {"judge_calls": 0}
+        with mock.patch.object(
+                m3_judge, "verdict",
+                side_effect=lambda *a: called.append(1) or "entailed"):
+            tally, outcomes = acq.process(
+                None, [cand], memory_system=self.ms,
+                turns=[("assistant", quote)], stats=stats)
+        self.assertEqual(outcomes, ["would_reject"])
+        self.assertEqual(tally, {"would_reject": 1})
+        self.assertEqual(called, [])
+        self.assertEqual(stats["judge_calls"], 0)
+        row = self._dark_rows()[0]
+        self.assertTrue(row["quote_ok"])
+        self.assertEqual(row["safety_reject"],
+                         "next_step_or_recommendation")
+        self.assertEqual(row["miner_policy"], miner.MINER_POLICY_VERSION)
 
     def test_user_turn_quote_is_not_quotable(self):
         """Owner gate Q1: user turns (pasted logs) are never a quote source."""
@@ -251,6 +305,17 @@ class SeenCacheTest(unittest.TestCase):
         self.assertEqual(a, b)
         c = cache.candidate_key({"kind": "finding", "claim": "use redis now"})
         self.assertNotEqual(a, c)  # kind is part of the key
+
+    def test_acquisition_policy_is_part_of_key_but_recall_is_unchanged(self):
+        base = {"kind": "decision", "claim": "Use the Redis ingest queue"}
+        legacy = cache.candidate_key(base)
+        p1 = cache.candidate_key(dict(base, miner_policy="policy-v1"))
+        p2 = cache.candidate_key(dict(base, miner_policy="policy-v2"))
+        self.assertEqual(len({legacy, p1, p2}), 3)
+        recall = dict(VALID_RECALL)
+        self.assertEqual(cache.candidate_key(recall),
+                         cache.candidate_key(dict(recall,
+                                                  miner_policy="ignored")))
 
 
 class HookRoutingTest(unittest.TestCase):
@@ -548,7 +613,8 @@ class DarkReportClusterTest(unittest.TestCase):
         sheet = report.section_sheet([a, b])
         self.assertEqual(sheet.count("MARK:"), 1)
         self.assertIn("×2 re-worded", sheet)
-        self.assertIn("ALSO:", sheet)
+        self.assertIn("EARLIER:", sheet)
+        self.assertIn(b["claim"], sheet.split("CLAIM:", 1)[1].splitlines()[0])
         self.assertIn("sess-1", sheet)
         self.assertIn("sess-2", sheet)
 

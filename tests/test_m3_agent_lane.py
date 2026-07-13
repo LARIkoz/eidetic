@@ -760,6 +760,7 @@ def _fresh_ts(minutes_ahead=5):
 
 def _agent_row(claim=None, key_suffix="", **over):
     row = {"ts": _fresh_ts(),
+           "miner_policy": miner.MINER_POLICY_VERSION,
            "session_id": "agent-x1", "parent_session_id": "sid-1",
            "project_slug": "-proj-alpha", "agent_kind": "plain",
            "workflow_id": None,
@@ -800,6 +801,7 @@ class ReportLaneTest(_Base):
         self._write_rows("m3_driver.log", [{
             "m3_driver": "ran", "mined": 0, "meta": {},
             "agent": {"status": "ran", "ts": _fresh_ts(),
+                      "miner_policy": miner.MINER_POLICY_VERSION,
                       "project_slug": "-proj-alpha", "scanned": 7,
                       "eligible": 1, "backlog": 0, "oldest_eligible_s": 0,
                       "mined_files": 1, "tally": {"would_file": 1},
@@ -878,6 +880,7 @@ class ReportLaneTest(_Base):
         self._init(floor_ns=1)
         agent_rows = [_agent_row()]
         main_row = {"ts": "2026-07-12T08:00:00.000Z", "session_id": "sid-9",
+                    "miner_policy": miner.MINER_POLICY_VERSION,
                     "project_slug": "-proj-alpha", "kind": "finding",
                     "claim": agent_rows[0]["claim"] + " indeed",
                     "transcript_quote": "whatever quote",

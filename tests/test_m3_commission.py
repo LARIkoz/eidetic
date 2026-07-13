@@ -486,8 +486,9 @@ class ManifestTest(_Base):
         original = [_item("k1"), _item("k2")]
         manifest = comm.load_or_create_round_manifest(
             self.ms, "main", ROUND, JUDGES, original,
-            source_meta={"items": 2})
+            source_meta={"items": 2, "miner_policy": "policy-v4"})
         self.assertEqual(manifest["item_count"], 2)
+        self.assertEqual(manifest["source_policy"], "policy-v4")
         self.assertEqual(
             manifest["judge_configs"]["codex53spark"],
             comm._judge_config("codex53spark", "baseline"))
@@ -502,6 +503,18 @@ class ManifestTest(_Base):
             self.ms, "main", ROUND, JUDGES, changed,
             source_meta={"items": 1})
         self.assertEqual([it["key"] for it in again["items"]], ["k1", "k2"])
+
+    def test_manifest_source_policy_tamper_fails_closed(self):
+        manifest = comm.load_or_create_round_manifest(
+            self.ms, "main", ROUND, JUDGES, [_item()],
+            source_meta={"items": 1, "miner_policy": "policy-v4"})
+        manifest["source_policy"] = "policy-v3"
+        path = comm._manifest_path(self.ms, ROUND)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f)
+        with self.assertRaises(RuntimeError):
+            comm.load_or_create_round_manifest(
+                self.ms, "main", ROUND, JUDGES, [_item()])
 
     def test_manifest_roster_mismatch_fails_closed(self):
         comm.load_or_create_round_manifest(
@@ -629,6 +642,7 @@ class CollectTest(_Base):
 
     def test_main_lane_clusters_to_items(self):
         row = {"ts": "2026-07-12T10:00:00.000Z", "session_id": "sid-9",
+               "miner_policy": report._miner.MINER_POLICY_VERSION,
                "project_slug": "-p", "kind": "finding",
                "claim": "The parser cache eviction path is disabled in the "
                         "current build of the ingest service",
@@ -640,6 +654,60 @@ class CollectTest(_Base):
         self.assertEqual(items[0]["kind"], "finding")
         self.assertFalse(items[0]["seen_main"])
         self.assertTrue(items[0]["key"])
+        self.assertEqual(items[0]["transcript_mtime"], row["ts"])
+        self.assertEqual(meta["miner_policy"],
+                         report._miner.MINER_POLICY_VERSION)
+
+    def test_main_lane_excludes_prior_policy_and_uses_latest_rewording(self):
+        base = {"project_slug": "-p", "kind": "finding",
+                "transcript_quote": "cache eviction behavior was verified",
+                "quote_ok": True, "judge": "entailed", "would_file": True}
+        legacy = dict(base, ts="2026-07-12T09:00:00.000Z",
+                      session_id="old", claim="Legacy policy row is preserved")
+        first = dict(base, ts="2026-07-12T10:00:00.000Z",
+                     session_id="s1",
+                     miner_policy=report._miner.MINER_POLICY_VERSION,
+                     claim="Parser cache eviction is disabled in this build")
+        corrected = dict(base, ts="2026-07-12T11:00:00.000Z",
+                         session_id="s2",
+                         miner_policy=report._miner.MINER_POLICY_VERSION,
+                         claim="Parser cache eviction remains disabled in the build")
+        self._write("m3_acquisition_dark.jsonl", [legacy, first, corrected])
+        items, meta = report.collect_lane_items(self.ms, "main")
+        self.assertEqual(meta["excluded_other_policy"], 1)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["claim"], corrected["claim"])
+        self.assertEqual(items[0]["rewordings"], [first["claim"]])
+
+    def test_main_lane_resolves_retry_and_excludes_conflicts(self):
+        policy = report._miner.MINER_POLICY_VERSION
+        base = {"ts": "2026-07-12T10:00:00.000Z", "session_id": "s1",
+                "project_slug": "-p", "kind": "finding",
+                "miner_policy": policy, "quote_ok": True,
+                "transcript_quote": "a sufficiently long exact quote here"}
+        retry_claim = "The parser retry rail uses a bounded attempt budget"
+        transient_claim = "The provider returned a temporary parser outage"
+        conflict_claim = "The cache eviction rail is permanently disabled"
+        rows = [
+            dict(base, claim=retry_claim, judge="judge_unavailable",
+                 would_file=False),
+            dict(base, ts="2026-07-12T10:01:00.000Z", claim=retry_claim,
+                 judge="entailed", would_file=True),
+            dict(base, claim=transient_claim, judge="judge_unavailable",
+                 would_file=False),
+            dict(base, claim=conflict_claim, judge="entailed",
+                 would_file=True),
+            dict(base, ts="2026-07-12T10:02:00.000Z", claim=conflict_claim,
+                 judge="not_entailed", would_file=False),
+        ]
+        self._write("m3_acquisition_dark.jsonl", rows)
+        items, meta = report.collect_lane_items(self.ms, "main")
+        self.assertEqual([item["claim"] for item in items], [retry_claim])
+        self.assertEqual(meta["transient_only"], 1)
+        self.assertEqual(meta["conflicts"], 1)
+        health = report.section_dups(rows, [])
+        self.assertIn("transient-only keys", health)
+        self.assertIn("gate-EXCLUDED until adjudicated: 1", health)
 
     def test_agent_lane_state_lost_raises(self):
         with open(os.path.join(self.ms, "events", lane.LEDGER_FILE),

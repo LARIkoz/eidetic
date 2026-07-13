@@ -225,6 +225,11 @@ def _validate_manifest(manifest, lane, round_id, roster):
         raise RuntimeError("M3 commission manifest item keys are invalid")
     if manifest.get("item_count") != len(items):
         raise RuntimeError("M3 commission manifest item_count mismatch")
+    source_meta = manifest.get("source_meta") or {}
+    source_policy = manifest.get("source_policy")
+    if source_policy is not None and \
+            source_policy != source_meta.get("miner_policy"):
+        raise RuntimeError("M3 commission manifest source policy mismatch")
     return manifest
 
 
@@ -272,6 +277,7 @@ def load_or_create_round_manifest(memory_system, lane, round_id, roster,
 
     events = _events_dir(memory_system)
     os.makedirs(events, mode=0o700, exist_ok=True)
+    frozen_source_meta = dict(source_meta or {})
     manifest = {
         "schema": MANIFEST_SCHEMA,
         "created_at": _now_iso(),
@@ -284,7 +290,8 @@ def load_or_create_round_manifest(memory_system, lane, round_id, roster,
             SPARK_JUDGE, ESCALATION_PHASE)
         if SPARK_JUDGE in roster else None,
         "item_count": len(items),
-        "source_meta": dict(source_meta or {}),
+        "source_policy": frozen_source_meta.get("miner_policy"),
+        "source_meta": frozen_source_meta,
         "items": list(items),
     }
     payload = (json.dumps(manifest, ensure_ascii=False,

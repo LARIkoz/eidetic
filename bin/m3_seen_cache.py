@@ -46,14 +46,22 @@ DEFINITIVE = frozenset(
 def candidate_key(cand):
     """sha1(kind + normalized candidate text) — spec §7: recall keys on
     query+answer; acquisition keys on claim alone (the quote may drift while
-    the claim is the same knowledge)."""
+    the claim is the same knowledge). A versioned acquisition policy is also
+    part of acquisition identity, so a prompt iteration can re-evaluate a
+    session without deleting or colliding with the append-only prior round.
+    Legacy candidates without a policy keep their exact historical key."""
     kind = (cand.get("kind") or "recall").strip().lower()
     if kind == "recall":
         text = (cand.get("recall_query") or "") + "\n" + (cand.get("recalled_answer") or "")
     else:
         text = cand.get("claim") or ""
     normalized = m3_judge._norm_tokens(text)
-    return hashlib.sha1((kind + "\n" + normalized).encode("utf-8")).hexdigest()
+    policy = str(cand.get("miner_policy") or "").strip() \
+        if kind != "recall" else ""
+    identity = kind + "\n" + normalized
+    if policy:
+        identity = kind + "\n" + policy + "\n" + normalized
+    return hashlib.sha1(identity.encode("utf-8")).hexdigest()
 
 
 def _judged_path(memory_system):

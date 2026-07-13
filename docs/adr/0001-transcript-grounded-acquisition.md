@@ -38,3 +38,37 @@ confidence-ranking are live there. Consolidation (recall kinds, now including
 assistant-volunteered recalls) keeps `/memory/` grounding unchanged and ships live in the same
 miner revision while acquisition kinds run dark. Background sub-agent transcripts are out of
 scope (separate plumbing; knowledge density unmeasured).
+
+## 2026-07-13 addendum — durable acquisition policy
+
+The first machine-commission smoke found two dangerous classes in five cards:
+a recommended next stage had been promoted to a decision, and a correct-at-the-time
+base-model workaround had become stale live configuration. Entailment cannot reject either:
+the assistant transcript really did state both assertions.
+
+Acquisition therefore has a separate durability boundary. Recommendations, task/ticket
+status, next-session plans, live model/config/provider routes, availability, quotas, deploy
+progress, and similar point-in-time operational state fail toward miss before the entailment
+judge. Durable root causes, architecture choices, and standing rules remain eligible. The
+semantic rule is in the miner prompt and a narrow deterministic rail rejects the known
+high-precision transient shapes without spending a judge call.
+
+Prompt iterations are append-only rounds. Every acquisition candidate, dark row, agent done
+row, report, and commission source manifest carries `miner_policy`; the seen-cache includes
+that policy in acquisition identity. Reports and new commissions read only the active policy,
+while prior rows remain preserved as evidence. Within a paraphrase cluster the newest wording
+is the representative and earlier wording remains visible as provenance, so an early Stop fire
+cannot outrank a later correction merely by arriving first.
+
+The read side is outcome-aware in both lanes. A later definitive retry outranks an earlier
+provider/parser transient, while contradictory definitive outcomes are surfaced and excluded
+from the gate instead of inheriting the historical first-row-wins behavior.
+
+A bounded isolated replay over the five cards from the failed first commission exposed two
+additional extractor evasions: a recommendation without "next step" wording and a live model
+parameter assignment framed as a rule. The deterministic rail therefore covers explicit
+recommend/propose forms plus model/config field settings. On the final replay, all nine
+extracted acquisition candidates were rejected before entailment (one next-step, one task
+status, four recommendations/proposals, and three live config/route candidates); production
+events were not mutated. This replay is regression evidence, not a replacement D5 sample:
+the active policy remains `NO_DATA` until new organic durable candidates accumulate.

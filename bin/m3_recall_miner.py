@@ -44,6 +44,52 @@ MIN_QUOTE_CHARS = 40
 MIN_QUOTE_TOKENS = 6              # the judge's verbatim-gate floor (_quote_ok)
 KIND_RECALL = "recall"
 ACQ_KINDS = ("decision", "finding", "rule")
+MINER_POLICY_VERSION = "m3-miner-v4-durable-acquisition"
+
+# A cheap fail-toward-miss rail for the exact classes that made the first D5
+# commission unsafe.  The model prompt remains the broad semantic selector;
+# this deterministic layer prevents an obvious recommendation/status/live
+# route from becoming a persistent card even when the extractor ignores it.
+_NEXT_STEP_RE = re.compile(
+    r"(?:\bnext\s+(?:step|stage|session)\b|"
+    r"\bwhat\s+to\s+do\s+next\b|"
+    r"следующ\w*\s+(?:этап|сесси\w*|шаг)|"
+    r"план\s+следующ\w*\s+сесси\w*|"
+    r"дальше\s+(?:будет|—|-|:))",
+    re.IGNORECASE,
+)
+_RECOMMENDATION_RE = re.compile(
+    r"(?:\brecommend(?:ation|ed|ing|s)?\b|"
+    r"\bpropos(?:e|ed|al|ing)\b|"
+    r"\bsuggest(?:ed|ion|ing|s)?\b|"
+    r"\bрекоменд\w*\b|\bпредлаг\w*\b|\bпредлож\w*\b|"
+    r"\bсовет(?:ую|уем|овать)\b)",
+    re.IGNORECASE,
+)
+_TASK_STATUS_RE = re.compile(
+    r"(?:\bstatus\s*[:=]?\s*(?:completed|done|finished|pending|awaiting)\b|"
+    r"\b(?:completed|finished)\s+(?:successfully|today)\b|"
+    r"\b(?:выполнен\w*|заверш[её]н\w*|закрыт\w*)\b)",
+    re.IGNORECASE,
+)
+_CONFIG_RE = re.compile(
+    r"\b(?:config(?:uration)?|settings?|parameters?|options?|"
+    r"конфиг\w*|настройк\w*|параметр\w*|опци\w*|"
+    r"model_[a-z0-9_]+|reasoning[._][a-z0-9_]+)\b",
+    re.IGNORECASE,
+)
+_MODEL_ROUTE_RE = re.compile(
+    r"(?:\bmodel(?:\b|_)|\bмодел\w*|\bprovider\b|\bпровайдер\w*|"
+    r"\broute\b|\bмаршрут\w*|\bversion\b|\bверси\w*|"
+    r"\bfeature\s+flag\b|\bфлаг\w*|\bbase\b|\bбаз\w*|"
+    r"\bgpt-[a-z0-9._-]+|\bcodex\b|\bspark\b)",
+    re.IGNORECASE,
+)
+_MODEL_AVAILABILITY_RE = re.compile(
+    r"\b(?:unavailable|available|unsupported|dead|works?|"
+    r"недоступ\w*|доступ\w*|не\s+поддерж\w*|умер\w*|работает|работают)\b",
+    re.IGNORECASE,
+)
 
 _SYSREM_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.DOTALL)
 _LOCALCMD_RE = re.compile(r"<local-command-[^>]*>.*?</local-command-[^>]*>", re.DOTALL)
@@ -80,6 +126,22 @@ Only ASSISTANT messages are quotable — never [USER] messages (pasted logs and 
 Prefer claims NOT contradicted or corrected later in the excerpt; when a claim was corrected, use only the CORRECTED version.
 NOT acquisition: hypotheses and hedged statements — a sentence carrying a probability hedge ("probably", "likely", "might", "скорее всего", "видимо", "похоже") is NEVER a finding; plans/intentions ("I'll do X"), options considered but not chosen, routine work narration, knowledge already established before this session (that is recall).
 
+DURABILITY GATE (mandatory; persistent memory is not a task tracker or a live
+status cache): emit acquisition only when the knowledge should remain useful
+and accurate AFTER the current task/session/incident is over.
+- NEVER turn a recommendation, proposed next step/stage/session, or work plan
+  into a decision. "I recommend X next" is still a plan unless the excerpt
+  contains an explicit acceptance; task ordering itself is not durable memory.
+- NEVER emit ticket/task completion, work-in-progress, pending approvals,
+  unpushed commits, current counts, deploy progress, or other point-in-time
+  operational status.
+- NEVER emit the current base model/config/provider route, model availability,
+  quota, temporary workaround, running dev server, or similar live state that
+  can change outside this transcript.
+- A durable root cause, architectural choice, or standing rule MAY be emitted
+  when it remains true after the incident; copy the durable mechanism, not the
+  transient status that exposed it.
+
 STRICT COPY RULES (violating any = do not emit the candidate):
 - NEVER add facts, merge from your own knowledge, sharpen numbers, or resolve vagueness — copy the assistant's assertion or skip it.
 - If unsure whether a fact is recalled vs derived in-session: drop that fact from recall (keep the rest).
@@ -94,6 +156,31 @@ def _clean(text):
     text = _SYSREM_RE.sub("", text or "")
     text = _LOCALCMD_RE.sub("", text)
     return text.strip()
+
+
+def durability_reject_reason(cand):
+    """Return a stable reason for an obviously non-durable acquisition card.
+
+    This is intentionally narrow: semantic selection stays in the extractor
+    prompt, while these high-precision patterns fail toward missing an
+    ephemeral card instead of polluting persistent memory.
+    """
+    kind = (cand.get("kind") or "").strip().lower()
+    if kind not in ACQ_KINDS:
+        return None
+    text = " ".join((str(cand.get("claim") or ""),
+                     str(cand.get("transcript_quote") or "")))
+    if _NEXT_STEP_RE.search(text):
+        return "next_step_or_recommendation"
+    if _RECOMMENDATION_RE.search(text):
+        return "recommendation_or_proposal"
+    if _TASK_STATUS_RE.search(text):
+        return "task_or_ticket_status"
+    if _CONFIG_RE.search(text) and _MODEL_ROUTE_RE.search(text):
+        return "live_config_or_route"
+    if _MODEL_ROUTE_RE.search(text) and _MODEL_AVAILABILITY_RE.search(text):
+        return "live_model_or_route_availability"
+    return None
 
 
 def read_turns(transcript_path, tail_bytes=TAIL_BYTES, max_turns=MAX_TURNS):
@@ -193,7 +280,7 @@ def mine_transcript(transcript_path, *, session_id=None, project_slug=""):
     yield."""
     meta = {"turns": 0, "excerpt_chars": 0, "raw_candidates": 0, "kept": 0,
             "raw_by_kind": {}, "kept_by_kind": {}, "dropped_unknown_kind": 0,
-            "error": None}
+            "miner_policy": MINER_POLICY_VERSION, "error": None}
     turns = read_turns(transcript_path)
     meta["turns"] = len(turns)
     if not any(r == "assistant" for r, _ in turns):
@@ -260,7 +347,8 @@ def mine_transcript(transcript_path, *, session_id=None, project_slug=""):
                 if key not in seen:
                     seen.add(key)
                     accepted = {"kind": kind, "claim": claim,
-                                "transcript_quote": quote}
+                                "transcript_quote": quote,
+                                "miner_policy": MINER_POLICY_VERSION}
         if accepted is None:
             continue
         accepted["session_id"] = sid

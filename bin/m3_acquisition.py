@@ -3,7 +3,8 @@
 
 Route, per candidate: mechanical quote gate → judge (claim ⊨ quote, judged as
 ONE unit — no `_split_claims`; a multi-sentence claim only partially supported
-by its quote rejects WHOLE) → dark log. ZERO writes outside `events/` (NFR-2):
+by its quote rejects WHOLE). An obvious transient recommendation/status/live
+route fails the durability rail before the judge → dark log. ZERO writes outside `events/` (NFR-2):
 until the D5 gate passes, nothing here touches /memory/, the index DB, the
 oplog, or confidence events.
 
@@ -16,8 +17,9 @@ and local-command blocks are already stripped by `read_turns` — injected
 content is unquotable by construction. USER turns are NOT quotable (owner
 gate 2026-07-10, spec §10 Q1: fail-toward-miss beats fail-toward-junk).
 
-This checks faithful copy, not truth (ADR-0001) — the residual truth risk is
-priced by the D4 trust contract at activation, not by this gate.
+Entailment checks faithful copy, not truth (ADR-0001); the durability rail
+separately blocks the high-precision stale-state classes exposed by D4. The
+remaining truth risk is priced by the D4 trust contract at activation.
 
 Fail-toward-reject at every layer (NFR-3): quote absent → reject, ZERO judge
 calls burned; judge route dead → `judge_unavailable`, never `would_file` (no
@@ -88,12 +90,13 @@ def _process_one(cand, turns, memory_system, dark_file=None, extra_fields=None,
     claim = (cand.get("claim") or "").strip()
     quote = (cand.get("transcript_quote") or "").strip()
     quote_ok = bool(claim) and quote_in_assistant_turns(quote, turns)
+    safety_reject = _miner.durability_reject_reason(cand)
     judge = None  # null in the dark log = judge never called (quote gate failed)
-    if quote_ok:
+    if quote_ok and not safety_reject:
         if stats is not None:
             stats["judge_calls"] = stats.get("judge_calls", 0) + 1
         judge = m3_judge.verdict(claim, [quote])
-    would_file = bool(quote_ok and judge == "entailed")
+    would_file = bool(quote_ok and not safety_reject and judge == "entailed")
     record = {
         "ts": _LC._recorded_at() if _LC else "",
         "session_id": str(cand.get("session_id") or ""),
@@ -105,6 +108,10 @@ def _process_one(cand, turns, memory_system, dark_file=None, extra_fields=None,
         "judge": judge,
         "would_file": would_file,
     }
+    if cand.get("miner_policy"):
+        record["miner_policy"] = str(cand.get("miner_policy"))
+    if safety_reject:
+        record["safety_reject"] = safety_reject
     if extra_fields:
         record.update(extra_fields)
     appended = _append_dark(memory_system, record, dark_file)
@@ -112,7 +119,7 @@ def _process_one(cand, turns, memory_system, dark_file=None, extra_fields=None,
         return "dark_append_failed"
     if would_file:
         return "would_file"
-    if not quote_ok or judge == "not_entailed":
+    if safety_reject or not quote_ok or judge == "not_entailed":
         return "would_reject"
     if judge == "judge_unavailable":
         return "judge_unavailable"

@@ -73,6 +73,18 @@ def _read_jsonl(path):
     return rows
 
 
+def _current_policy_rows(rows):
+    """Return only rows produced by the active acquisition policy.
+
+    Dark evidence is append-only. Prompt iteration therefore starts a logical
+    D5 round by policy identity instead of deleting or silently mixing the old
+    denominator into the new one.
+    """
+    current = [r for r in rows
+               if r.get("miner_policy") == _miner.MINER_POLICY_VERSION]
+    return current, len(rows) - len(current)
+
+
 def _driver_runs(events_dir):
     """m3_driver.log holds one JSON line per run (plus stray SDK noise lines —
     skipped). Returns only 'ran' rows."""
@@ -80,18 +92,65 @@ def _driver_runs(events_dir):
             if r.get("m3_driver") == "ran"]
 
 
-def _dedup_dark(rows):
-    """Dedup dark rows by the FR-8 candidate key; keep the FIRST verdict row
-    per key (later re-judges of the same candidate add no information)."""
-    seen, out, dups = set(), [], 0
+def _row_definitive(r):
+    """Definitive dark row: entailed (would_file), judged not_entailed, a
+    durability reject, or a mechanical quote-gate reject. Provider/parser
+    failures are transient and must never outrank a later definitive retry."""
+    if r.get("would_file"):
+        return True
+    if r.get("judge") == "not_entailed":
+        return True
+    if r.get("safety_reject"):
+        return True
+    if not r.get("quote_ok") and r.get("judge") is None:
+        return True
+    return False
+
+
+def _resolve_groups(rows, group_key):
+    """Resolve append-only attempts per logical candidate group.
+
+    A later definitive result outranks transient health failures. Definitive
+    true/false disagreement is gate-excluded and surfaced as a conflict.
+    """
+    groups, order = {}, []
     for r in rows:
-        key = _cache.candidate_key(r)
-        if key in seen:
-            dups += 1
+        key = group_key(r)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+    resolved, conflicts = [], []
+    transient_only = dup_attempts = 0
+    for key in order:
+        group = groups[key]
+        dup_attempts += len(group) - 1
+        definitive = [r for r in group if _row_definitive(r)]
+        if not definitive:
+            transient_only += 1
             continue
-        seen.add(key)
-        out.append(r)
-    return out, dups
+        if len({bool(r.get("would_file")) for r in definitive}) > 1:
+            conflicts.append(definitive[-1])
+            continue
+        resolved.append(definitive[-1])
+    return resolved, {"transient_only": transient_only,
+                      "dup_attempts": dup_attempts,
+                      "conflicts": conflicts}
+
+
+def _resolve_main_attempts(rows):
+    """Resolve main-lane attempts by global FR-8 candidate identity."""
+    return _resolve_groups(rows, _cache.candidate_key)
+
+
+def _dedup_dark(rows):
+    """Compatibility wrapper for report callers that need rows + dup count.
+
+    Unlike the historical first-row-wins implementation, this is
+    outcome-aware and gate-excludes conflicting definitive results.
+    """
+    resolved, health = _resolve_main_attempts(rows)
+    return resolved, health["dup_attempts"]
 
 
 def _claim_tokens(row):
@@ -122,15 +181,18 @@ def _cluster_paraphrases(rows, threshold=CLUSTER_JACCARD):
 
 
 def section_sheet(dark_rows):
-    uniq, _ = _dedup_dark(dark_rows)
-    would = [r for r in uniq if r.get("would_file")]
+    resolved, _health = _resolve_main_attempts(dark_rows)
+    would = [r for r in resolved if r.get("would_file")]
     clusters = _cluster_paraphrases(would)
     lines = [f"## 1. Would-file marking sheet — {len(clusters)} knowledge items "
              f"({len(would)} would-file rows, dedup'd from {len(dark_rows)} dark "
              f"rows; paraphrases clustered at claim-token Jaccard ≥ "
              f"{CLUSTER_JACCARD})", ""]
     for i, c in enumerate(clusters, 1):
-        r = c[0]
+        # Later re-wordings can include a correction made after the first Stop
+        # fire. The newest row is the representative; older wording remains
+        # visible as provenance, never allowed to win merely by arriving first.
+        r = c[-1]
         sessions = []
         for m in c:
             s = (m.get("session_id") or "")[:12]
@@ -143,7 +205,7 @@ def section_sheet(dark_rows):
         lines += [head,
                   f"CLAIM: {r.get('claim')}",
                   f"QUOTE: {r.get('transcript_quote')}"]
-        lines += [f"  ALSO: {m.get('claim')}" for m in c[1:]]
+        lines += [f"  EARLIER: {m.get('claim')}" for m in c[:-1]]
         lines += ["MARK:  [ ] keep   [ ] noise   [ ] dangerous-wrong", ""]
     if not clusters:
         lines.append("(no would-file rows yet)")
@@ -278,7 +340,7 @@ def _slug_tokens(slug):
 
 
 def section_dups(dark_rows, filed_rows):
-    _, dup_rows = _dedup_dark(dark_rows)
+    _resolved, health = _resolve_main_attempts(dark_rows)
     pairs = []
     for i, a in enumerate(filed_rows):
         for b in filed_rows[i + 1:]:
@@ -291,8 +353,16 @@ def section_dups(dark_rows, filed_rows):
             if j >= 0.6:
                 pairs.append((a.get("filed_slug"), b.get("filed_slug"), round(j, 2)))
     lines = ["## 4. Dup visibility", "",
-             f"duplicate dark-log rows suppressed by key-dedup: {dup_rows}",
+             f"duplicate attempts collapsed by key: "
+             f"{health['dup_attempts']}",
+             f"transient-only keys (health counters, never gate items): "
+             f"{health['transient_only']}",
+             f"CONFLICTING definitive outcomes — gate-EXCLUDED until "
+             f"adjudicated: {len(health['conflicts'])}",
              f"near-duplicate FILED pairs (slug Jaccard ≥ 0.6): {len(pairs)}"]
+    lines += [f"  ! [{r.get('kind')}] {r.get('project_slug')}: "
+              f"{(r.get('claim') or '')[:100]}"
+              for r in health["conflicts"]]
     lines += [f"  - {a} ~ {b} ({j})" for a, b, j in pairs]
     return "\n".join(lines)
 
@@ -303,48 +373,16 @@ def section_dups(dark_rows, filed_rows):
 # the default --lane main path is byte-compatible with the pre-change report.
 
 
-def _row_definitive(r):
-    """Definitive dark row: entailed (would_file), judged not_entailed, or a
-    quote-gate reject (judge null + quote_ok false). judge_unavailable (or
-    anything else) is transient — health evidence, never a gate item."""
-    if r.get("would_file"):
-        return True
-    if r.get("judge") == "not_entailed":
-        return True
-    if not r.get("quote_ok") and r.get("judge") is None:
-        return True
-    return False
-
-
 def _resolve_attempts(rows):
     """Outcome-aware attempt resolution (FR-5): group retries/concurrent
     attempts by (project_slug, agent_file, candidate_key); a LATER definitive
     outcome outranks earlier transients; conflicting definitive outcomes are
     unresolved — loud and gate-excluded, never silently \"keep first\".
     → (resolved rows, health {transient_only, dup_attempts, conflicts})."""
-    groups, order = {}, []
-    for r in rows:
-        key = (r.get("project_slug") or "", r.get("agent_file") or "",
-               _cache.candidate_key(r))
-        if key not in groups:
-            groups[key] = []
-            order.append(key)
-        groups[key].append(r)
-    resolved, conflicts = [], []
-    transient_only = dup_attempts = 0
-    for key in order:
-        g = groups[key]
-        dup_attempts += len(g) - 1
-        defs = [r for r in g if _row_definitive(r)]
-        if not defs:
-            transient_only += 1
-            continue
-        if len({bool(r.get("would_file")) for r in defs}) > 1:
-            conflicts.append(defs[-1])
-            continue
-        resolved.append(defs[-1])
-    return resolved, {"transient_only": transient_only,
-                      "dup_attempts": dup_attempts, "conflicts": conflicts}
+    return _resolve_groups(
+        rows,
+        lambda r: (r.get("project_slug") or "", r.get("agent_file") or "",
+                   _cache.candidate_key(r)))
 
 
 def _tag_seen_main(clusters, main_rows):
@@ -357,7 +395,7 @@ def _tag_seen_main(clusters, main_rows):
         main_by_kind.setdefault(r.get("kind"), []).append(_claim_tokens(r))
     tags = []
     for c in clusters:
-        rep = c[0]
+        rep = c[-1]
         toks = _claim_tokens(rep)
         seen = False
         for mt in main_by_kind.get(rep.get("kind"), []):
@@ -382,11 +420,11 @@ def section_agent_sheet(resolved, main_rows, total_rows):
              f"agent dark rows; paraphrases clustered at claim-token Jaccard ≥ "
              f"{CLUSTER_JACCARD})", ""]
     order = sorted(range(len(clusters)),
-                   key=lambda i: (clusters[i][0].get("project_slug") or "",
-                                  clusters[i][0].get("agent_kind") or ""))
+                   key=lambda i: (clusters[i][-1].get("project_slug") or "",
+                                  clusters[i][-1].get("agent_kind") or ""))
     for n, i in enumerate(order, 1):
         c = clusters[i]
-        r = c[0]
+        r = c[-1]
         head = (f"### {n}. [{r.get('kind')}] "
                 f"project={r.get('project_slug') or '-'} "
                 f"agent_kind={r.get('agent_kind') or '-'} "
@@ -399,7 +437,7 @@ def section_agent_sheet(resolved, main_rows, total_rows):
         lines += [head,
                   f"CLAIM: {r.get('claim')}",
                   f"QUOTE: {r.get('transcript_quote')}"]
-        lines += [f"  ALSO: {m.get('claim')}" for m in c[1:]]
+        lines += [f"  EARLIER: {m.get('claim')}" for m in c[:-1]]
         lines += ["MARK:  [ ] keep   [ ] noise   [ ] dangerous-wrong", ""]
     if not clusters:
         lines.append("(no resolved would-file rows yet)")
@@ -562,41 +600,55 @@ def collect_lane_items(ms, lane):
                 "agent ledger state_lost — repair before any gate work")
         ledger_rows = _read_jsonl(os.path.join(events, _lane.LEDGER_FILE))
         init_row = next(r for r in ledger_rows if r.get("type") == "init")
-        dark = _read_jsonl(os.path.join(events, _lane.DARK_FILE))
+        dark_all = _read_jsonl(os.path.join(events, _lane.DARK_FILE))
         window_start = init_row.get("ts") or ""
         if window_start:
-            dark = [r for r in dark if (r.get("ts") or "") >= window_start]
+            dark_all = [r for r in dark_all
+                        if (r.get("ts") or "") >= window_start]
+        dark, excluded_policy = _current_policy_rows(dark_all)
         resolved, health = _resolve_attempts(dark)
         would = [r for r in resolved if r.get("would_file")]
         clusters = _cluster_paraphrases(would)
-        main_rows = _read_jsonl(os.path.join(events, _acq.DARK_FILE))
+        main_rows, _ = _current_policy_rows(
+            _read_jsonl(os.path.join(events, _acq.DARK_FILE)))
         tags = _tag_seen_main(clusters, main_rows)
         meta = {"lane": lane, "dark_rows": len(dark),
                 "resolved": len(resolved), "conflicts":
                 len(health["conflicts"]), "transient_only":
-                health["transient_only"]}
+                health["transient_only"],
+                "excluded_other_policy": excluded_policy,
+                "miner_policy": _miner.MINER_POLICY_VERSION}
     else:
-        dark = _read_jsonl(os.path.join(events, _acq.DARK_FILE))
-        uniq, _dups = _dedup_dark(dark)
-        would = [r for r in uniq if r.get("would_file")]
+        dark_all = _read_jsonl(os.path.join(events, _acq.DARK_FILE))
+        dark, excluded_policy = _current_policy_rows(dark_all)
+        resolved, health = _resolve_main_attempts(dark)
+        would = [r for r in resolved if r.get("would_file")]
         clusters = _cluster_paraphrases(would)
         tags = [False] * len(clusters)  # cross-lane tagging is agent-side only
-        meta = {"lane": lane, "dark_rows": len(dark), "resolved": len(uniq)}
+        meta = {"lane": lane, "dark_rows": len(dark),
+                "resolved": len(resolved),
+                "conflicts": len(health["conflicts"]),
+                "transient_only": health["transient_only"],
+                "excluded_other_policy": excluded_policy,
+                "miner_policy": _miner.MINER_POLICY_VERSION}
     items = []
     for c, seen in zip(clusters, tags):
-        r = c[0]
+        r = c[-1]
         items.append({
             "key": _cache.candidate_key(r),
             "lane": lane,
             "kind": r.get("kind"),
             "claim": r.get("claim"),
             "quote": r.get("transcript_quote"),
-            "rewordings": [m.get("claim") for m in c[1:]],
+            "rewordings": [m.get("claim") for m in c[:-1]],
             "project_slug": r.get("project_slug"),
             "session_id": r.get("session_id"),
             "agent_kind": r.get("agent_kind"),
             "workflow_id": r.get("workflow_id"),
-            "transcript_mtime": r.get("transcript_mtime"),
+            # Main-lane rows predate the agent transcript_mtime field, but
+            # every append already carries a recorded timestamp. Never send a
+            # blank time anchor to the D5 commission.
+            "transcript_mtime": r.get("transcript_mtime") or r.get("ts"),
             "seen_main": bool(seen),
         })
     meta["items"] = len(items)
@@ -605,9 +657,9 @@ def collect_lane_items(ms, lane):
 
 def _run_agent_lane(ms, events, args):
     import m3_agent_lane as _lane
-    dark = _read_jsonl(os.path.join(events, _lane.DARK_FILE))
+    dark_all = _read_jsonl(os.path.join(events, _lane.DARK_FILE))
     ledger_rows = _read_jsonl(os.path.join(events, _lane.LEDGER_FILE))
-    done_rows = [r for r in ledger_rows if r.get("type") == "done"]
+    done_rows_all = [r for r in ledger_rows if r.get("type") == "done"]
     # Review P1-3: the report inherits D6 fail-closed via the SAME runtime
     # validator (one fact, one place) — a duplicate/non-first/malformed init
     # must not silently produce gate metrics.
@@ -618,23 +670,32 @@ def _run_agent_lane(ms, events, args):
               "init) — gate rendering SUPPRESSED (D6 fail-closed). Repair "
               "the ledger from preserved evidence before reading any gate "
               "numbers.")
-        print(f"raw rows on disk: agent dark {len(dark)} · ledger "
-              f"{len(ledger_rows)} (done {len(done_rows)})")
+        print(f"raw rows on disk: agent dark {len(dark_all)} · ledger "
+              f"{len(ledger_rows)} (done {len(done_rows_all)})")
         return
     init_row = next(r for r in ledger_rows if r.get("type") == "init")
-    main_dark = _read_jsonl(os.path.join(events, _acq.DARK_FILE))
-    agent_runs = [r["agent"] for r in _driver_runs(events)
-                  if isinstance(r.get("agent"), dict)]
+    main_dark, _ = _current_policy_rows(
+        _read_jsonl(os.path.join(events, _acq.DARK_FILE)))
+    agent_runs_all = [r["agent"] for r in _driver_runs(events)
+                      if isinstance(r.get("agent"), dict)]
     window_start = init_row.get("ts") or ""
     if window_start:  # the agent window starts at the authoritative init
-        dark = [r for r in dark if (r.get("ts") or "") >= window_start]
-        agent_runs = [b for b in agent_runs
-                      if (b.get("ts") or "") >= window_start]
+        dark_all = [r for r in dark_all
+                    if (r.get("ts") or "") >= window_start]
+        agent_runs_all = [b for b in agent_runs_all
+                          if (b.get("ts") or "") >= window_start]
+    dark, excluded_dark = _current_policy_rows(dark_all)
+    done_rows = [r for r in done_rows_all
+                 if r.get("miner_policy") == _miner.MINER_POLICY_VERSION]
+    agent_runs = [b for b in agent_runs_all
+                  if b.get("miner_policy") == _miner.MINER_POLICY_VERSION]
     resolved, health = _resolve_attempts(dark)
 
     print(f"window start (init floor): "
           f"{init_row.get('mtime_floor') or init_row.get('ts')}")
-    print(f"agent dark rows: {len(dark)} · agent fires: {len(agent_runs)} · "
+    print(f"miner policy: {_miner.MINER_POLICY_VERSION}")
+    print(f"agent dark rows: {len(dark)} (current policy) · excluded prior "
+          f"policy: {excluded_dark} · agent fires: {len(agent_runs)} · "
           f"done files: {len(done_rows)}")
     print()
     sheet, clusters, tags = section_agent_sheet(resolved, main_dark, len(dark))
@@ -683,12 +744,18 @@ def main():
     if args.lane == "agent":
         _run_agent_lane(ms, events, args)
         return
-    dark = _read_jsonl(os.path.join(events, _acq.DARK_FILE))
-    runs = _driver_runs(events)
+    dark_all = _read_jsonl(os.path.join(events, _acq.DARK_FILE))
+    dark, excluded_dark = _current_policy_rows(dark_all)
+    runs_all = _driver_runs(events)
+    runs = [r for r in runs_all
+            if (r.get("meta") or {}).get("miner_policy") ==
+            _miner.MINER_POLICY_VERSION]
     filed = _read_jsonl(os.path.join(events, "m3_filed.jsonl"))
 
     print(f"# M3 acquisition dark-run report — {ms}")
-    print(f"dark rows: {len(dark)} · driver runs: {len(runs)} · filed: {len(filed)}")
+    print(f"miner policy: {_miner.MINER_POLICY_VERSION}")
+    print(f"dark rows (current policy): {len(dark)} · excluded prior policy: "
+          f"{excluded_dark} · driver runs: {len(runs)} · filed: {len(filed)}")
     print()
     print(section_sheet(dark))
     print()

@@ -337,6 +337,7 @@ def _drain_one(path, mtime_ns, project_dir, slug, memory_system):
         done_row = {"type": "done", "ts": _now_iso(), "agent_file": rel,
                     "session_id": stem, "project_slug": slug,
                     "mtime_ns": mtime_ns, "mtime": _iso_from_ns(mtime_ns),
+                    "miner_policy": miner.MINER_POLICY_VERSION,
                     "tally": dict(out["tally"])}
         if _append_ledger(memory_system, done_row):
             out["done"] = True
@@ -350,6 +351,7 @@ def drain(transcript, slug, memory_system):
     raises past the caller's outer except; one file's failure never kills
     the drain (NFR-3). Returns the driver-line `agent` block."""
     block = {"status": "ran", "ts": _now_iso(), "project_slug": slug,
+             "miner_policy": miner.MINER_POLICY_VERSION,
              "scanned": 0, "eligible": 0, "backlog": 0,
              "oldest_eligible_s": 0, "mined_files": 0, "tally": {},
              "skipped_seen": 0, "recall_dropped": 0, "judge_calls": 0}
