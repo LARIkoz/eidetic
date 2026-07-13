@@ -27,6 +27,7 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from contextlib import redirect_stdout
 from unittest import mock
 
@@ -749,8 +750,16 @@ class HookWiringTest(_Base):
         self.assertEqual(out["m3_driver"], "ran")  # hook survived
 
 
+# Dynamic, always inside the report window: the agent window starts at the
+# fixture init's REAL now — a hardcoded date passed on its writing day and
+# silently expired at midnight (bitten live 07-13: 3 tests went red by clock).
+def _fresh_ts(minutes_ahead=5):
+    t = datetime.now(timezone.utc) + timedelta(minutes=minutes_ahead)
+    return t.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def _agent_row(claim=None, key_suffix="", **over):
-    row = {"ts": "2026-07-12T10:00:00.000Z",
+    row = {"ts": _fresh_ts(),
            "session_id": "agent-x1", "parent_session_id": "sid-1",
            "project_slug": "-proj-alpha", "agent_kind": "plain",
            "workflow_id": None,
@@ -790,7 +799,7 @@ class ReportLaneTest(_Base):
         # a real driver-log line carrying an agent block (full read path)
         self._write_rows("m3_driver.log", [{
             "m3_driver": "ran", "mined": 0, "meta": {},
-            "agent": {"status": "ran", "ts": "2026-07-12T10:00:00.000Z",
+            "agent": {"status": "ran", "ts": _fresh_ts(),
                       "project_slug": "-proj-alpha", "scanned": 7,
                       "eligible": 1, "backlog": 0, "oldest_eligible_s": 0,
                       "mined_files": 1, "tally": {"would_file": 1},
