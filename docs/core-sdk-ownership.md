@@ -23,7 +23,8 @@ YouGile REST + state DB + FTS/ranking
 Future external connector
   -> eidetic_sdk Connector protocol
       -> future Core-owned ingestion worker
-          -> Core validation, policy, locking, atomic file write, receipt
+          -> stable Core principal + source-object lineage
+          -> Core validation, policy, ordered locks, durable atomic write, receipt
 ```
 
 No arrow points from Core to the SDK.
@@ -111,8 +112,13 @@ discover -> authorized fetch -> normalize candidate
   -> SDK persists RECEIPT_DURABLE for every terminal resolution
   -> accepted + checkpoint_eligible -> CHECKPOINT_COMMITTED
   -> conflict/rejection -> RESOLUTION_PENDING
-       (retain original key + full receipt until explicit owner resolve/skip;
-        no normal checkpoint advance)
+       (retain original key + full receipt until explicit owner resolution)
+       -> candidate-aware get_receipt view
+          -> immutable original resolution + append-only Core owner resolution
+          -> RESOLUTION_COMMITTED
+          -> replace/retry returns to preview, or
+          -> explicit skip + cursor_advance_eligible advances only the source cursor
+             (no content acceptance and checkpoint_eligible remains false)
 ```
 
 ## Deployment dependencies
@@ -128,6 +134,11 @@ discover -> authorized fetch -> normalize candidate
   transmitted through the protocol.
 - YouGile state, vector data, checkpoints, and receipts remain separate from
   Core memory and from provider penalty state.
+- Core owns stable connector-principal identity, credential rotation aliases,
+  source-object lineage state, and the ordered scope/claim/target lock
+  hierarchy. Core also owns candidate-aware receipt views and append-only owner
+  resolution records. The SDK owns only its private
+  pending/receipt/checkpoint journal.
 
 ## Compatibility and rollback matrix
 

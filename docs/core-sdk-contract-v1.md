@@ -94,9 +94,10 @@ upserts and the same source digest.
   that a write was rolled back, so the SDK must reconcile before retrying.
 - Retry only `core_busy`, `timeout`, and explicitly retryable
   `engine_unavailable` errors.
-- `invalid_request`, `incompatible_version`, `index_not_found`,
-  `policy_rejected`, and `idempotency_conflict` are not retried without a
-  changed request or operator action.
+- `invalid_request`, `incompatible_version`, and `index_not_found` are not
+  retried without a changed request or operator action. Durable-ingestion
+  terminal outcomes such as `policy_rejected` and `idempotency_conflict` enter
+  owner resolution rather than this error retry path.
 - The Core build lock serializes index writers. A lock conflict returns
   `core_busy` and never falls back to an unlocked write.
 
@@ -107,22 +108,48 @@ errors contain logical IDs and counts, not raw record text. Source text is sent
 only to the local Core worker for embedding and is not copied to the Core memory
 store. Receipts contain no credentials or provider routes.
 
-## Stable error taxonomy
+## Stable transport and precondition error taxonomy
 
-| Code | Retryable | Meaning |
+The executable Engine surface and future ingestion surface share the envelope.
+The retry action below never authorizes a durable-ingestion resubmit with a new
+idempotency key. Unknown ingestion outcomes reconcile through `get_receipt`
+first.
+
+| Code | Retry action | Meaning |
 | --- | --- | --- |
 | `invalid_request` | no | Envelope, field, record, or operation is invalid |
 | `incompatible_version` | no | Protocol major or required capability is unsupported |
 | `unsupported_operation` | no | Operation is outside the selected typed surface |
 | `index_not_found` | no | Read requested for an absent logical derived index |
-| `core_busy` | yes | Core-owned build lock is held |
+| `core_busy` | same request | Core-owned lock or recovery barrier is held |
 | `engine_unavailable` | conditional | Model/runtime cannot complete the requested operation |
-| `stale_index` | no | Read is explicitly degraded because stamps or source state are stale |
-| `timeout` | yes | Caller deadline expired; reconcile before retrying a sync |
-| `policy_rejected` | no | Future ingestion candidate was rejected by Core policy |
-| `idempotency_conflict` | no | Future ingestion key was reused for a different candidate |
-| `permission_denied` | no | Requested operation is not authorized by Core configuration |
-| `internal_error` | no | Sanitized unexpected Core failure |
+| `stale_index` | repair first | Read is explicitly degraded because stamps or source state are stale |
+| `timeout` | reconcile first | Caller deadline expired; reconcile Engine sync or ingestion receipt before retrying |
+| `permission_denied` | operator/config change | Requested operation or scope is not authorized by Core configuration |
+| `preview_stale` | new preview/grant, same key | Ingestion preview, policy, lineage, or expected target binding is no longer current |
+| `incomplete_operation` | Core reconciliation | A durable ingestion intent exists but cannot yet be finalized safely; the target remains blocked |
+| `receipt_not_found` | new preview/grant, same key | After the recovery barrier, Core proved that no durable intent, receipt, alias, attempt resolution, conflicting key binding, or in-flight operation exists for the key and attempted candidate digest |
+| `internal_error` | reconcile first | Sanitized unexpected Core failure; for ingestion it does not prove that no write occurred |
+
+### Durable-ingestion terminal outcomes
+
+`submit_ingest` returns `ok=true` with a durable delivery resolution whenever
+the request reaches one of these terminal outcomes. Callers inspect `outcome`;
+they must not interpret envelope success as content acceptance.
+
+| Outcome | `checkpoint_eligible` | Meaning |
+| --- | --- | --- |
+| `accepted` | yes | Durable content commit or idempotent replay of that commit |
+| `policy_rejected` | no | Core policy reached a terminal rejection for this keyed delivery |
+| `idempotency_conflict` | no | The key or same-revision claim is bound to a different candidate digest |
+| `target_conflict` | no | Target state, logical identity, or source revision lineage conflicts with the candidate |
+
+Owner resolution is separate from submit outcome. An explicit Core-issued skip
+can set `cursor_advance_eligible=true` for one source object/revision, but it
+does not change the terminal outcome or set `checkpoint_eligible=true`.
+`get_receipt` returns a receipt view whose original delivery resolution remains
+byte-for-byte immutable and whose `owner_resolutions` collection is separately
+append-only.
 
 ## Compatibility guarantees
 
@@ -149,7 +176,15 @@ must provide separate operations:
 4. `preview_ingest`
 5. `submit_ingest` with an idempotency key
 6. `query` / `retrieve`
-7. `get_receipt`
+7. `get_receipt` with the original idempotency key and attempted candidate
+   digest
+
+Core authenticates sessions to a stable logical connector principal whose
+idempotency namespace survives credential rotation. Core also maintains a
+revision-independent source-object claim and validates source revision lineage;
+an SDK assertion cannot make an older or unrelated revision current. For an
+opaque revision, an expected-predecessor match is necessary but not sufficient
+for unattended submit unless Core can independently verify successor ordering.
 
 The SDK connector stages are discover, authorized fetch, normalize, validate,
 preview/approval, then persist `PENDING` with the original idempotency key
@@ -157,9 +192,16 @@ before submit. Every terminal delivery resolution is persisted first as
 `RECEIPT_DURABLE`. Only an accepted outcome with
 `checkpoint_eligible=true` advances the normal source checkpoint and becomes
 `CHECKPOINT_COMMITTED`; conflicts and rejections become
-`RESOLUTION_PENDING` with the original key and receipt retained. Core alone
-evaluates admissibility, locks, writes atomically, records policy identity, and
-returns the terminal receipt.
+`RESOLUTION_PENDING` with the original key and receipt retained. A later
+Core-issued owner-resolution record, retrieved from the append-only receipt
+view, becomes `RESOLUTION_COMMITTED`; an explicit skip may separately authorize
+cursor advancement without claiming content acceptance. Timeout, transport
+loss, and `internal_error` require candidate-aware `get_receipt` with the
+original key before any resubmit. Same-key/different-digest conflicts are
+persisted per attempted digest without rebinding the original key. Core alone
+evaluates admissibility, owns the ordered scope/claim/target locks, performs a
+proven durable atomic replace, records policy identity, and returns durable
+resolutions.
 
 No executable ingestion worker or write stub ships in this extraction. That is
 an intentional fail-closed state, not an unavailable feature hidden behind a
