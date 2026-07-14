@@ -1,0 +1,24 @@
+{
+  "schema": "m3-post-entailment-manual-fixture-v1",
+  "rows": [
+    {"label": "C01", "shape": "duplicate", "expected_outcome": "duplicate_existing"},
+    {"label": "C02", "shape": "project_fix", "expected_outcome": "project_fix_candidate"},
+    {"label": "C03", "shape": "overgeneralized_evaluative", "expected_outcome": "rejected_overgeneralized"},
+    {"label": "C04", "shape": "duplicate", "expected_outcome": "duplicate_existing"},
+    {"label": "C05", "shape": "overgeneralized_zero", "expected_outcome": "rejected_overgeneralized"},
+    {"label": "C06", "shape": "duplicate", "expected_outcome": "duplicate_existing"},
+    {"label": "C07", "shape": "duplicate", "expected_outcome": "duplicate_existing"},
+    {"label": "C08", "shape": "duplicate", "expected_outcome": "duplicate_existing"},
+    {"label": "C09", "shape": "superseded", "expected_outcome": "superseded_later_context"},
+    {"label": "C10", "shape": "duplicate", "expected_outcome": "duplicate_existing"},
+    {"label": "C11", "shape": "duplicate", "expected_outcome": "duplicate_existing"},
+    {"label": "C12", "shape": "duplicate", "expected_outcome": "duplicate_existing"},
+    {"label": "C13", "shape": "duplicate", "expected_outcome": "duplicate_existing"},
+    {"label": "C14", "shape": "duplicate", "expected_outcome": "duplicate_existing"},
+    {"label": "C15", "shape": "duplicate", "expected_outcome": "duplicate_existing"},
+    {"label": "C16", "shape": "superseded", "expected_outcome": "superseded_later_context"},
+    {"label": "C17", "shape": "duplicate", "expected_outcome": "duplicate_existing"},
+    {"label": "C18", "shape": "duplicate", "expected_outcome": "duplicate_existing"},
+    {"label": "C19", "shape": "incident", "expected_outcome": "incident_evidence_candidate"}
+  ]
+}
