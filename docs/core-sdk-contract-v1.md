@@ -1,8 +1,9 @@
 # Eidetic Core integration contracts v1
 
 ADR 0003 defines two typed surfaces. Only the Engine surface is executable in
-the first extraction. The ingestion surface is a design contract and remains
-fail-closed until a separate policy review.
+the first extraction. ADR 0004 accepts the Core-owned durable-ingestion policy
+boundary; the ingestion surface remains non-executable and fail-closed until
+all ADR 0004 readiness gates pass.
 
 ## Engine protocol
 
@@ -136,6 +137,9 @@ contract manifest; the SDK repository does not carry a forked schema copy.
 
 ## Future ingestion protocol
 
+ADR 0004 is the binding decision for write authority, authorization grants,
+idempotency aliases, prepared-commit recovery, and checkpoint eligibility.
+
 The future protocol identifier is `eidetic.ingestion`; its first major version
 must provide separate operations:
 
@@ -147,11 +151,15 @@ must provide separate operations:
 6. `query` / `retrieve`
 7. `get_receipt`
 
-The SDK connector stages are discover, authorized fetch, normalize, submit,
-persist checkpoint plus terminal Core receipt, retry only retryable errors, and
-surface conflicts/permanent failures. Core alone evaluates admissibility,
-locks, writes atomically, records policy identity, and returns the terminal
-receipt.
+The SDK connector stages are discover, authorized fetch, normalize, validate,
+preview/approval, then persist `PENDING` with the original idempotency key
+before submit. Every terminal delivery resolution is persisted first as
+`RECEIPT_DURABLE`. Only an accepted outcome with
+`checkpoint_eligible=true` advances the normal source checkpoint and becomes
+`CHECKPOINT_COMMITTED`; conflicts and rejections become
+`RESOLUTION_PENDING` with the original key and receipt retained. Core alone
+evaluates admissibility, locks, writes atomically, records policy identity, and
+returns the terminal receipt.
 
 No executable ingestion worker or write stub ships in this extraction. That is
 an intentional fail-closed state, not an unavailable feature hidden behind a

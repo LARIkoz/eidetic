@@ -74,7 +74,7 @@ replacing the hard-coded Core import.
 | YouGile REST/state/chunk/ranking/formatting code | external application | Source-specific behavior stays outside both Core and generic SDK |
 | YouGile SDK adapter and frozen fixtures | example / external application | First reference adoption and parity proof |
 | Writer/Palmyra routes, model roster, penalties, prompts | core plus `shared_api_cache` | Provider policy is not an integration SDK concern |
-| Future ingestion worker and receipt ledger | undecided until policy ADR | No executable submit surface in this extraction |
+| Future ingestion worker, coordinator, and receipt ledger | core per ADR 0004 | Policy boundary accepted; executable submit remains disabled until its readiness gates pass |
 
 ## Data flows
 
@@ -105,9 +105,14 @@ YouGile REST cache
 
 ```text
 discover -> authorized fetch -> normalize candidate
-  -> Core validate -> Core preview -> owner/policy-approved submit
+  -> SDK persists PENDING with original idempotency key
+  -> Core validate -> Core preview -> Core-granted approved submit
   -> Core atomic write -> Core provenance receipt
-  -> SDK checkpoint records receipt only after terminal success
+  -> SDK persists RECEIPT_DURABLE for every terminal resolution
+  -> accepted + checkpoint_eligible -> CHECKPOINT_COMMITTED
+  -> conflict/rejection -> RESOLUTION_PENDING
+       (retain original key + full receipt until explicit owner resolve/skip;
+        no normal checkpoint advance)
 ```
 
 ## Deployment dependencies
