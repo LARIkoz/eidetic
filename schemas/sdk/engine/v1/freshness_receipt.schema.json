@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eidetic.local/contracts/engine/v1/freshness_receipt.schema.json",
+  "title": "Eidetic Engine freshness receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "receipt_id",
+    "index_id",
+    "snapshot",
+    "source_digest",
+    "status",
+    "expected",
+    "indexed",
+    "missing",
+    "changed",
+    "orphaned",
+    "upserted",
+    "deleted",
+    "engine_api",
+    "model",
+    "observed_at",
+    "repair"
+  ],
+  "properties": {
+    "receipt_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "index_id": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{0,63}$"},
+    "snapshot": {"enum": ["complete", "partial"]},
+    "source_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "status": {"enum": ["fresh", "stale", "degraded"]},
+    "expected": {"type": "integer", "minimum": 0},
+    "indexed": {"type": "integer", "minimum": 0},
+    "missing": {"type": "integer", "minimum": 0},
+    "changed": {"type": "integer", "minimum": 0},
+    "orphaned": {"type": "integer", "minimum": 0},
+    "upserted": {"type": "integer", "minimum": 0},
+    "deleted": {"type": "integer", "minimum": 0},
+    "engine_api": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+    "model": {"type": "string", "minLength": 1, "maxLength": 256},
+    "observed_at": {"type": "string", "format": "date-time"},
+    "repair": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["operation", "bounded"],
+          "properties": {
+            "operation": {"enum": ["sync", "rebuild", "operator_action"]},
+            "bounded": {"type": "boolean"}
+          }
+        }
+      ]
+    }
+  }
+}

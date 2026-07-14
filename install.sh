@@ -80,6 +80,12 @@ for src in bin/*.py; do
     atomic_install "$src" "$MEMORY_SYSTEM/bin/$(basename "$src")" "$mode"
 done
 atomic_install mcp_server.py "$MEMORY_SYSTEM/mcp_server.py" 644
+if [ -d "schemas/sdk/engine/v1" ]; then
+    mkdir -p "$MEMORY_SYSTEM/contracts/engine/v1"
+    for src in schemas/sdk/engine/v1/*.json; do
+        atomic_install "$src" "$MEMORY_SYSTEM/contracts/engine/v1/$(basename "$src")" 644
+    done
+fi
 
 # --- The three models that define the system (5b.1) ------------------------------
 # Each: env var (if set, wins — the CI/agent path) > interactive prompt on a TTY

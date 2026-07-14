@@ -59,7 +59,9 @@ class EngineSelectorTest(unittest.TestCase):
         embed.EMBED_PROFILE = self._saved_profile
 
     def test_default_is_fastembed(self):
-        self.assertEqual(embed._active_engine(), "fastembed")
+        with tempfile.TemporaryDirectory(prefix="mlx-default-") as directory:
+            config = os.path.join(directory, ".embed_engine")
+            self.assertEqual(embed._active_engine(_config_path=config), "fastembed")
 
     def test_env_selects_mlx(self):
         os.environ["EIDETIC_EMBED_ENGINE"] = "mlx"
@@ -181,7 +183,9 @@ class AdditiveTest(unittest.TestCase):
         # onnxruntime path, unchanged for existing installs.
         saved = os.environ.pop("EIDETIC_EMBED_ENGINE", None)
         try:
-            self.assertEqual(embed._active_engine(), "fastembed")
+            with tempfile.TemporaryDirectory(prefix="mlx-default-") as directory:
+                config = os.path.join(directory, ".embed_engine")
+                self.assertEqual(embed._active_engine(_config_path=config), "fastembed")
         finally:
             if saved is not None:
                 os.environ["EIDETIC_EMBED_ENGINE"] = saved

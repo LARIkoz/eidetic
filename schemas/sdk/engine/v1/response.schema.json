@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eidetic.local/contracts/engine/v1/response.schema.json",
+  "title": "Eidetic Engine JSONL response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "version", "request_id", "ok", "result", "error"],
+  "properties": {
+    "protocol": {"const": "eidetic.engine"},
+    "version": {"type": "string", "pattern": "^1\\.[0-9]+$"},
+    "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "ok": {"type": "boolean"},
+    "result": {"type": ["object", "array", "null"]},
+    "error": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message", "retryable"],
+          "properties": {
+            "code": {
+              "enum": [
+                "invalid_request",
+                "incompatible_version",
+                "unsupported_operation",
+                "index_not_found",
+                "core_busy",
+                "engine_unavailable",
+                "stale_index",
+                "timeout",
+                "policy_rejected",
+                "idempotency_conflict",
+                "permission_denied",
+                "internal_error"
+              ]
+            },
+            "message": {"type": "string", "minLength": 1, "maxLength": 1024},
+            "retryable": {"type": "boolean"},
+            "details": {"type": "object"}
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"ok": {"const": true}}},
+      "then": {
+        "properties": {
+          "result": {"not": {"type": "null"}},
+          "error": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"ok": {"const": false}}},
+      "then": {
+        "properties": {
+          "result": {"type": "null"},
+          "error": {"type": "object"}
+        }
+      }
+    }
+  ]
+}
