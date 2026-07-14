@@ -1,0 +1,20 @@
+{
+  "protocol": "eidetic.engine",
+  "version": "1.0",
+  "transport": "jsonl-stdio",
+  "worker": "bin/eidetic_engine_worker.py",
+  "engine_api_tested": ["1.1"],
+  "operations": ["capabilities", "health", "reconcile", "sync", "search", "rerank"],
+  "schemas": {
+    "request": "request.schema.json",
+    "response": "response.schema.json",
+    "record": "record.schema.json",
+    "freshness_receipt": "freshness_receipt.schema.json"
+  },
+  "privacy": {
+    "network_listener": false,
+    "public_paths": false,
+    "returns_embeddings": false,
+    "returns_raw_source": false
+  }
+}

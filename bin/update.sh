@@ -118,6 +118,12 @@ for src in "$TMP_DIR/eidetic/bin/"*.py; do
     atomic_install "$src" "$MEMORY_SYSTEM/bin/$(basename "$src")" "$mode"
 done
 atomic_install "$TMP_DIR/eidetic/mcp_server.py" "$MEMORY_SYSTEM/mcp_server.py" 644
+if [ -d "$TMP_DIR/eidetic/schemas/sdk/engine/v1" ]; then
+    mkdir -p "$MEMORY_SYSTEM/contracts/engine/v1"
+    for src in "$TMP_DIR/eidetic/schemas/sdk/engine/v1/"*.json; do
+        atomic_install "$src" "$MEMORY_SYSTEM/contracts/engine/v1/$(basename "$src")" 644
+    done
+fi
 
 if [ -d "$TMP_DIR/eidetic/hooks" ]; then
     for hook in "$TMP_DIR/eidetic/hooks/"*.sh; do

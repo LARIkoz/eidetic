@@ -129,9 +129,13 @@ build on the same door instead of the private internals.
 ```
 
 Reads degrade (search returns `[]` + one reason if the model is missing), builds
-shout (`EngineUnavailable`), and the contract is versioned (`ENGINE_API 1.0`).
+shout (`EngineUnavailable`), and the contract is versioned (`ENGINE_API 1.1`).
 See [docs/engine.md](docs/engine.md) — quickstart, contract table, and the first
 external consumer (a task-tracker search skill on its own index).
+
+External integrations use the path-free Core/SDK contract defined in
+[ADR 0003](docs/adr/0003-core-sdk-boundary.md); the low-level module remains a
+Core and legacy compatibility surface.
 
 ---
 

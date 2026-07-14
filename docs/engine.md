@@ -2,7 +2,7 @@
 
 ## What this is — and what it is not
 
-The **Engine API** (`bin/engine.py`, `ENGINE_API = "1.0"`) is the versioned
+The **Engine API** (`bin/engine.py`, `ENGINE_API = "1.1"`) is the versioned
 seam over Eidetic's embedding / vector-store / search core. Memory, topic bases,
 and your own consumers build on the *same* engine through one small public
 surface, instead of reaching into private internals.
@@ -101,16 +101,14 @@ the live embedder and, on a mismatch (someone changed the model or upgraded
 fastembed under a built index), returns no hits with a one-line reason instead of
 silently scoring meaningless cosines. Rebuild (`index.sh --full`) re-stamps.
 
-## Limits (v1)
+## Limits (v1.1)
 
-The v1 surface covers index-time embedding, the vector index, drift-guarded
-search, and rerank. It does **not** yet expose the lower-level primitives some
-in-repo code needs — notably the raw `embed_texts` / `embed_query_texts` and the
-active `EMBED_PROFILE`. Accordingly, `bin/compound.py`'s semantic dedup gate
-stays on the internal `embed.py` path for now (it embeds a query/passage pair and
-reads the profile threshold directly). A v1.1 (additive) surface for those
-primitives is the migration path; until then compound is a deliberate,
-disclosed exception, not an oversight.
+The v1.1 surface adds query-side batch embedding, nearest-neighbor lookup, and
+the active embedding profile without breaking v1.0 callers. It remains a
+low-level in-process Core/legacy API: `open_index(path)` deliberately exposes a
+consumer-owned vector-store path and storage-shaped fields. New external SDK
+consumers therefore use the logical-index JSONL contract from ADR 0003 instead
+of promoting this path-based API across the repository boundary.
 
 ## Reference consumer — task-tracker semantic search
 

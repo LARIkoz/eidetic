@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eidetic.local/contracts/engine/v1/request.schema.json",
+  "title": "Eidetic Engine JSONL request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "version", "request_id", "operation", "payload"],
+  "properties": {
+    "protocol": {"const": "eidetic.engine"},
+    "version": {"type": "string", "pattern": "^1\\.[0-9]+$"},
+    "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "operation": {
+      "enum": ["capabilities", "health", "reconcile", "sync", "search", "rerank"]
+    },
+    "payload": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"operation": {"const": "capabilities"}}},
+      "then": {"properties": {"payload": {"maxProperties": 0}}}
+    },
+    {
+      "if": {"properties": {"operation": {"const": "health"}}},
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "index_id": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{0,63}$"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"operation": {"const": "reconcile"}}},
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["index_id", "records", "snapshot"],
+            "properties": {
+              "index_id": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{0,63}$"},
+              "records": {
+                "type": "array",
+                "maxItems": 100000,
+                "items": {"$ref": "record.schema.json"}
+              },
+              "snapshot": {"enum": ["complete", "partial"]}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"operation": {"const": "sync"}}},
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["index_id", "records", "snapshot"],
+            "properties": {
+              "index_id": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{0,63}$"},
+              "records": {
+                "type": "array",
+                "maxItems": 100000,
+                "items": {"$ref": "record.schema.json"}
+              },
+              "snapshot": {"enum": ["complete", "partial"]},
+              "force": {"type": "boolean", "default": false}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"operation": {"const": "search"}}},
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["index_id", "query", "limit"],
+            "properties": {
+              "index_id": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{0,63}$"},
+              "query": {"type": "string", "minLength": 1, "maxLength": 100000},
+              "limit": {"type": "integer", "minimum": 1, "maximum": 1000}
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"operation": {"const": "rerank"}}},
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["query", "documents"],
+            "properties": {
+              "query": {"type": "string", "minLength": 1, "maxLength": 100000},
+              "documents": {
+                "type": "array",
+                "maxItems": 1000,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["document_id", "text"],
+                  "properties": {
+                    "document_id": {"type": "string", "minLength": 1, "maxLength": 512},
+                    "text": {"type": "string", "maxLength": 1000000}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
