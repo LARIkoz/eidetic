@@ -24,7 +24,9 @@ Future external connector
   -> eidetic_sdk Connector protocol
       -> future Core-owned ingestion worker
           -> stable Core principal + source-object lineage
-          -> Core validation, policy, ordered locks, durable atomic write, receipt
+          -> candidate/document validation and preview
+          -> exact per-candidate grants from one owner-reviewed manifest
+          -> Core policy, ordered locks, durable atomic write, receipt
 ```
 
 No arrow points from Core to the SDK.
@@ -47,7 +49,7 @@ No arrow points from Core to the SDK.
 | Consumer | Dependency observed | Owner | Action |
 | --- | --- | --- | --- |
 | Installed YouGile skill | Hard-coded installed `bin` import, direct Engine/Index calls, three MLX re-exec copies | YouGile + SDK | First vertical slice; keep YouGile fetch/chunk/ranking code in the skill |
-| `eidetic-importer/import.py` | Invokes installed `remember.py` for durable writes | importer | Preserve; migrate only after ingestion protocol review |
+| `eidetic-importer/import.py` | Invokes installed `remember.py` for durable writes and hard-codes an atomization route | importer | Preserve as rollback evidence; replacement importer becomes a separate SDK consumer only after preview and durable-ingestion phase reviews |
 | `rag-engine-ab/retrieve_all.py` | Invokes installed `search.sh` against topic bases | experiment | Preserve as legacy read CLI |
 | `shared-rag/rag/embedder_bgem3.py` | Imports private installed `mlx_embed.py` | shared-rag | Record as known private caller; separate migration |
 | `claude-setup/skills/handoff/bin/auto-cycle-handoff.sh` | Invokes installed index/search and reads derived counts | handoff skill | Preserve; Core CLI consumer |
@@ -75,7 +77,9 @@ replacing the hard-coded Core import.
 | YouGile REST/state/chunk/ranking/formatting code | external application | Source-specific behavior stays outside both Core and generic SDK |
 | YouGile SDK adapter and frozen fixtures | example / external application | First reference adoption and parity proof |
 | Writer/Palmyra routes, model roster, penalties, prompts | core plus `shared_api_cache` | Provider policy is not an integration SDK concern |
-| Future ingestion worker, coordinator, and receipt ledger | core per ADR 0004 | Policy boundary accepted; executable submit remains disabled until its readiness gates pass |
+| Future candidate/document ingestion worker, coordinator, approval/grant state, and receipt ledger | core per ADR 0004 | Policy boundary accepted; executable submit remains disabled until its readiness gates pass |
+| Book parser, source store, chunk ledger, atomization, grounding, consolidation, and manifest construction | importer application | Source-specific/LLM workflow stays outside Core and the generic SDK |
+| `knowledge_atomization` task capability and provider execution | `shared_api_cache` | Provider-neutral route/gate; no exact route belongs in Core or `eidetic-sdk` |
 
 ## Data flows
 
@@ -102,24 +106,35 @@ YouGile REST cache
   -> YouGile vector recall + FTS + optional rerank
 ```
 
-### Future ingestion
+### Future candidate and document ingestion
 
 ```text
-discover -> authorized fetch -> normalize candidate
-  -> SDK persists PENDING with original idempotency key
-  -> Core validate -> Core preview -> Core-granted approved submit
-  -> Core atomic write -> Core provenance receipt
-  -> SDK persists RECEIPT_DURABLE for every terminal resolution
-  -> accepted + checkpoint_eligible -> CHECKPOINT_COMMITTED
-  -> conflict/rejection -> RESOLUTION_PENDING
-       (retain original key + full receipt until explicit owner resolution)
-       -> candidate-aware get_receipt view
-          -> immutable original resolution + append-only Core owner resolution
+authorized source snapshot
+  -> importer parse/chunk/atomize/ground/consolidate
+  -> immutable document manifest + complete candidate set
+  -> Core validate candidate/manifest -> Core preview candidate/manifest
+  -> one Core-owned owner action over the immutable manifest
+  -> Core creates one exact grant per approved candidate preview
+  -> for each candidate independently:
+       SDK persists PENDING with original idempotency key
+       -> Core-approved submit -> Core atomic write -> Core receipt
+       -> SDK persists RECEIPT_DURABLE for every terminal resolution
+       -> accepted + checkpoint_eligible -> CHECKPOINT_COMMITTED
+       -> conflict/rejection -> RESOLUTION_PENDING
+          -> candidate-aware get_receipt / owner resolution
           -> RESOLUTION_COMMITTED
-          -> replace/retry returns to preview, or
-          -> explicit skip + cursor_advance_eligible advances only the source cursor
-             (no content acceptance and checkpoint_eligible remains false)
+  -> aggregate document session is derived from candidate receipts
+     (partial is explicit; COMPLETE requires every candidate reconciled)
 ```
+
+The manifest is an owner-review and audit grouping, not write authority and not
+an atomic multi-target transaction. Book rollback uses independently reviewed
+compensating lifecycle candidates. The first writable document scope maps to a
+Core-private target physically isolated from every current project-memory,
+agent-memory, topic-base, M1/M2/M3, curation, and legacy importer writer.
+
+The canonical decision and writer inventory are under
+`docs/eidetic-llm-wiki-ingestion/`.
 
 ## Deployment dependencies
 
@@ -134,6 +149,10 @@ discover -> authorized fetch -> normalize candidate
   transmitted through the protocol.
 - YouGile state, vector data, checkpoints, and receipts remain separate from
   Core memory and from provider penalty state.
+- Importer source snapshots, chunk ledgers, provider outputs, repair artifacts,
+  and document manifests remain outside Core receipts and SDK pending journals.
+- The first imported-book target is Core-private and writer-isolated; its path
+  is never transmitted through the public protocol.
 - Core owns stable connector-principal identity, credential rotation aliases,
   source-object lineage state, and the ordered scope/claim/target lock
   hierarchy. Core also owns candidate-aware receipt views and append-only owner

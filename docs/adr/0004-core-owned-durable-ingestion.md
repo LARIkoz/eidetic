@@ -8,6 +8,9 @@
 - Clarified: 2026-07-14 — terminal wire outcomes, principal continuity,
   revision lineage, candidate-aware receipt recovery, durable-replace recovery,
   and owner-resolution cursors
+- Clarified: 2026-07-16 — immutable document-manifest review grouping,
+  candidate-exact grants, partial import sessions, isolated first-write scope,
+  and compensating book rollback
 
 ## Context
 
@@ -49,8 +52,9 @@ already shipped `eidetic.engine` protocol.
    provenance, conflict handling, receipt reconciliation, and lifecycle
    scheduling.
 4. Version 1 provides these operations:
-   `capabilities`, `health`, `validate_candidate`, `preview_ingest`,
-   `submit_ingest`, `get_receipt`, `query`, and `retrieve`.
+   `capabilities`, `health`, `validate_candidate`, `validate_manifest`,
+   `preview_ingest`, `preview_manifest`, `submit_ingest`, `get_receipt`,
+   `query`, and `retrieve`.
 5. `submit_ingest` is absent or returns `permission_denied` until every
    readiness gate in this ADR is satisfied and Core configuration explicitly
    enables a named ingestion scope. Validation and preview confer no write
@@ -107,6 +111,62 @@ recoverable `incomplete_operation`; a lost alias response remains discoverable
 through `get_receipt`. The same source claim with a different digest, or a
 lineage regression for the same source-object claim, is a conflict and never
 causes a second silent mutation.
+
+### Document manifests and grouped owner approval
+
+A document connector may propose many related candidates. Version 1 may group
+their validation, preview, owner review, and audit evidence in one immutable
+`document_manifest`, provided that the grouping never becomes reusable write
+authority or an atomic multi-target commit claim.
+
+The manifest binds the source/document/pipeline identities and digests, complete
+chunk-accounting digest, complete candidate set and candidate digests,
+source-scoped logical identities, proposed lineage actions, requested scope,
+policy identity/version, and a completeness assertion. Core canonicalizes the
+manifest and computes the authoritative `manifest_digest`. Any policy-relevant
+change invalidates its preview and approval.
+
+Core may expose read-only `validate_manifest` and `preview_manifest` operations
+alongside candidate validation and preview. They do not enable a scope, mint
+write authority, mutate a target, consume a grant, create a receipt, or advance
+a checkpoint.
+
+One Core-owned local owner action may approve the exact immutable manifest.
+Core then creates a distinct exact grant record for each approved candidate
+preview. Every grant remains independently bound to its authenticated principal,
+scope, manifest digest, candidate digest, candidate preview token, policy,
+expected target and lineage state, expiry, and candidate-specific nonce. A
+manifest-wide opaque token cannot authorize arbitrary candidates, and one
+candidate cannot consume another candidate's grant.
+
+Core durably retains the approval record and unconsumed exact grant state. The
+SDK may persist only non-authorizing approval/grant references, never raw grant
+material. While the approval remains valid, the Core-owned approval surface may
+make the exact unconsumed grant available again only to the authenticated
+principal for that bound candidate. Expiry before durable `INTENT` requires a
+new preview and approval; after `INTENT`, the original idempotency key and
+receipt recovery govern the outcome.
+
+Each candidate still commits and recovers independently through the protocol in
+this ADR. A document import session may be partial and must derive its aggregate
+state from candidate receipt states. `COMPLETE` means every candidate has an
+explicitly reconciled terminal outcome, not that every candidate was accepted.
+
+Document rollback is a reviewed set of compensating Core lifecycle operations,
+each with its own preview, exact grant, idempotency key, durable mutation, and
+receipt. It never deletes or rewrites original cards, manifests, ledgers, or
+receipts. Target or lineage divergence fails closed for owner resolution.
+
+The first writable document scope must use a Core-private target class
+physically isolated from every existing `remember.py`, compound, M1/M2/M3,
+curation, topic-base, direct importer, and external writer path. An all-or-
+nothing multi-target document transaction, or ingestion into a target shared
+with uncoordinated writers, requires a separate decision and recovery proof.
+
+The companion contract and writer inventory are:
+
+- `docs/eidetic-llm-wiki-ingestion/book-manifest-contract.md`; and
+- `docs/eidetic-llm-wiki-ingestion/writer-inventory.md`.
 
 ### Validate, preview, and submit authority
 
@@ -400,8 +460,9 @@ penalty state remain outside the ingestion protocol.
 Executable `submit_ingest` remains disabled until all of these gates pass:
 
 1. Canonical Core-owned JSON schemas, compatibility fixtures, and negative
-   tests exist for every operation, nonterminal error, terminal outcome,
-   preview, delivery resolution, receipt view, and owner-resolution record.
+   tests exist for every candidate and document-manifest operation, nonterminal
+   error, terminal outcome, preview, per-candidate grant binding, delivery
+   resolution, receipt view, and owner-resolution record.
    Contract tests prove that terminal submit decisions use `ok=true`
    resolutions while
    unknown outcomes remain reconcilable through candidate-aware `get_receipt`.
@@ -421,11 +482,14 @@ Executable `submit_ingest` remains disabled until all of these gates pass:
    aliased incomplete operation, and `get_receipt` resolves canonical keys,
    aliases, and same-key/different-digest attempts without changing the
    canonical key binding.
-4. SDK crash tests cover every transition from `PENDING` through
+4. SDK crash tests cover every candidate transition from `PENDING` through
    `RECEIPT_DURABLE`, `CHECKPOINT_COMMITTED`, `RESOLUTION_PENDING`, or
    `RESOLUTION_COMMITTED`, including a lost response plus SDK restart and
    crashes on both sides of checkpoint or explicit-skip cursor commit. The
-   original key remains recoverable for every unfinished state.
+   original key remains recoverable for every unfinished state. Document import
+   session tests prove that partial candidate outcomes remain explicit and
+   resumable and that aggregate `COMPLETE` is derived only after every manifest
+   candidate has a reconciled terminal outcome.
 5. Crash-injection tests cover every boundary before and after staging-file
    flush, `INTENT`, atomic replace, directory flush, `FILE_COMMITTED`, terminal
    receipt, delivery alias, and lifecycle scheduling. The running
@@ -465,17 +529,20 @@ Executable `submit_ingest` remains disabled until all of these gates pass:
     and policy/configuration digest. End-to-end tests verify that exact live
     worker through the public SDK and match it to the reviewed installed
     bundle; source/file parity alone is not accepted as runtime evidence.
-12. A synthetic connector passes end-to-end first. A single real source may be
-    piloted only after rollback and owner-visible conflict handling are proven.
+12. A synthetic connector passes end-to-end first in a physically isolated
+    target class. A single real source may be piloted one chapter first, then as
+    one bounded text/Markdown document, only after compensating rollback,
+    owner-visible partial-session recovery, and conflict handling are proven.
 
 ## Rollout and rollback
 
 Rollout is additive: schemas and a disabled worker surface first, then
-synthetic validation/preview, then synthetic submit under an isolated scope,
-then one explicitly enabled real-source scope. Existing `remember.py`, MCP,
-and importer write paths are not silently redirected during this rollout; a
-real target remains excluded until every writer for it explicitly adopts the
-shared coordinator.
+synthetic candidate/manifest validation and preview, then an importer preview
+vertical slice with no writes, then synthetic candidate submit under an
+isolated scope, and finally one explicitly enabled real-source scope. Existing
+`remember.py`, MCP, and importer write paths are not silently redirected during
+this rollout; a shared target remains excluded until every writer for it
+explicitly adopts the shared coordinator.
 
 Rollback disables the ingestion scope and rejects every new `INTENT`. Operations
 with a durable `INTENT` continue through the recovery table to a terminal

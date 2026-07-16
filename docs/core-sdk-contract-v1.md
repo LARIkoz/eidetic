@@ -173,11 +173,30 @@ must provide separate operations:
 1. `capabilities`
 2. `health`
 3. `validate_candidate`
-4. `preview_ingest`
-5. `submit_ingest` with an idempotency key
-6. `query` / `retrieve`
-7. `get_receipt` with the original idempotency key and attempted candidate
+4. `validate_manifest`
+5. `preview_ingest`
+6. `preview_manifest`
+7. `submit_ingest` with an idempotency key
+8. `query` / `retrieve`
+9. `get_receipt` with the original idempotency key and attempted candidate
    digest
+
+`validate_manifest` and `preview_manifest` group one immutable document's
+complete chunk/candidate accounting for owner review. They are read-only and
+confer no write authority. One Core-owned owner action may approve that exact
+manifest, but Core creates a separate exact, single-use grant for each approved
+candidate preview. The manifest is an approval/audit grouping, not a reusable
+grant and not an atomic multi-target transaction.
+
+Every candidate retains its own idempotency key, durable commit, delivery
+resolution, and receipt. A document import session may be partial and derives
+aggregate status from those candidate receipts. A book-level rollback is a set
+of compensating, evidence-appending Core lifecycle operations, not deletion or
+transactional undo. The first writable document scope is physically isolated
+from existing memory and topic-base writer paths.
+
+The canonical Phase 0 companion is
+`docs/eidetic-llm-wiki-ingestion/book-manifest-contract.md`.
 
 Core authenticates sessions to a stable logical connector principal whose
 idempotency namespace survives credential rotation. Core also maintains a
@@ -187,8 +206,9 @@ opaque revision, an expected-predecessor match is necessary but not sufficient
 for unattended submit unless Core can independently verify successor ordering.
 
 The SDK connector stages are discover, authorized fetch, normalize, validate,
-preview/approval, then persist `PENDING` with the original idempotency key
-before submit. Every terminal delivery resolution is persisted first as
+candidate/manifest preview and approval, then persist candidate `PENDING` with
+the original idempotency key before each submit. Every terminal delivery
+resolution is persisted first as
 `RECEIPT_DURABLE`. Only an accepted outcome with
 `checkpoint_eligible=true` advances the normal source checkpoint and becomes
 `CHECKPOINT_COMMITTED`; conflicts and rejections become
@@ -201,7 +221,8 @@ original key before any resubmit. Same-key/different-digest conflicts are
 persisted per attempted digest without rebinding the original key. Core alone
 evaluates admissibility, owns the ordered scope/claim/target locks, performs a
 proven durable atomic replace, records policy identity, and returns durable
-resolutions.
+resolutions. Document-session state is aggregate evidence only and cannot
+advance or conceal any candidate checkpoint.
 
 No executable ingestion worker or write stub ships in this extraction. That is
 an intentional fail-closed state, not an unavailable feature hidden behind a
