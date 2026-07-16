@@ -1,9 +1,21 @@
 # Phase 1 Requirements: Core Contract With Writes Disabled
 
-**Status:** specification candidate; separate Phase 1 review and GO required
-**Phase 0 dependency:** accepted manifest contract and writer inventory
+**Status:** packet drafted; pre-implementation review and separate GO required
+**Phase 0 dependency:** accepted at Core commit `3757e9a`
 **Implementation authority:** none
 **Primary repository:** Eidetic Core
+
+## Packet Documents
+
+- `phase-1-spec.md` defines the normative protocol, canonicalization, data
+  model, operation semantics, no-write boundary, and implementation allowlist.
+- This file is the normative requirements-to-evidence index.
+- `phase-1-test-plan.md` defines exact fixture classes, test IDs, commands,
+  no-write snapshots, compatibility checks, and installed-runtime evidence.
+- `phase-1-worktree-inventory.md` freezes the source branch, accepted base,
+  packet paths, and all pre-existing excluded M3/preview worktree state.
+- `phase-1-review.md` is created only after a fresh pre-implementation review
+  binds a verdict to the exact specification commit.
 
 ## Objective
 
@@ -23,14 +35,16 @@ The later Phase 1 GO may authorize only a reviewed subset of:
 - `bin/eidetic_ingestion_worker.py`
 - `tests/test_ingestion_contract.py`
 - `tests/test_ingestion_worker.py`
+- `tests/test_ingestion_no_write.py`
+- `tests/fixtures/ingestion/v1/**/*.json`
 - `install.sh` for additive schema/worker deployment
-- `docs/adr/0004-core-owned-durable-ingestion.md`
-- `docs/core-sdk-contract-v1.md`
-- `docs/core-sdk-ownership.md`
-- `docs/eidetic-llm-wiki-ingestion/*`
+- `docs/eidetic-llm-wiki-ingestion/phase-1-review.md`
 
 No SDK, importer, M3, hook, YouGile, provider, memory-card, derived-index, or
 installed-runtime file is in scope unless a Phase 1 packet names it explicitly.
+The reviewed specification currently authorizes no ADR/Core ownership rewrite;
+any semantic change to those accepted documents invalidates the packet and
+requires a new review.
 
 ## Requirements-To-Evidence Matrix
 
