@@ -23,9 +23,10 @@ The future Phase 1 worker may execute only:
 - `preview_ingest`; and
 - `preview_manifest`.
 
-The exact operation name `submit_ingest` is recognized only so it can return a
-deterministic `permission_denied` response. It is not an executable capability.
-No alias such as `submit`, `ingest`, `write`, or a case variant is recognized.
+The exact operation names `submit_ingest` and `retrieve_candidate_grant` are
+recognized only so they can return deterministic `permission_denied`
+responses. They are not executable capabilities. No alias such as `submit`,
+`ingest`, `write`, `grant`, `retrieve_grant`, or a case variant is recognized.
 
 Phase 1 creates no approval record, authorization grant, ledger, staging file,
 receipt, checkpoint, target file, derived index row, operation-log row, or
@@ -52,6 +53,22 @@ future importer -> shared_api_cache for knowledge_atomization
 Core -X-> eidetic-sdk / importer / shared_api_cache
 ```
 
+The repositories and release surfaces remain distinct:
+
+| Component | Owns | Must not own |
+| --- | --- | --- |
+| Eidetic Core | protocol semantics, canonical contract sources, validation, logical target state, visible-effect preview, future authorization/write/receipt/recovery, storage/search, and existing Core-local MLX embedding | SDK transport/orchestration, document decoding, OCR, LLM atomization, provider routing, or importer checkpoints |
+| `eidetic-sdk` | typed public-protocol client, transport adapters, version/artifact compatibility checks, retry/session orchestration, and non-authorizing reference journaling | Core internals/storage paths, policy decisions, grant minting, durable target mutation, canonical contract-source ownership, document parsing, or model/provider execution |
+| future `eidetic-importer` | PDF/EPUB/Markdown/web decoding, OCR, normalization, chunking, LLM or local-MLX atomization, repair, provider routing, manifest construction, and source checkpoints | Core target paths, Core policy/authorization, direct durable writes, or a private protocol fork |
+
+Core publishes the protocol seam as a versioned immutable contract artifact.
+The SDK consumes an exact artifact version and digest; it does not depend on a
+Core checkout, Git submodule, repository-relative path, or runtime import of
+Core Python code. The importer depends on the SDK, never on Core internals. A
+separate `eidetic-contracts` repository is intentionally not introduced in
+Phase 1; Core remains the protocol authority until independent multi-language
+governance creates a demonstrated need for such a split.
+
 Phase 1 does not use `shared_api_cache`. The future importer Phase 3 owns the
 `knowledge_atomization` task call. Phase 1 therefore has no model family,
 provider route, credential lane, worker concurrency, fallback, or penalty
@@ -61,8 +78,9 @@ state to select.
 
 Phase 1 does not:
 
-- implement `submit_ingest`, `get_receipt`, approval, grant, receipt, query, or
-  retrieve behavior;
+- execute `submit_ingest`, `retrieve_candidate_grant`, `get_receipt`, approval,
+  grant, receipt, query, or other retrieve behavior; Phase 1 freezes only the
+  disabled submit and reserved grant-retrieval wire shapes;
 - create a `DurableWriteCoordinator`, ledger, stage, provenance marker, or
   durable target renderer;
 - change `eidetic.engine`, MLX embedding, search, rerank, or source-corpus sync;
@@ -74,8 +92,9 @@ Phase 1 does not:
 - release, tag, publish, push, or open a pull request;
 - touch existing project/agent memory, topic bases, M3 state, or YouGile
   preview work; or
-- decide future grant retrieval, receipt, journal, or durable-commit wire
-  schemas beyond reserving incompatible field names.
+- decide future receipt, journal, or durable-commit result schemas beyond the
+  exact disabled submit inputs and exact unconsumed-grant retrieval shape
+  required by the accepted manifest contract.
 
 ## 4. Provider And Runtime Intake
 
@@ -111,9 +130,11 @@ It does not atomize documents and is not loaded by the Phase 1 worker.
 - Blank lines, invalid UTF-8, a BOM, malformed JSON, duplicate object keys,
   non-standard `NaN`/`Infinity`, and trailing non-whitespace bytes fail as
   `invalid_request`.
-- The worker emits exactly one response line for every nonblank request line
-  that can yield a request identifier. For an unparseable envelope it emits a
-  sanitized response with `request_id="unknown"`.
+- Every physical input line, including a blank line, malformed final line
+  without LF, invalid UTF-8 line, or over-limit line, produces exactly one
+  response line. A blank or unparseable line returns sanitized
+  `invalid_request` with `request_id="unknown"`. EOF with zero pending bytes
+  produces no response.
 - stdout contains protocol responses only. Sanitized diagnostics may use
   stderr but must contain no candidate body, support span, physical path,
   credential, provider, or personal identity.
@@ -166,15 +187,16 @@ requires `result=null` and a sanitized error.
   request/response fixtures remain byte-semantically compatible.
 
 The worker reports the current version, exact supported versions, Core build
-identity, schema-manifest digest, canonicalization identity, preview policy,
-and render policy in `capabilities` before any candidate operation.
+identity, contract-manifest/artifact digest, canonicalization identity, preview
+policy, and visible-effect policy in `capabilities` before any candidate
+operation.
 
 ## 7. Canonical Schema Set
 
 The future implementation owns exactly these Core-canonical files:
 
 ```text
-schemas/sdk/ingestion/v1/
+contracts/ingestion/v1/
   contract-manifest.json
   request.schema.json
   response.schema.json
@@ -187,13 +209,16 @@ schemas/sdk/ingestion/v1/
   document-manifest.schema.json
   validation-result.schema.json
   preview.schema.json
+  authorization-reference.schema.json
+  grant-retrieval.schema.json
   error.schema.json
 ```
 
 `contract-manifest.json` lists the protocol, exact supported versions,
-transport, worker path, executable operations, blocked operations, schema file
-names, canonicalization identity, digest domains, privacy flags, and
-`submit_available=false`.
+transport, installed executable identity, six executable operations, exact
+blocked operations `submit_ingest` and `retrieve_candidate_grant`, the 15
+contract file names, canonicalization identity, digest domains, artifact
+identity rules, privacy flags, and `submit_available=false`.
 
 Every schema uses JSON Schema draft 2020-12, a stable local `$id`, explicit
 required fields, bounded strings/arrays, and `additionalProperties=false` at
@@ -201,8 +226,18 @@ every protocol-owned object level. The worker may implement validators with
 the Python standard library, but parity tests must prove that runtime behavior
 matches the canonical schemas.
 
-The SDK repository must discover/read these schemas from a selected Core
-checkout or installed contract directory. It must not copy them.
+The canonical source tree is Core-only. A separately authorized Core release
+packages these exact bytes plus `contract-manifest.json` and a SHA-256 checksum
+as immutable artifact `eidetic-ingestion-contract-1.0`. The artifact identity
+is the contract-manifest digest; repackaging different bytes under the same
+identity is forbidden.
+
+Phase 2 SDK work may generate typed models from a pinned artifact and commit
+the derived code with the artifact version/digest in its generated header. It
+must not copy the canonical schema tree or require a Core checkout at build or
+runtime. SDK CI fetches or receives the pinned immutable artifact explicitly
+and runs conformance fixtures against it. Phase 1 neither publishes that
+artifact nor changes the SDK repository.
 
 ## 8. Canonicalization And Digests
 
@@ -221,9 +256,14 @@ Core applies only these declared normalizations:
    line-ending normalization. Core does not silently rewrite wording, enums,
    IDs, offsets, or ordering.
 
-Identifiers use explicit ASCII patterns. Timestamps are RFC 3339 UTC strings.
-Protocol objects contain no floating-point numbers; counts and offsets are
-non-negative integers.
+Identifiers use explicit ASCII patterns. A protocol timestamp is either JSON
+`null` where explicitly nullable or exactly `YYYY-MM-DDTHH:MM:SSZ`: UTC only,
+four-digit year, two-digit components, second precision, no fractional seconds,
+no offset spelling, and a real calendar instant. An importer with finer source
+precision must convert it under its declared pipeline revision before building
+the candidate. When both source timestamps are present,
+`source_created_at <= source_updated_at`. Protocol objects contain no
+floating-point numbers; counts and offsets are non-negative integers.
 
 ### 8.2 Canonical JSON
 
@@ -267,26 +307,61 @@ source_span_digest = SHA256(
   "eidetic.ingestion/v1/source-span\0" || normalized_span_utf8
 )
 
-rendered_content_digest = SHA256(
-  "eidetic.ingestion/v1/rendered-content\0" || rendered_content_utf8
+source_object_claim_digest = SHA256(
+  "eidetic.ingestion/v1/source-object-claim\0" ||
+  canonical_source_object_claim_bytes
 )
 
-absent_target_state_digest = SHA256(
-  "eidetic.ingestion/v1/target-state\0absent"
+logical_target_id = "ing1-" || source_object_claim_digest
+
+target_state_digest = SHA256(
+  "eidetic.ingestion/v1/target-state\0" || canonical_target_state_bytes
+)
+
+visible_effect_digest = SHA256(
+  "eidetic.ingestion/v1/visible-effect\0" || canonical_visible_effect_bytes
 )
 
 preview_binding_digest = SHA256(
   "eidetic.ingestion/v1/preview-binding\0" || canonical_preview_binding_bytes
 )
+
+preview_token_digest = SHA256(
+  "eidetic.ingestion/v1/preview-token\0" || opaque_preview_token_utf8
+)
+
+grant_token_digest = SHA256(
+  "eidetic.ingestion/v1/grant-token\0" || opaque_grant_token_utf8
+)
+
+grant_binding_digest = SHA256(
+  "eidetic.ingestion/v1/grant-binding\0" || canonical_grant_binding_bytes
+)
 ```
 
 `canonical_content_bytes` contains exactly `title`, `body`, `card_kind`, and
 `evidence`; it excludes the caller-declared `content_digest` and therefore is
-not self-referential. Caller-declared `content_digest`, `chunk_ledger_digest`,
-candidate digests in a manifest, and source-span digests are recomputed where
-Core has the bytes and must match. `source_digest` is structurally validated
-but cannot be recomputed without the importer-owned source snapshot; the
-preview states this limit.
+not self-referential. `canonical_source_object_claim_bytes` contains exactly
+the authenticated `principal_ref`, `scope_id`, `source_system`, and stable
+`source_object_id`. Caller-declared `content_digest`, `chunk_ledger_digest`,
+candidate digests in a manifest, and source-span digests are recomputed from
+the bytes Core actually receives and must match.
+
+`source_digest` and each caller-declared `chunk_text_digest` are structurally
+validated but cannot be recomputed because Phase 1 never receives the complete
+importer-owned source/chunk snapshot. Core recomputes the chunk-ledger digest
+over the declared normalized outcome records; doing so proves ledger integrity,
+not chunk-text truth. Every applicable validation/preview result therefore
+returns all three exact flags:
+
+```text
+source_snapshot_verified=false
+chunk_text_digests_verified=false
+declared_coverage_only=true
+```
+
+It also returns `semantic_support_verified=false`. No Phase 1 response may
+describe source/chunk bytes or support coverage as independently verified.
 
 The request candidate never contains `candidate_digest`, and the request
 manifest never contains its own `manifest_digest`. Core returns those
@@ -294,9 +369,10 @@ authoritative values beside the normalized object. A frozen importer bundle
 may store that returned value externally, but inserting it into the canonical
 object is invalid.
 
-The reported schema-manifest digest is computed over the path-sorted 13-file
-canonical contract set as `<relative-path> NUL <exact-file-bytes> LF`. No schema
-file contains that aggregate digest, so the bundle identity is non-circular.
+The reported contract-manifest/artifact digest is computed over the path-sorted
+15-file canonical contract set as
+`<relative-path> NUL <exact-file-bytes> LF`. No contract file contains that
+aggregate digest, so the bundle identity is non-circular.
 
 ### 8.4 Non-circular candidate/manifest binding
 
@@ -323,6 +399,8 @@ The normative shape is equivalent to:
     "source_object_id": "book-key:logical-card-id",
     "source_revision": "revision-identity",
     "expected_predecessor_revision": null,
+    "source_created_at": null,
+    "source_updated_at": null,
     "source_digest": "64-lowercase-hex"
   },
   "document": {
@@ -350,7 +428,7 @@ The normative shape is equivalent to:
           "section_id": "chapter-1",
           "page": null,
           "start_char": 10,
-          "end_char": 52,
+          "end_char": 49,
           "span_text": "Exact source span visible to the owner.",
           "span_digest": "64-lowercase-hex"
         }
@@ -381,23 +459,37 @@ The normative shape is equivalent to:
 rejected, never defaulted or case-folded. Core, not the candidate, later owns
 the durable `source=imported` classification.
 
+`source_created_at` and `source_updated_at` are always present and independently
+nullable. A source that does not expose either value sends `null`; omission,
+empty strings, offsets, fractional seconds, or invented current time are
+invalid. Both fields participate in canonical candidate and manifest digests.
+
 ### 9.2 Source-support semantics
 
 Each factual claim has at least one support reference. Core verifies:
 
 - document revisions match the candidate;
 - offsets are non-negative and `end_char > start_char`;
+- `end_char - start_char` equals the Unicode-scalar length of normalized
+  `span_text`, not its UTF-8 byte length;
 - span digests match the normalized span bytes;
 - IDs are unique within their owning arrays; and
 - no physical path, provider route, credential, raw grant, or policy verdict
   appears in a protocol-owned field.
 
+Standalone candidate validation cannot prove that a referenced chunk exists or
+that a span lies within it. Complete manifest validation additionally requires
+`chunk.start_char <= support.start_char < support.end_char <= chunk.end_char`
+for the exact referenced `chunk_id`. A source span that crosses a chunk boundary
+must be represented as two or more support rows, one wholly contained in each
+referenced chunk; a single cross-chunk row is invalid.
+
 Phase 1 does not possess the importer source snapshot and does not claim that a
 span occurs at the asserted offset or semantically supports the claim. The
-validation result explicitly reports
-`source_snapshot_verified=false` and `semantic_support_verified=false`.
-Importer Phase 3 must prove those properties before a real manifest may be
-considered for durable submit.
+validation result explicitly reports `source_snapshot_verified=false`,
+`chunk_text_digests_verified=false`, `declared_coverage_only=true`, and
+`semantic_support_verified=false`. Importer Phase 3 must prove those properties
+before a real manifest may be considered for durable submit.
 
 ### 9.3 Lineage shape
 
@@ -430,6 +522,13 @@ The document manifest contains:
 - no grant, authorization, idempotency key, Core path, provider route, or raw
   source snapshot.
 
+Within one manifest, `(document_key, logical_card_id)` maps one-to-one to one
+`(source_system, source_object_id)` pair and therefore one Core-derived
+`logical_target_id`. Duplicate aliases, one logical card mapped to multiple
+source objects, or multiple logical cards mapped to the same source-object
+claim are invalid. This rule is evaluated with the authenticated principal and
+scope supplied by Core, not a caller-authored principal assertion.
+
 ### 10.1 Chunk outcomes
 
 Every normalized source character range is represented by exactly one ordered
@@ -443,10 +542,18 @@ chunk outcome with:
 - a bounded reason code for repair/failure/no-knowledge; and
 - an owner-review reference for `owner_no_knowledge`.
 
+`chunk_text_digest` is importer-declared evidence. Phase 1 validates its shape
+and binds it into the recomputed chunk-ledger/manifest digests, but does not
+claim to have recomputed it from absent chunk bytes.
+
 The ordered offsets must start at zero, be contiguous and non-overlapping, and
 end at `normalized_text_length`. Duplicate/missing chunk IDs, gaps, overlaps,
 unreferenced candidate entries, multiply referenced candidate entries, or a
 candidate that cites an unknown chunk make the manifest invalid.
+
+Every candidate support row must also be wholly contained within the exact
+referenced chunk range. A row outside that range or spanning two chunk outcomes
+invalidates the manifest even when total chunk coverage is otherwise complete.
 
 `owner_no_knowledge` is never inferred from zero candidates. It requires a
 nonempty owner-review reference and a reason code. Empty, malformed, truncated,
@@ -487,9 +594,158 @@ all current writer resolution rules. The physical root is never returned or
 logged. If Core cannot prove the isolated mapping, the scope is unavailable
 for preview and remains disabled.
 
-Target inspection is read-only. An absent target is represented by a
-domain-separated logical absent-state digest. The worker must not create the
-target root or parent directories in order to inspect or preview it.
+Target inspection is read-only. The worker must not create the target root or
+parent directories in order to inspect or preview it.
+
+### 11.1 Logical target identity and canonical state
+
+Core derives `source_object_claim_digest` and `logical_target_id` exactly as in
+Section 8.3 from the authenticated principal, configured scope, and candidate
+source system/object. The request cannot choose either value. Lineage
+predecessor IDs resolve within the candidate's `document_key` through the same
+Core-owned resolver.
+
+The resolver returns a path-free object with exactly these keys:
+
+```json
+{
+  "target_state_version": "1.0",
+  "logical_target_id": "ing1-64-lowercase-hex",
+  "source_object_claim_digest": "64-lowercase-hex",
+  "presence": "absent",
+  "read_state": "not_found",
+  "provenance_marker_state": "not_present",
+  "source_revision": null,
+  "candidate_digest": null,
+  "content_digest": null,
+  "lifecycle_state": null,
+  "durable_object_digest": null
+}
+```
+
+The canonical enums are:
+
+- `presence=absent|present`;
+- `read_state=not_found|readable|unreadable`;
+- `provenance_marker_state=not_present|valid|missing|invalid`; and
+- a non-null `lifecycle_state=active|superseded|archived|alternate`.
+
+For `absent`, the exact combination is `not_found`, `not_present`, and null for
+all five state-value fields. For a ready `present` target, the exact combination
+is `readable`, `valid`, and non-null values for source revision, candidate,
+content, lifecycle, and exact durable-object byte digest. A present target that
+is unreadable or has a missing/invalid provenance marker remains representable
+with only provable fields populated, but it is conflict-only and cannot produce
+a ready preview or token. Every absent or present object is canonicalized and
+hashed as `target_state_digest`; an absent digest therefore remains bound to
+its logical target rather than being a global constant.
+
+No physical path, inode, database key, or target bytes appear in this object.
+The Core resolver may supply synthetic states directly in Phase 1 tests; the
+worker does not define or write the future durable target format.
+
+### 11.2 Deterministic action derivation
+
+Core applies these rows in order after candidate/manifest validation and policy
+matching:
+
+| Condition | Effect | `mutation_expected` |
+| --- | --- | --- |
+| Ready present target has the exact candidate digest and source revision | `no_change` | false |
+| `create`; target absent | `create` | true |
+| `create`; target present with a different digest | `conflict` (`target_conflict`) | false |
+| `retain`; ready present target, one matching predecessor, matching expected predecessor revision, and identical content digest | `retain` | false |
+| `update`, `supersede`, or `archive`; ready present target, one matching predecessor, and matching expected predecessor revision | requested action | true |
+| `alternate`; new target absent and its one predecessor resolves to a ready present target with matching expected predecessor revision | `alternate` | true |
+| `split`; complete manifest context, every sibling output target absent or exact replay, and the one predecessor is ready/matching | `split` for each non-replay output | true |
+| `merge`; complete manifest context, output target absent or exact replay, and every unique predecessor is ready/matching | `merge` for the non-replay output | true |
+| Standalone `split`/`merge`, missing predecessor, target-state mismatch, or expected predecessor mismatch | `conflict` | false |
+
+A same source claim/revision with a different candidate digest is
+`source_conflict` before action derivation. An unreadable target, invalid/missing
+marker, principal/scope/policy mismatch, ambiguous logical identity, or changed
+predecessor state is `target_conflict`. No conflict returns a token. A manifest
+sorts predecessor target bindings by `logical_target_id`, while candidate
+effects remain in manifest-entry order.
+
+### 11.3 Canonical owner-visible effect
+
+Every ready non-conflict preview returns a `visible_effect` with exactly this
+protocol-owned shape (array members retain candidate order):
+
+```json
+{
+  "visible_effect_version": "1.0",
+  "action": "create",
+  "mutation_expected": true,
+  "principal_ref": "core-principal-ref",
+  "scope_id": "imported-book-pilot",
+  "policy": {
+    "policy_id": "core-policy-id",
+    "policy_version": "policy-version",
+    "policy_digest": "64-lowercase-hex"
+  },
+  "candidate_digest": "64-lowercase-hex",
+  "manifest_digest": null,
+  "target_bindings": [
+    {
+      "logical_target_id": "ing1-64-lowercase-hex",
+      "target_state_digest": "64-lowercase-hex"
+    }
+  ],
+  "visible_card": {
+    "logical_card_id": "source-scoped-logical-id",
+    "source": {
+      "source_system": "document-importer",
+      "source_object_id": "book-key:logical-card-id",
+      "source_revision": "revision-identity",
+      "source_created_at": null,
+      "source_updated_at": null,
+      "source_digest": "64-lowercase-hex"
+    },
+    "title": "Specific title",
+    "body": "Self-contained atomic knowledge.",
+    "card_kind": "concept",
+    "evidence": "observed",
+    "content_digest": "64-lowercase-hex",
+    "claims": [
+      {
+        "claim_id": "claim-1",
+        "claim_text": "One independently supportable claim.",
+        "support": [
+          {
+            "support_id": "support-1",
+            "document_revision": "immutable-document-revision",
+            "chunk_id": "chunk-0001",
+            "section_id": "chapter-1",
+            "page": null,
+            "start_char": 10,
+            "end_char": 49,
+            "span_text": "Exact source span visible to the owner.",
+            "span_digest": "64-lowercase-hex"
+          }
+        ]
+      }
+    ],
+    "lineage": {
+      "action": "create",
+      "predecessor_logical_card_ids": []
+    }
+  }
+}
+```
+
+`manifest_digest` is null for standalone preview and required for a manifest
+candidate effect. `target_bindings` contains the output target and all lineage
+predecessor targets, sorted by logical target ID, with no duplicate. The object
+is canonicalized and hashed as `visible_effect_digest` under
+`visible_effect_policy=eidetic.visible-effect-json.v1`.
+
+This structured object is the exact Phase 1 owner-visible effect. It is not a
+claim about future Markdown/file bytes and does not freeze a durable renderer.
+A conflict instead returns `visible_effect=null`, a bounded conflict code and
+the non-secret logical identities/digests Core could prove; it returns no
+visible-effect digest or token.
 
 ## 12. Operation Semantics
 
@@ -498,10 +754,11 @@ target root or parent directories in order to inspect or preview it.
 Payload is empty. Result includes:
 
 - protocol/current/supported versions;
-- Core build and schema-manifest identities;
-- canonicalization, preview-policy, and render-policy identities;
+- Core build, contract-manifest, and immutable artifact identities;
+- canonicalization, preview-policy, and visible-effect-policy identities;
 - six executable operations;
-- `blocked_operations=["submit_ingest"]`;
+- `blocked_operations=["submit_ingest","retrieve_candidate_grant"]` in that
+  exact order;
 - logical scopes with `disabled` or `preview_only` mode;
 - sanitized principal reference/attestation class;
 - privacy flags; and
@@ -524,8 +781,9 @@ Payload contains one candidate. The operation returns `ok=true` with:
 - `status=valid|invalid|conflict`;
 - normalized candidate and authoritative digests only when structurally safe;
 - ordered findings with stable codes and JSON-pointer locations;
-- source-snapshot and semantic-support verification flags set to false in
-  Phase 1; and
+- exact `source_snapshot_verified=false`,
+  `chunk_text_digests_verified=false`, `declared_coverage_only=true`, and
+  `semantic_support_verified=false` flags in Phase 1; and
 - `write_authority=false`.
 
 Semantic invalidity is a validation result, not a traceback or unsanitized
@@ -534,26 +792,32 @@ envelope failure.
 ### 12.4 `validate_manifest`
 
 Payload contains one complete manifest. Core recomputes every candidate,
-content, support-span, chunk-ledger, and manifest digest it can prove. The
-result includes candidate/chunk accounting and ordered findings. Missing or
-inconsistent completeness evidence returns `status=invalid`.
+content, support-span, declared chunk-ledger, and manifest digest it can prove.
+It never reports source/chunk snapshot verification. The result includes the
+four exact verification flags, candidate/chunk accounting, support-to-chunk
+containment, one-to-one logical identity accounting, and ordered findings.
+Missing or inconsistent completeness evidence returns `status=invalid`.
 
 ### 12.5 `preview_ingest`
 
 Core first performs candidate validation, then inspects the logical target
-read-only and returns one exact visible effect:
+read-only and applies Sections 11.1-11.3. A ready result returns:
 
 - `create`, `retain`, `update`, `split`, `merge`, `supersede`, `archive`,
-  `alternate`, `no_change`, or `conflict`;
-- logical target identity and expected state digest, never a path;
-- normalized visible card fields and owner-visible source-support spans;
-- deterministic rendered-content digest under the reported render policy;
-- current policy and principal bindings;
+  `alternate`, or `no_change` as the canonical action;
+- the exact path-free canonical target binding objects;
+- the complete canonical structured `visible_effect` and
+  `visible_effect_digest`;
+- normalized owner-visible card, claim, and bounded source-support detail;
+- current principal/scope/policy bindings;
 - explicit no-write/no-approval/no-grant flags; and
-- a non-authorizing preview token only when `preview_status=ready`.
+- a `preview_binding_digest`, `preview_token_digest`, and non-authorizing opaque
+  preview token only when `preview_status=ready`.
 
-A conflict is owner-visible and produces no token. Preview never reserves a
-target or changes its state.
+A conflict returns `visible_effect=null`, a bounded owner-visible conflict
+descriptor, and no visible-effect digest or token. Preview never reserves a
+target or changes its state. Standalone `split` or `merge` is conflict-only
+because exact sibling/predecessor reconciliation requires manifest context.
 
 ### 12.6 `preview_manifest`
 
@@ -568,35 +832,182 @@ Core validates the complete manifest and returns:
   session may finish partially; and
 - no summary-only approval surface.
 
+Each candidate effect uses Section 11's exact action and visible-effect rules.
 The candidate token inside a manifest preview binds both candidate and manifest
-digests. If any candidate is invalid, unresolved, or conflicting, the manifest
-preview is not ready and no manifest token is returned.
+digests. The manifest token additionally binds the ordered list of candidate
+preview-binding digests in manifest-entry order. If any candidate is invalid,
+unresolved, or conflicting, the manifest preview is not ready and no candidate
+or manifest token is returned.
 
 ## 13. Non-authorizing Preview Tokens
 
-Phase 1 preview tokens are opaque integrity references, not grants. A token is
-bound to:
+Phase 1 preview tokens are integrity references, not grants. The exact
+`canonical_preview_binding_bytes` object has these keys:
 
-- protocol/canonicalization identity;
-- worker session identity;
-- authenticated principal reference;
-- scope and policy identity/version/digest;
-- candidate digest and optional manifest digest;
-- expected target-state digest;
-- rendered-content digest;
-- expiry; and
-- a per-token nonce.
+```json
+{
+  "preview_binding_version": "1.0",
+  "binding_kind": "candidate",
+  "protocol": "eidetic.ingestion",
+  "protocol_version": "1.0",
+  "canonicalization_identity": "eidetic.canonical-json.v1",
+  "visible_effect_policy": "eidetic.visible-effect-json.v1",
+  "worker_session_id": "ephemeral-session-id",
+  "principal_ref": "core-principal-ref",
+  "scope_id": "imported-book-pilot",
+  "policy": {
+    "policy_id": "core-policy-id",
+    "policy_version": "policy-version",
+    "policy_digest": "64-lowercase-hex"
+  },
+  "candidate_digest": "64-lowercase-hex",
+  "manifest_digest": null,
+  "target_bindings": [
+    {
+      "logical_target_id": "ing1-64-lowercase-hex",
+      "target_state_digest": "64-lowercase-hex"
+    }
+  ],
+  "visible_effect_digest": "64-lowercase-hex",
+  "candidate_preview_binding_digests": [],
+  "expires_at": "2030-01-01T00:05:00Z",
+  "nonce": "base64url-nonce"
+}
+```
 
-The public `preview_binding_digest` is deterministic for the binding fields.
-The opaque token uses an in-memory session secret and has a fixed test clock/
-secret/nonce injection surface for golden fixtures. The token is not persisted,
-cannot be supplied to any Phase 1 operation to obtain authority, and becomes
-useless when the process exits.
+For `binding_kind=candidate`, `candidate_digest`, `target_bindings`, and
+`visible_effect_digest` are non-null/nonempty; `manifest_digest` is null only
+for standalone preview; and `candidate_preview_binding_digests` is empty. For
+`binding_kind=manifest`, `candidate_digest` and `visible_effect_digest` are
+null, `target_bindings` is empty, `manifest_digest` is required, and
+`candidate_preview_binding_digests` is the nonempty manifest-entry-ordered list
+of candidate binding digests. All fields are required, including nullable and
+empty-array fields, so no omitted-default ambiguity exists.
 
-Any changed candidate, manifest, scope, principal, policy, target state,
-render policy, or expiry yields a different binding and invalidates the old
-preview. Later grant semantics remain governed by ADR 0004 and require a
-separate implementation phase.
+The public `preview_binding_digest` is deterministic for these canonical
+bytes. The opaque ASCII token representation is exactly
+`epv1.<base64url-no-pad(canonical-bytes)>.<base64url-no-pad(HMAC-SHA256(session-secret,"eidetic.ingestion/v1/preview-token\\0" || canonical-bytes))>`.
+The worker returns its domain-separated `preview_token_digest` beside it.
+Production session secret, session ID, nonce, and clock are memory-only; tests
+inject fixed values for exact goldens.
+
+The token is not persisted, cannot be supplied to any executable Phase 1
+operation to obtain authority, and becomes unverifiable when the process exits.
+Any changed candidate, manifest, scope, principal, policy, ordered target state,
+visible effect, session, expiry, or nonce changes the binding and invalidates
+the old preview.
+
+### 13.1 Reserved submit and exact-grant retrieval wire contract
+
+`request.schema.json` has exactly eight operation discriminators: the six
+executable operations plus schema-valid blocked `submit_ingest` and
+`retrieve_candidate_grant`. This makes the blocked shapes reviewable without
+making them dispatchable. Unknown aliases remain `unsupported_operation`.
+
+The exact future `submit_ingest` payload has these seven required fields and
+`additionalProperties=false`:
+
+| Field | Exact type/meaning |
+| --- | --- |
+| `candidate` | one complete `candidate.schema.json` object |
+| `candidate_digest` | lower-case 64-character SHA-256 hex, recomputed in a future write phase |
+| `manifest_digest` | lower-case 64-character SHA-256 hex, or null only for a separately approved standalone candidate |
+| `preview_token` | exact `epv1` ASCII token, 1-8,192 characters |
+| `authorization_reference` | exact `authorization-reference.schema.json` object defined below |
+| `grant_token` | opaque Core-issued ASCII token, 1-8,192 characters |
+| `idempotency_key` | caller-generated printable ASCII identifier, 1-128 characters |
+
+This shape freezes inputs only. Phase 1 never canonicalizes or submits it after
+recognizing the blocked operation.
+
+The exact reserved `retrieve_candidate_grant` payload is:
+
+```json
+{
+  "scope_id": "imported-book-pilot",
+  "approval_ref": "non-authorizing-approval-ref",
+  "grant_ref": "non-authorizing-grant-ref",
+  "manifest_digest": "64-lowercase-hex",
+  "candidate_digest": "64-lowercase-hex",
+  "candidate_preview_token_digest": "64-lowercase-hex"
+}
+```
+
+The authenticated principal comes only from the Core-owned session. A future
+successful result is reserved as:
+
+```json
+{
+  "authorization_reference": {
+    "approval_ref": "non-authorizing-approval-ref",
+    "grant_ref": "non-authorizing-grant-ref",
+    "grant_binding_digest": "64-lowercase-hex",
+    "candidate_preview_token_digest": "64-lowercase-hex",
+    "grant_token_digest": "64-lowercase-hex"
+  },
+  "grant_token": "opaque-core-grant-token",
+  "expires_at": "2030-01-01T00:05:00Z",
+  "consumption_state": "unconsumed"
+}
+```
+
+The retrieval payload and result both have all displayed fields required and
+`additionalProperties=false`. Scope uses the canonical scope-ID pattern;
+approval/grant references are opaque printable ASCII strings of 1-256
+characters; every digest is lower-case 64-character SHA-256 hex; the raw grant
+token is 1-8,192 printable ASCII characters; and `expires_at` uses the exact
+timestamp grammar from Section 8.1.
+
+`authorization_reference.schema.json` is precisely the five-field object shown
+in both wire examples. It is non-authorizing and safe for an SDK journal. The
+Core-owned `canonical_grant_binding_bytes` behind its digest contains exactly:
+
+```json
+{
+  "grant_binding_version": "1.0",
+  "principal_ref": "core-principal-ref",
+  "scope_id": "imported-book-pilot",
+  "approval_ref": "non-authorizing-approval-ref",
+  "grant_ref": "non-authorizing-grant-ref",
+  "manifest_digest": "64-lowercase-hex",
+  "candidate_digest": "64-lowercase-hex",
+  "candidate_preview_token_digest": "64-lowercase-hex",
+  "source_object_claim_digest": "64-lowercase-hex",
+  "target_bindings": [
+    {
+      "logical_target_id": "ing1-64-lowercase-hex",
+      "target_state_digest": "64-lowercase-hex"
+    }
+  ],
+  "policy": {
+    "policy_id": "core-policy-id",
+    "policy_version": "policy-version",
+    "policy_digest": "64-lowercase-hex"
+  },
+  "expires_at": "2030-01-01T00:05:00Z",
+  "nonce": "base64url-candidate-nonce"
+}
+```
+
+The Core approval record, not the request, binds the grant to the authenticated
+principal, scope, manifest/candidate/preview digests, source-object claim,
+ordered target states, policy, expiry, and unique candidate nonce. The SDK may
+persist only `authorization_reference`, never `grant_token`.
+
+A future repeated retrieval by the same authenticated principal returns the
+same exact unconsumed grant record, token digest, token, and original expiry; it
+does not mint, rotate, extend, or substitute authority. Missing, cross-principal,
+cross-scope, mismatched, consumed, or post-`INTENT` retrieval fails closed with
+`permission_denied`. Expiry before `INTENT` returns `preview_stale` and requires
+a new preview/approval. After `INTENT`, only future receipt recovery with the
+original idempotency key governs the outcome.
+
+In Phase 1, both schema-valid blocked operations return `permission_denied`
+after envelope/version and operation-specific structural schema validation but
+before candidate canonicalization, payload semantic interpretation, target
+inspection, token lookup/generation, or any allocation. Their result is always
+null, and no success result above can be emitted. Executing either operation
+requires a later reviewed protocol version and implementation phase.
 
 ## 14. Error And Finding Taxonomy
 
@@ -622,9 +1033,11 @@ lineage, principal, scope, policy, source conflict, target conflict, and
 privacy-boundary violations. Findings never echo a secret/path canary or full
 candidate/source text.
 
-The exact `submit_ingest` operation always returns `permission_denied` after
-envelope validation and before payload interpretation. It cannot allocate a
-token, grant, key, target, file, directory, database, or log entry.
+Each exact, structurally schema-valid blocked operation always returns
+`permission_denied` at the boundary defined in Section 13.1. Neither can
+allocate a token, grant, key, target, file, directory, database, cache, or log
+entry. A malformed blocked-operation envelope/payload remains
+`invalid_request`; it is never partially interpreted.
 
 ## 15. Exact No-write Invariant
 
@@ -643,10 +1056,28 @@ The worker may hold normalized values, preview bindings, HMAC material, and
 target snapshots in process memory only. Temporary files are not needed and
 are forbidden in the worker path.
 
-Tests use isolated canary roots, pre/post tree and content digests, patched
-write primitives, a nonexistent target parent, and process lifecycle probes.
-Any unexpected `open` in write/append/create mode, `mkdir`, SQLite writable
-connection, atomic replace, fsync, or subprocess/provider call fails the test.
+The parent test harness creates all synthetic fixtures before the baseline
+snapshot, then launches a child with an absolute bootstrap path using
+`python3 -I -B -S`. It sets `PYTHONDONTWRITEBYTECODE=1` and disposable, initially
+empty `HOME`, `TMPDIR`, and `XDG_CACHE_HOME`; those roots are part of the
+snapshot, not a write allowlist. The bootstrap mode lives inside
+`tests/test_ingestion_no_write.py`, installs write/network/subprocess/import
+traps first, and only then loads the worker with `runpy.run_path`. No worker
+module may be imported before the traps are active.
+
+The before/after snapshot covers the Core source tree excluding `.git`, the
+canonical contract tree, the selected source or installed worker/contract
+tree, runtime root, all target/memory/index/SDK/importer/provider canaries, and
+the disposable home/temp/cache roots. The child returns protocol bytes only in
+captured pipes; the parent writes evidence outside all snapshotted roots only
+after equality is proven. The identical bootstrap/snapshot path is mandatory
+for a separately authorized installed-runtime smoke.
+
+Any unexpected `open` in write/append/create/read-write mode, `os.open` write
+flag, bytecode/cache/temp creation, `mkdir`, SQLite writable connection, atomic
+replace, fsync, subprocess/network/provider call, or import of an SDK/importer/
+provider/MLX module fails the test. This catches startup/import-time writes as
+well as operation-time writes.
 
 ## 16. Privacy And Protected State
 
@@ -670,7 +1101,14 @@ connection, atomic replace, fsync, or subprocess/provider call fails the test.
   indexes remain byte-for-byte outside the Phase 1 diff.
 - Core imports no `eidetic_sdk`, importer, provider, or shared cache module.
 - `eidetic-sdk` remains unchanged at its current release line; Phase 2 will add
-  typed preview support only after Phase 1 acceptance.
+  typed preview support only after Phase 1 acceptance and only from a pinned
+  immutable Core contract artifact/digest.
+- The SDK has no Core checkout/submodule/path dependency, and Core has no SDK
+  package dependency. Generated SDK types are derived release output, never a
+  second canonical contract source.
+- A future `eidetic-importer` remains a separate repository/package above the
+  SDK boundary; book parsing, LLM/provider execution, and local MLX atomization
+  do not enter Core or SDK Phase 1/2.
 - Existing `remember.py`, compound, M1/M2/M3, hooks, MCP, topic-base, and
   installer behavior remain unchanged except for a separately reviewed
   additive installer copy block if that file is authorized.
@@ -682,7 +1120,7 @@ connection, atomic replace, fsync, or subprocess/provider call fails the test.
 A later owner GO may authorize only this reviewed Core file set:
 
 ```text
-schemas/sdk/ingestion/v1/*.json
+contracts/ingestion/v1/*.json
 bin/eidetic_ingestion_worker.py
 tests/fixtures/ingestion/v1/**/*.json
 tests/test_ingestion_contract.py
@@ -694,8 +1132,9 @@ docs/eidetic-llm-wiki-ingestion/phase-1-review.md
 
 No existing Engine, memory writer, M3, hook, MCP, SDK, importer, provider, or
 YouGile file is allowed. `install.sh` may only copy the new worker and canonical
-ingestion schemas with existing atomic-install semantics; it may not deploy or
-enable a scope during source implementation tests.
+ingestion contracts with existing atomic-install semantics; it may not deploy,
+package an SDK, invoke an importer, or enable a scope during source
+implementation tests.
 
 The implementation must occur in a clean dedicated worktree created from the
 reviewed Phase 1 specification commit after GO. The current dirty Core worktree
@@ -726,7 +1165,7 @@ of Section 18 and must contain no `m3`, hook, preview, or YouGile path.
 1. Commit and review this specification packet.
 2. Receive owner GO bound to the reviewed specification commit.
 3. Create a clean implementation worktree from that commit.
-4. Add canonical schemas, disabled worker, fixtures, and tests only.
+4. Add canonical contracts, disabled worker, fixtures, and tests only.
 5. Run source tests and no-write evidence.
 6. Conduct post-implementation review.
 
@@ -735,7 +1174,9 @@ of Section 18 and must contain no `m3`, hook, preview, or YouGile path.
 No source implementation GO implies installed deployment. A separate
 deployment GO must name the installed root, backup/parity commands, and exact
 additive files. Installed capabilities must remain preview-only and
-`submit_available=false`.
+`submit_available=false`. Contract-artifact packaging is also separately
+authorized: source bytes, artifact bytes, installed bytes, and reported digest
+must match exactly before an SDK may pin that artifact.
 
 ### Rollback
 
@@ -755,7 +1196,8 @@ Stop Phase 1 if implementation would:
 - expose or accept a Core path;
 - let a request enable a principal, policy, scope, or writer;
 - add a Core dependency on SDK/importer/provider code;
-- copy Core schemas into `eidetic-sdk`;
+- copy the canonical Core contract tree into `eidetic-sdk` or require a Core
+  checkout/submodule/relative path there;
 - load MLX or call an LLM/provider;
 - weaken strict schema, digest, chunk completeness, or source-support shape;
 - use the dirty primary worktree for implementation;
@@ -766,7 +1208,7 @@ Stop Phase 1 if implementation would:
 
 Pre-implementation review must return `CLEAN` with no P0/P1 finding for:
 
-- protocol and schema completeness;
+- protocol and canonical contract completeness;
 - canonicalization and non-circular digest semantics;
 - candidate, support, chunk, manifest, and lineage rules;
 - exact visible-effect preview and non-authorizing tokens;

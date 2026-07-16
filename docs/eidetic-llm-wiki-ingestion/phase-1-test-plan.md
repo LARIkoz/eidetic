@@ -41,12 +41,12 @@ The implementation packet must make these commands reproducible from the clean
 Phase 1 worktree:
 
 ```bash
-python3 -m unittest \
+PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest \
   tests.test_ingestion_contract \
   tests.test_ingestion_worker \
   tests.test_ingestion_no_write
 
-python3 -m unittest discover -s tests -p 'test_*.py'
+PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s tests -p 'test_*.py'
 
 git diff --check <reviewed-phase-1-spec-commit>..HEAD
 
@@ -57,10 +57,10 @@ If the repository test layout cannot import `tests.*` as modules, the reviewed
 implementation may use these equivalent exact commands instead:
 
 ```bash
-python3 tests/test_ingestion_contract.py
-python3 tests/test_ingestion_worker.py
-python3 tests/test_ingestion_no_write.py
-python3 -m unittest discover -s tests -p 'test_*.py'
+PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test_ingestion_contract.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test_ingestion_worker.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B tests/test_ingestion_no_write.py
+PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s tests -p 'test_*.py'
 ```
 
 The packet must record which command shape actually ran; it may not silently
@@ -73,16 +73,17 @@ or live target smoke is part of source implementation verification.
 
 | Test ID | Required proof |
 | --- | --- |
-| CT-001 | Every canonical JSON file parses and every local `$ref` resolves inside `schemas/sdk/ingestion/v1/`. |
-| CT-002 | Contract manifest names exactly the 13 reviewed schema files, one worker, six executable operations, blocked `submit_ingest`, and `submit_available=false`. |
-| CT-003 | Schema-manifest digest is stable over path-sorted file names and exact bytes; one-byte schema mutation changes it. |
+| CT-001 | Every canonical JSON file parses and every local `$ref` resolves inside `contracts/ingestion/v1/`. |
+| CT-002 | Contract manifest names exactly the 15 reviewed contract files under `contracts/ingestion/v1/`, one worker, six executable operations, blocked `submit_ingest` plus `retrieve_candidate_grant`, immutable artifact identity, and `submit_available=false`. |
+| CT-003 | Contract-manifest/artifact digest is stable over path-sorted file names and exact bytes; a one-byte contract mutation changes it. |
 | CT-004 | Request/response envelopes reject missing, unknown, duplicate, mistyped, or contradictory fields. |
-| CT-005 | Strict UTF-8 JSONL rejects BOM, blank line, invalid UTF-8, duplicate keys, trailing bytes, `NaN`, `Infinity`, and a line over 64 MiB. |
+| CT-005 | Strict UTF-8 JSONL rejects BOM, blank line, invalid UTF-8, duplicate keys, trailing bytes, `NaN`, `Infinity`, and a line over 64 MiB; every physical line including blank/malformed/final-without-LF produces exactly one sanitized response, while empty EOF produces none. |
 | CT-006 | `ok=true` requires non-null result and null error; `ok=false` requires null result and a sanitized error. |
-| CT-007 | Runtime operation and result shapes match the canonical schemas for every executable operation. |
+| CT-007 | Runtime operation and result shapes match the canonical schemas for every executable operation and both exact blocked-operation denial responses. |
 | CT-008 | Runtime contains no private schema fork or second operation list that can drift without a parity-test failure. |
 | CT-009 | Error schema contains the reviewed Phase 1 taxonomy and rejects traceback/path/raw-value details. |
-| CT-010 | Reserved future grant/receipt/idempotency fields cannot appear in a Phase 1 request payload. |
+| CT-010 | Reserved submit/grant/idempotency fields are accepted only in their exact blocked operation shapes; they are rejected in every executable payload and cannot reach semantic dispatch. |
+| CT-011 | Core source contract bytes deterministically produce the reviewed immutable artifact version/digest; a checkout path, submodule, copied SDK schema tree, or changed bytes under the same identity fails. |
 
 ## 5. Compatibility Tests
 
@@ -92,7 +93,7 @@ or live target smoke is part of source implementation verification.
 | COMP-002 | Unlisted `1.1` fails `incompatible_version`; it is not accepted merely because the major is `1`. |
 | COMP-003 | `0.9`, `2.0`, malformed versions, and numeric versions fail before candidate processing. |
 | COMP-004 | A future-minor simulation proves the rule that `1.1` cannot be listed without retaining the frozen `1.0` fixtures. |
-| COMP-005 | Core product version, Engine API version, ingestion protocol version, schema-manifest digest, and build identity remain separate fields. |
+| COMP-005 | Core product version, Engine API version, ingestion protocol version, contract/artifact digest, and build identity remain separate fields. |
 | COMP-006 | Incompatible version handling performs no target inspection and no write attempt. |
 
 ## 6. Canonicalization And Digest Goldens
@@ -100,15 +101,17 @@ or live target smoke is part of source implementation verification.
 | Test ID | Required proof |
 | --- | --- |
 | CAN-001 | A fixed valid candidate produces exact canonical UTF-8 bytes and exact candidate/content digest goldens. |
-| CAN-002 | A fixed manifest produces exact candidate, chunk-ledger, manifest, and preview-binding digest goldens. |
+| CAN-002 | A fixed manifest produces exact candidate, declared chunk-ledger, manifest, target-state, visible-effect, preview-binding, and token-digest goldens. |
 | CAN-003 | Equivalent NFC/NFD and CRLF/LF text normalize as specified; invalid UTF-8/lone-surrogate inputs fail. |
 | CAN-004 | Object insertion order does not change canonical bytes; array order does. |
 | CAN-005 | Locale, timezone, process/session ID, and Python hash seed do not change candidate/manifest digests. |
 | CAN-006 | Integers are canonical; floats, negative offsets/counts, booleans substituted for integers, and non-standard numbers fail. |
-| CAN-007 | Candidate, content, chunk-ledger, manifest, span, absent-target, and preview domains cannot collide on identical JSON bytes. |
+| CAN-007 | Candidate, content, chunk-ledger, manifest, span, source-object-claim, target-state, visible-effect, preview-binding, preview-token, grant-token, and grant-binding domains cannot collide on identical bytes. |
 | CAN-008 | Caller-declared content, candidate, chunk-ledger, and span digest mismatches fail with stable findings. |
 | CAN-009 | The candidate digest does not include `manifest_digest`; manifest recomputation binds the verified candidate digest without recursion. |
 | CAN-010 | Reordering manifest candidate entries or chunk outcomes changes the manifest digest and preview binding. |
+| CAN-011 | Source timestamps accept only null or exact second-precision UTC `Z`; absent/valid/malformed/fractional/offset/inverted fixtures are deterministic, and either timestamp mutation changes candidate/manifest digests. |
+| CAN-012 | Logical target ID is exactly `ing1-` plus the Core-derived source-object-claim digest and changes with authenticated principal, scope, source system, or source object. |
 
 Golden fixtures must include the canonical bytes, not only expected digests, so
 a serializer change is reviewable rather than hidden behind a hash mismatch.
@@ -117,13 +120,13 @@ a serializer change is reviewable rather than hidden behind a hash mismatch.
 
 | Test ID | Required proof |
 | --- | --- |
-| CAND-001 | Minimal valid `create` candidate returns `status=valid`, authoritative digests, and both support-verification flags false. |
+| CAND-001 | Minimal valid `create` candidate returns `status=valid`, authoritative digests, and exact flags `source_snapshot_verified=false`, `chunk_text_digests_verified=false`, `declared_coverage_only=true`, and `semantic_support_verified=false`. |
 | CAND-002 | Valid candidates cover every allowed card kind and both evidence values. |
 | CAND-003 | Invalid/case-changed card kind or evidence is rejected rather than defaulted or normalized. |
 | CAND-004 | Empty/whitespace title, empty body, no claims, duplicate claim IDs, no support, and duplicate support IDs are invalid. |
 | CAND-005 | Maximum accepted bounds pass; each title/body/claim/span/count/canonical-byte overflow fails. |
 | CAND-006 | Source/document revisions must match every support reference. |
-| CAND-007 | Zero, reversed, negative, boolean, or inconsistent offsets fail. |
+| CAND-007 | Zero-length, reversed, negative, boolean, or offsets whose difference is not the normalized span's Unicode-scalar length fail. |
 | CAND-008 | Span digest is recomputed from normalized span text; mismatch fails. |
 | CAND-009 | Core path, database/table ID, lock handle, internal row ID, provider/model route, credential, raw grant, idempotency key, or policy-verdict injection fails. |
 | CAND-010 | `create`, one-predecessor actions, `split`, and `merge` enforce exact predecessor cardinality and uniqueness. |
@@ -131,6 +134,7 @@ a serializer change is reviewable rather than hidden behind a hash mismatch.
 | CAND-012 | Same source claim/revision plus same candidate digest is recognized as a replay candidate; a different digest is surfaced as conflict, never silently normalized. |
 | CAND-013 | Expected predecessor is structural input only; Phase 1 does not claim that source ordering is independently proven. |
 | CAND-014 | Findings are stable, ordered, pointer-addressable, bounded, and do not echo rejected canary values. |
+| CAND-015 | `source_created_at` and `source_updated_at` are always present, independently nullable, canonical when non-null, ordered when both present, and never synthesized from current time. |
 
 ## 8. Manifest And Chunk-accounting Matrix
 
@@ -142,42 +146,49 @@ a serializer change is reviewable rather than hidden behind a hash mismatch.
 | MAN-004 | Duplicate/missing chunk IDs, gaps, overlaps, reversed ranges, and wrong final length invalidate completeness. |
 | MAN-005 | Every `candidates` chunk has nonempty candidate entry IDs; other states have none. |
 | MAN-006 | Every candidate entry is referenced exactly once by chunk accounting, and every referenced entry exists. |
-| MAN-007 | Every candidate support `chunk_id` resolves to a manifest chunk with the same document revision. |
+| MAN-007 | Every candidate support `chunk_id` resolves to a manifest chunk with the same document revision and `chunk.start <= support.start < support.end <= chunk.end`. |
 | MAN-008 | `owner_no_knowledge` requires an owner-review reference and reason; automatic/empty no-knowledge fails. |
 | MAN-009 | Empty, malformed, truncated, or schema-invalid atomization is representable only as repair/failure, never successful zero knowledge. |
-| MAN-010 | Candidate and chunk declared digests are recomputed; any mismatch invalidates the manifest. |
+| MAN-010 | Candidate/content/span and declared chunk-ledger digests are recomputed; source/chunk-text digests remain explicitly unverified, and any recomputable mismatch invalidates the manifest. |
 | MAN-011 | A missing candidate, missing support, unresolved logical identity, or false completeness assertion invalidates the manifest. |
 | MAN-012 | Candidate/chunk maxima and the 64 MiB line bound have exact pass/fail boundary tests without allocating unbounded memory. |
 | MAN-013 | Duplicate manifest entry, claim, support, chunk, or logical-card IDs fail in the correct namespace. |
 | MAN-014 | Changed source/document/pipeline identity, candidate body/claim/support, lineage, scope, principal expectation, policy expectation, chunk state, or candidate set changes the manifest digest. |
 | MAN-015 | Re-atomization of unchanged source is a new manifest/diff; exact frozen-manifest replay needs no LLM call and returns the same canonical digests. |
+| MAN-016 | A support row crossing a chunk boundary or lying outside its referenced chunk fails; equivalent support split into one contained row per chunk passes. |
+| MAN-017 | `(document_key, logical_card_id)` maps one-to-one to one source-object pair/logical target; duplicate aliases and either-direction mapping conflicts fail. |
 
 ## 9. Preview Matrix
 
 | Test ID | Required proof |
 | --- | --- |
-| PRE-001 | Absent logical target returns exact `create` effect and a domain-separated absent-state digest without creating the target parent. |
-| PRE-002 | Existing synthetic target returns deterministic `retain`, `update`, lifecycle, `no_change`, or `conflict` according to the fixture. |
-| PRE-003 | Preview returns logical target identity, visible card fields, support spans, action, expected state digest, render policy, and rendered-content digest, but no path. |
+| PRE-001 | Absent logical target returns the exact path-free canonical absent target-state object/digest and `create` effect without creating the target parent. |
+| PRE-002 | Ready present, unreadable, missing-marker, invalid-marker, changed-digest, and changed-revision synthetic target states produce the exact deterministic action/conflict row. |
+| PRE-003 | Preview returns the complete canonical structured visible effect, logical target/state bindings, card/claim/support detail, action, visible-effect policy/digest, and no path or durable-render claim. |
 | PRE-004 | Ready candidate preview returns a non-authorizing token and explicit false flags for write, approval, grant, receipt, and checkpoint authority. |
 | PRE-005 | Candidate conflict/rejection is visible and returns no token. |
 | PRE-006 | Manifest preview returns aggregate counts and every candidate-level effect; summary-only detail is schema-invalid. |
-| PRE-007 | Manifest/candidate tokens bind candidate digest, manifest digest where applicable, principal, scope, policy, target state, render digest, expiry, session, and nonce. |
+| PRE-007 | Canonical candidate/manifest token bindings use every required always-present field and bind candidate/manifest digest, principal, scope, policy, ordered target states, visible-effect digest, expiry, session, and nonce. |
 | PRE-008 | Changing any binding dimension changes the preview-binding digest and invalidates the prior token. |
 | PRE-009 | Fixed clock/secret/nonce produces a deterministic token golden; production default remains session-ephemeral. |
 | PRE-010 | Token expiry is enforced by the internal verifier fixture even though no Phase 1 public operation can consume it. |
 | PRE-011 | Process restart invalidates all prior tokens and preserves no token state on disk. |
 | PRE-012 | Manifest preview states that future candidate commits are independent and may produce a partial session. |
+| PRE-013 | The ordered action table covers create/retain/update/split/merge/supersede/archive/alternate/no-change, exact replay, same-revision conflict, missing predecessor, and standalone split/merge denial. |
+| PRE-014 | Manifest token binds manifest-entry-ordered candidate preview-binding digests; reorder/substitution/removal invalidates it. |
+| PRE-015 | `mutation_expected` is true only for the reviewed mutating action rows and false for retain/no-change/conflict. |
 
 ## 10. Disabled-submit And Unsupported-operation Matrix
 
 | Test ID | Required proof |
 | --- | --- |
-| DENY-001 | Exact `submit_ingest` always returns `permission_denied` and `result=null`. |
-| DENY-002 | Denial occurs before payload interpretation, candidate canonicalization, target inspection, token generation, or state allocation. |
-| DENY-003 | `submit`, `ingest`, `write`, `commit`, `approve`, `grant`, `get_receipt`, `query`, `retrieve`, case variants, whitespace variants, and Unicode lookalikes are unsupported/invalid and never dispatched. |
+| DENY-001 | Exact schema-valid `submit_ingest` and `retrieve_candidate_grant` each return `permission_denied`, `result=null`, and no success-shape field. |
+| DENY-002 | Denial occurs after strict envelope/version/operation-shape validation but before payload semantics, candidate canonicalization, target inspection, token lookup/generation, or state allocation. |
+| DENY-003 | `submit`, `ingest`, `write`, `commit`, `approve`, `grant`, `retrieve_grant`, `get_receipt`, `query`, `retrieve`, case variants, whitespace variants, and Unicode lookalikes are unsupported/invalid and never dispatched. |
 | DENY-004 | A forged scope/principal/policy-enable field is invalid and cannot alter later capabilities. |
-| DENY-005 | Repeating or concurrently sending denied submit requests creates no shared state and remains deterministic. |
+| DENY-005 | Repeating or concurrently sending either blocked operation creates no shared state and remains deterministic. |
+| DENY-006 | Exact submit payload schema contains candidate/digest/preview/authorization/grant/idempotency fields; exact retrieval schema/result contains only reviewed references/token metadata, with additional/omitted fields rejected. |
+| DENY-007 | Future-retrieval invariants are frozen in fixtures: same principal obtains the same unconsumed token/digest/expiry; cross-principal/scope, mismatch, expiry, consumed, or post-`INTENT` cases fail closed. Phase 1 executes only the denial branch. |
 
 ## 11. Exact No-write Proof
 
@@ -187,11 +198,17 @@ Each no-write test creates isolated synthetic roots for:
 
 ```text
 runtime-root/
+core-source-tree/
+contract-source-tree/
+installed-worker-contract-root/
 imported-target-root/
 project-memory-root/
 agent-memory-root/
 topic-base-root/
 provider-state-canary/
+disposable-home/
+disposable-tmp/
+disposable-cache/
 ```
 
 Each existing root contains mode-sensitive sentinel files and nested content.
@@ -206,12 +223,25 @@ The test snapshots, before and after:
 - directory existence.
 
 Mtime is diagnostic only; acceptance requires identical content/path/mode and
-no new entry. Tests must not normalize or rewrite the fixture merely to compare
-it.
+no new entry. The Core source snapshot excludes `.git` but includes every
+worker/contract source path. Tests must not normalize or rewrite a fixture
+merely to compare it.
+
+The parent harness creates all fixtures before the baseline snapshot and writes
+evidence only after post-child equality is proven. The disposable home/temp/
+cache roots are intentionally empty at baseline and are not writable
+exceptions.
 
 ### 11.2 Primitive traps
 
-The worker test layer traps and fails on:
+The parent launches an absolute bootstrap path with `python3 -I -B -S`,
+`PYTHONDONTWRITEBYTECODE=1`, and controlled `HOME`, `TMPDIR`, and
+`XDG_CACHE_HOME`. A child mode inside `tests/test_ingestion_no_write.py`
+installs traps before loading the worker through `runpy.run_path`; importing the
+worker before traps is a test failure. The source and separately authorized
+installed-runtime smokes use this same child path.
+
+The pre-import worker test layer traps and fails on:
 
 - `open`/`os.open` with write, append, create, truncate, or read-write flags;
 - `Path.write_*`, `mkdir`, `makedirs`, `mkstemp`, and `NamedTemporaryFile`;
@@ -221,9 +251,11 @@ The worker test layer traps and fails on:
 - subprocess/network/provider calls; and
 - imports of known SDK/importer/provider/MLX modules.
 
-Read-only opening of the configured synthetic target and canonical schema files
-is allowed. The traps must not interfere with the test runner's own controlled
-fixture setup, teardown, or evidence writing.
+Read-only opening of the configured synthetic target and canonical contract
+files is allowed. Bytecode, temp, cache, history, telemetry, or startup log
+creation is not. The traps do not govern the parent runner's controlled setup/
+teardown, but all parent setup precedes the snapshot and all evidence writing
+follows the equality comparison.
 
 ### 11.3 No-write cases
 
@@ -239,6 +271,8 @@ fixture setup, teardown, or evidence writing.
 | NW-008 | Core operation/lifecycle logs and Engine/FTS/vector databases remain byte-identical. |
 | NW-009 | SDK/importer/provider canary roots remain byte-identical and no module is imported from them. |
 | NW-010 | A content canary present only in a rejected request appears in no response error, stderr, log, file, or residual process artifact. |
+| NW-011 | Worker import/startup under the pre-import guard leaves Core source, contract, runtime, disposable home/temp/cache, and every canary snapshot identical and creates no `__pycache__`/`.pyc`. |
+| NW-012 | The same guarded child and snapshot implementation targets a separately authorized installed worker/contract path without importing the source worker first. |
 
 ## 12. Privacy And Static-boundary Tests
 
@@ -246,15 +280,48 @@ fixture setup, teardown, or evidence writing.
 | --- | --- |
 | PRI-001 | Source and tests contain no key/token/private-key pattern or real credential variable value. |
 | PRI-002 | Responses and stderr contain no absolute path, home/user component, physical target, database/table/lock identifier, provider route, or personal identity canary. |
-| PRI-003 | Capabilities expose logical scope/principal references and policy/build/schema identities only. |
+| PRI-003 | Capabilities expose logical scope/principal references and policy/build/contract-artifact identities only. |
 | PRI-004 | Validation findings redact rejected path/secret/provider canaries rather than echoing them. |
 | PRI-005 | Preview may return only the submitted candidate body and bounded support spans; it cannot return a complete source snapshot or unrelated target bytes. |
-| PRI-006 | Worker imports no `eidetic_sdk`, importer, `shared_api_cache`, provider skill/client, `mlx`, `fastembed`, Engine embedding, or memory writer module. |
-| PRI-007 | Core contains no SDK dependency and the SDK repository contains no copied ingestion schema after the Phase 1 commit. |
+| PRI-006 | Worker imports no `eidetic_sdk`, importer, `shared_api_cache`, provider skill/client, `mlx`, `fastembed`, Engine embedding, or memory writer module; book/LLM/local-MLX atomization remains importer-owned. |
+| PRI-007 | Core contains no SDK dependency; SDK has no Core checkout/submodule/path dependency and contains no copied canonical ingestion contract tree after the Phase 1 commit. |
 | PRI-008 | No test reads `keys.env`, central provider cache, balances, usage ledgers, or `key_penalty.db`. |
+| PRI-009 | Core contract artifact metadata contains protocol files/digests only, while generated SDK types identify their pinned artifact as derived code rather than canonical schema ownership. |
 
 Static scans must use bounded allowlists and report file/line evidence without
 printing any matched secret-like canary value.
+
+### 12.1 Stable schema-omission evidence
+
+| Test ID | Required proof |
+| --- | --- |
+| SCH-001 | Capabilities omission/extra-field fixtures cover every required protocol/build/artifact/policy/operation/authority field. |
+| SCH-002 | Candidate preview omission fixtures independently remove target binding, action, mutation flag, visible card, claim, support locator, visible-effect digest, token digest, or authority flag and must fail schema validation. |
+| SCH-003 | Manifest preview omission fixtures independently remove aggregate counts, one candidate effect, ordered candidate-binding digest, or partial-session statement and must fail. |
+| SCH-004 | Error/finding omission and additional-detail fixtures enforce bounded code/message/retryability/pointer fields without raw-value/path leakage. |
+| SCH-005 | Request discriminator fixtures prove six executable plus two blocked exact operation payload shapes, with no alias or cross-operation field acceptance. |
+
+### 12.2 Stable Core configuration evidence
+
+| Test ID | Required proof |
+| --- | --- |
+| CFG-001 | A sanitized Core-owned `imported-book-pilot` fixture resolves to a logical preview-only target root physically disjoint from every current writer/memory/topic-base root. |
+| CFG-002 | Missing, relative, aliased, symlink-overlapping, parent/child-overlapping, or writer-resolvable target configuration disables the scope without creating a directory. |
+| CFG-003 | Request principal/scope/policy/root fields cannot create, replace, enable, or mutate Core startup configuration or alter later capabilities. |
+
+### 12.3 Stable packaging/deployment evidence
+
+These IDs remain planned/not-run unless packaging or installed deployment is
+separately authorized.
+
+| Test ID | Required proof |
+| --- | --- |
+| DEP-001 | Fresh installed-root identity/backup inventory names exact pre-deployment worker/contracts and rollback source. |
+| DEP-002 | Reviewed Core source, immutable contract artifact, and candidate installed contract bytes have exact path/byte/SHA-256 parity and one contract-manifest digest. |
+| DEP-003 | Additive atomic installation touches only the new worker/contracts and preserves every unrelated installed path. |
+| DEP-004 | Installed capabilities report the reviewed Core build/artifact identities, six executable/two blocked operations, and every write/approval/grant flag false. |
+| DEP-005 | Installed public-protocol synthetic smokes and the NW-011/NW-012 guarded snapshots pass without a real source, provider, scope enablement, target creation, or source checkout import. |
+| DEP-006 | Reviewed rollback restores the exact pre-deployment identities without deleting or rewriting protected memory/provider state. |
 
 ## 13. Regression Tests
 
@@ -276,36 +343,36 @@ targeted ingestion tests pass.
 
 | Requirement | Planned tests/evidence |
 | --- | --- |
-| P1-001 | CT-001 through CT-003 |
+| P1-001 | CT-001 through CT-003, CT-011 |
 | P1-002 | CT-004 through CT-006 |
 | P1-003 | CT-002, CT-007, DENY-003 |
-| P1-004 | DENY-001 through DENY-005, NW-005 |
-| P1-005 | CT-002, COMP-005, PRE-004 |
+| P1-004 | DENY-001 through DENY-007, NW-005 |
+| P1-005 | CT-002, COMP-005, PRE-004, SCH-001, DEP-004 |
 | P1-006 | DENY-004, PRI-003 |
-| P1-007 | CAN-001 through CAN-010 |
+| P1-007 | CAN-001 through CAN-012 |
 | P1-008 | CAND-009, PRI-002, PRI-004 |
-| P1-009 | CAND-001, CAND-006 through CAND-008, CAN-001 |
+| P1-009 | CAND-001, CAND-006 through CAND-008, CAND-015, CAN-001, CAN-011 |
 | P1-010 | CAND-012, PRE-002 |
-| P1-011 | MAN-001, MAN-010, MAN-014, CAN-002 |
-| P1-012 | MAN-003 through MAN-013 |
+| P1-011 | MAN-001, MAN-010, MAN-014, MAN-017, CAN-002 |
+| P1-012 | MAN-003 through MAN-013, MAN-016, MAN-017 |
 | P1-013 | MAN-014, CAN-010, PRE-008 |
-| P1-014 | NW-002, primitive traps |
-| P1-015 | PRE-001 through PRE-005 |
+| P1-014 | NW-002, NW-011, pre-import primitive traps |
+| P1-015 | PRE-001 through PRE-005, PRE-013, PRE-015, SCH-002 |
 | P1-016 | PRE-006, PRE-012 |
-| P1-017 | PRE-003, PRE-006, schema omission fixtures |
+| P1-017 | PRE-003, PRE-006, SCH-002, SCH-003 |
 | P1-018 | PRE-012 |
-| P1-019 | PRE-007 through PRE-011 |
-| P1-020 | PRE-004, DENY-001, NW-001 through NW-009 |
-| P1-021 | CT-009, CAND-014, PRE-005, error fixtures |
+| P1-019 | PRE-007 through PRE-011, PRE-014 |
+| P1-020 | PRE-004, DENY-001 through DENY-007, NW-001 through NW-012 |
+| P1-021 | CT-009, CAND-014, PRE-005, SCH-004 |
 | P1-022 | PRI-001 through PRI-005, NW-010 |
 | P1-023 | PRI-005, NW-008 through NW-010 |
-| P1-024 | PRI-006, PRI-007 |
-| P1-025 | PRI-007 |
+| P1-024 | PRI-006, PRI-007, PRI-009 |
+| P1-025 | CT-011, PRI-007, PRI-009, DEP-002 |
 | P1-026 | COMP-001 through COMP-006 |
-| P1-027 | PRE-001, PRI-003, isolated-scope configuration fixture |
+| P1-027 | PRE-001, PRI-003, CFG-001 through CFG-003 |
 | P1-028 | PRI-002 through PRI-004 |
-| P1-029 | NW-004, NW-006, PRE-011 |
-| P1-030 | installed-runtime plan in Section 16 |
+| P1-029 | NW-004, NW-006, NW-011, PRE-011 |
+| P1-030 | DEP-001 through DEP-006 and Section 16 |
 | P1-031 | REG-001 through REG-003 |
 | P1-032 | REG-004 through REG-006 |
 
@@ -326,7 +393,7 @@ The review must confirm:
 
 - 32 unique requirements remain present;
 - every requirement has planned evidence;
-- schema and test file names agree between spec, requirements, and test plan;
+- contract and test file names agree between spec, requirements, and test plan;
 - no exact provider/model or private route state appears;
 - no physical target path is specified; and
 - no Phase 1 implementation file exists in the specification commit.
@@ -336,19 +403,26 @@ The review must confirm:
 Installed deployment is not part of Phase 1 source implementation GO. If a
 later deployment GO is granted, it must require:
 
-1. a fresh backup/identity inventory of the exact installed worker/contracts;
-2. additive atomic installation of only the ingestion worker and schema files;
-3. byte and SHA-256 parity between reviewed source and installed copies;
-4. installed `capabilities` reporting the reviewed build and schema-manifest
-   digest with `submit_available=false`;
-5. installed public-protocol smokes using synthetic payloads only;
-6. the same before/after no-write snapshot over installed runtime, memory,
-   target, indexes, SDK/importer, and provider-state canaries; and
-7. rollback through the existing reviewed installer/backup route.
+1. `DEP-001`: a fresh backup/identity inventory of the exact installed
+   worker/contracts;
+2. `DEP-002`: exact path/byte/SHA-256 parity among reviewed source, immutable
+   contract artifact, and candidate installed contracts;
+3. `DEP-003`: additive atomic installation of only the ingestion worker and
+   contract files;
+4. `DEP-004`: installed `capabilities` reporting the reviewed build and
+   contract/artifact digest, six executable operations, both blocked
+   operations, and `submit_available=false`;
+5. `DEP-005`: installed public-protocol smokes using synthetic payloads only
+   plus the pre-import guarded `NW-011`/`NW-012` no-write snapshot over
+   installed runtime, memory, target, indexes, SDK/importer, disposable
+   home/temp/cache, and provider-state canaries; and
+6. `DEP-006`: rollback through the existing reviewed installer/backup route.
 
 The installed smoke must not enable a scope, process a real source, call a
-provider, or create a target. Source-checkout tests are not installed-runtime
-proof, and installed parity is not durable-ingestion proof.
+provider, create a target, or import the source worker before testing the
+installed worker. Source-checkout tests are not installed-runtime proof,
+artifact parity is not durable-ingestion proof, and no SDK release may pin an
+artifact before `DEP-002` passes under separate packaging authorization.
 
 ## 17. Evidence Bundle
 
@@ -361,7 +435,7 @@ output/phase-1-ingestion-preview-evidence/
   targeted-tests.txt
   full-regression.txt
   canonical-goldens.sha256
-  schema-manifest.sha256
+  contract-manifest.sha256
   no-write-snapshot.json
   privacy-scan.txt
   staged-allowlist.txt

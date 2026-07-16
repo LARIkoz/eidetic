@@ -5,7 +5,8 @@
 **Current branch:** `main`
 **Accepted Phase 0 commit:** `3757e9a`
 **Purpose:** prevent pre-existing M3/preview work from entering the Phase 1
-specification or later implementation commits
+specification or later implementation commits, and keep Core/SDK/Importer
+repository ownership physically separate
 
 ## Phase 1 Packet Paths
 
@@ -20,6 +21,16 @@ docs/eidetic-llm-wiki-ingestion/phase-1-worktree-inventory.md
 
 `phase-1-review.md` does not exist until a fresh reviewer has reviewed the
 committed packet.
+
+## Repository Boundary Frozen For This Rework
+
+Phase 1 is Core-only. Its future implementation paths are limited to the Core
+allowlist in `phase-1-spec.md`, with canonical protocol sources under
+`contracts/ingestion/v1/`. No file in the separate `eidetic-sdk` repository or
+future `eidetic-importer` repository is copied, staged, or changed here. SDK
+compatibility will later consume a separately authorized immutable Core
+contract artifact/version/digest rather than a Core checkout, submodule, or
+repository-relative path.
 
 ## Pre-existing Tracked Owner Changes
 
@@ -70,8 +81,9 @@ Before committing the packet:
 git diff --cached --name-only
 ```
 
-must equal the four Phase 1 packet paths above. Any other staged path aborts the
-commit. The pre-existing tracked and untracked owner changes remain untouched.
+must equal the four Phase 1 packet paths above for the current boundary/review
+rework commit. Any other staged path aborts the commit. The pre-existing tracked
+and untracked owner changes remain untouched.
 
 ## Future Implementation Worktree
 
