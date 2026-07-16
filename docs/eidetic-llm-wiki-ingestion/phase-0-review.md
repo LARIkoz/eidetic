@@ -6,10 +6,10 @@
 **Date:** 2026-07-16
 **Reviewed commit:** `2b16cb76a5295ca513846afcb5f52553754e6b35`
 **Base commit:** `2e710d197ffcaba3ba9f57eb2fe873f9d1fdab9d`
-**Review role:** primary executor checklist review; independent owner acceptance
-remains required
+**Review role:** primary executor checklist review followed by explicit owner
+acceptance
 **Verdict:** CLEAN
-**Owner acceptance:** pending
+**Owner acceptance:** ACCEPTED on 2026-07-16
 
 ## Outcome
 
@@ -140,10 +140,19 @@ or modify them.
 
 ## Acceptance Boundary
 
-Technical documentation review is CLEAN. Phase 0 becomes `ACCEPTED` only after
-the owner explicitly accepts this reviewed commit. Until then:
+Technical documentation review is CLEAN. After receiving the exact next-step
+instruction `ACCEPT Phase 0, GO Phase 1 spec`, the owner explicitly instructed
+the session to continue. That reply accepts reviewed commit `2b16cb7` and
+authorizes preparation and review of the Phase 1 specification packet only.
 
-- Phase 1 may be discussed or reviewed but not implemented;
+Phase 0 is therefore `ACCEPTED`. This acceptance does not authorize Phase 1
+implementation:
+
+- Phase 1 may be specified and reviewed but not implemented;
 - no schema or worker may be added;
 - no LLM/provider call may run; and
 - no source may be ingested.
+
+Phase 1 implementation requires a committed Phase 1 packet, a fresh
+pre-implementation review with verdict `CLEAN`, and a separate owner GO bound
+to that reviewed commit.
