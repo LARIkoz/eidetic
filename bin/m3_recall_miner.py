@@ -142,6 +142,14 @@ and accurate AFTER the current task/session/incident is over.
   when it remains true after the incident; copy the durable mechanism, not the
   transient status that exposed it.
 
+PUSH/PULL BOUNDARY (mandatory): personal acquisition is not an importer.
+- NEVER emit a restatement or summary whose subject is a book, external document,
+  web page, RAG result, methodology corpus, or attached topic base. That material
+  remains in its source-owned PULL corpus.
+- A project-owned decision or finding that APPLIES external material may be emitted
+  only when the quoted assistant text states the concrete project outcome itself;
+  capture that outcome, not the external source's general knowledge.
+
 STRICT COPY RULES (violating any = do not emit the candidate):
 - NEVER add facts, merge from your own knowledge, sharpen numbers, or resolve vagueness — copy the assistant's assertion or skip it.
 - If unsure whether a fact is recalled vs derived in-session: drop that fact from recall (keep the rest).
@@ -183,16 +191,10 @@ def durability_reject_reason(cand):
     return None
 
 
-def read_turns(transcript_path, tail_bytes=TAIL_BYTES, max_turns=MAX_TURNS):
-    """Last `max_turns` real user/assistant TEXT turns → [(role, text)]."""
-    size = os.path.getsize(transcript_path)
-    with open(transcript_path, "rb") as fh:
-        if size > tail_bytes:
-            fh.seek(size - tail_bytes)
-            fh.readline()  # drop the partial line
-        raw = fh.read().decode("utf-8", errors="replace")
+def _parse_turn_bytes(raw, max_turns=MAX_TURNS):
+    text = bytes(raw).decode("utf-8", errors="replace")
     turns = []
-    for line in raw.splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -216,6 +218,27 @@ def read_turns(transcript_path, tail_bytes=TAIL_BYTES, max_turns=MAX_TURNS):
             continue  # tool_use / tool_result-only rows are never extractor input
         turns.append((rtype, text))
     return turns[-max_turns:]
+
+
+def read_turns_snapshot(raw, tail_bytes=TAIL_BYTES, max_turns=MAX_TURNS):
+    """Parse turns from one immutable byte snapshot using the normal tail policy."""
+    raw = bytes(raw)
+    if len(raw) > tail_bytes:
+        raw = raw[-tail_bytes:]
+        newline = raw.find(b"\n")
+        raw = raw[newline + 1:] if newline >= 0 else b""
+    return _parse_turn_bytes(raw, max_turns=max_turns)
+
+
+def read_turns(transcript_path, tail_bytes=TAIL_BYTES, max_turns=MAX_TURNS):
+    """Last `max_turns` real user/assistant TEXT turns → [(role, text)]."""
+    size = os.path.getsize(transcript_path)
+    with open(transcript_path, "rb") as fh:
+        if size > tail_bytes:
+            fh.seek(size - tail_bytes)
+            fh.readline()  # drop the partial line
+        raw = fh.read()
+    return _parse_turn_bytes(raw, max_turns=max_turns)
 
 
 def build_excerpt(turns, turn_cap=TURN_CAP):
@@ -267,6 +290,81 @@ def _parse_candidates(text):
     return None
 
 
+def _proposal_provenance(result):
+    """Sanitized execution provenance for acquisition proposals.
+
+    The shared SDK already records route decisions and attempts.  Persist only
+    the selected provider/model/family and the successful exact route; never
+    copy raw provider responses, key state, or account details into memory.
+    Legacy/fake runtimes without those fields remain visibly incomplete and
+    therefore cannot gain write authority in the acquisition-only loop.
+    """
+    decision = result.get("route_decision") if isinstance(result, dict) else None
+    decision = decision if isinstance(decision, dict) else {}
+    selected = decision.get("selected")
+    selected = selected if isinstance(selected, dict) else {}
+    attempts = result.get("route_attempts") if isinstance(result, dict) else None
+    attempts = attempts if isinstance(attempts, list) else []
+    successful = next(
+        (row for row in reversed(attempts)
+         if isinstance(row, dict) and row.get("ok") and row.get("route_id")),
+        None,
+    )
+    selected_route_id = str(selected.get("route_id") or "")
+    route_id = str((successful or {}).get("route_id") or selected_route_id)
+    provider = str(selected.get("provider") or "")
+    model = str(selected.get("model") or "")
+    # `chat()` may visibly fail over.  The successful route attempt is the
+    # executed identity; never stamp the initially selected route onto a
+    # proposal produced by a different admitted fallback.
+    if route_id and "/" in route_id and route_id != selected_route_id:
+        provider, model = route_id.split("/", 1)
+    elif route_id and (not provider or not model) and "/" in route_id:
+        provider, model = route_id.split("/", 1)
+    complete = bool(successful and route_id and provider and model)
+    return {
+        "status": "ok" if complete else "missing",
+        "task": str(decision.get("task") or "structured_classification"),
+        "route_id": route_id,
+        "provider": provider,
+        "model": model,
+        "family": (str(selected.get("family") or "")
+                   if not selected_route_id or route_id == selected_route_id else ""),
+        "identity_state": "sdk_route_attested" if complete else "unresolved",
+        "selected_route_id": selected_route_id,
+        "route_attempt_count": len(attempts),
+        "response_shape_status": str(
+            (result.get("response_shape") or {}).get("status") or
+            ("ok" if (result.get("response_shape") or {}).get("ok") else "")
+        ),
+    }
+
+
+def _ensure_shimnachi_class_token(shared_root):
+    """Export Eidetic's OWN shimnachi class token for the SDK's local lane.
+
+    The shared runtime never picks a client class on a caller's behalf; each
+    caller self-identifies. Explicit env always wins. Missing file is a silent
+    no-op — the SDK then skips shimnachi and fails over to the API lanes.
+    """
+    if os.environ.get("SHIMNACHI_LOCAL_TOKEN", "").strip():
+        return
+    env_path = os.path.join(shared_root, "shimnachi-local", "runtime",
+                            "clients", "eidetic.env")
+    try:
+        with open(env_path, encoding="utf-8") as fh:
+            for raw_line in fh:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                name, value = line.split("=", 1)
+                name = name.strip()
+                if name in ("SHIMNACHI_LOCAL_TOKEN", "SHIMNACHI_LOCAL_URL"):
+                    os.environ.setdefault(name, value.strip().strip('"').strip("'"))
+    except OSError:
+        pass
+
+
 def mine_transcript(transcript_path, *, session_id=None, project_slug=""):
     """→ (candidates, meta). Recall candidates: {kind:"recall", recall_query,
     recalled_answer, session_id, project_slug}; acquisition candidates
@@ -280,7 +378,8 @@ def mine_transcript(transcript_path, *, session_id=None, project_slug=""):
     yield."""
     meta = {"turns": 0, "excerpt_chars": 0, "raw_candidates": 0, "kept": 0,
             "raw_by_kind": {}, "kept_by_kind": {}, "dropped_unknown_kind": 0,
-            "miner_policy": MINER_POLICY_VERSION, "error": None}
+            "miner_policy": MINER_POLICY_VERSION,
+            "proposal_provenance": {"status": "not_called"}, "error": None}
     turns = read_turns(transcript_path)
     meta["turns"] = len(turns)
     if not any(r == "assistant" for r, _ in turns):
@@ -292,10 +391,15 @@ def mine_transcript(transcript_path, *, session_id=None, project_slug=""):
         os.path.expanduser("~"), "Documents/cursore")
     if shared_root not in sys.path:
         sys.path.insert(0, shared_root)
+    _ensure_shimnachi_class_token(shared_root)
     try:
         from shared_api_cache import get_sdk
         sdk = get_sdk()
-        res = sdk.chat(task="structured_classification", volume="bounded",
+        # task=memory_mining: the Eidetic-only chain with Anthropic lanes
+        # excluded (owner directive 2026-07-28) and shimnachi/local as the
+        # first failover. Never point this back at structured_classification —
+        # that chain fails over to claude_batch.
+        res = sdk.chat(task="memory_mining", volume="bounded",
                        system=SYSTEM, user=excerpt,
                        max_tokens=2000, temperature=0.0, timeout=120)
     except Exception as exc:  # SDK absent / route dead → no candidates, loudly
@@ -310,6 +414,8 @@ def mine_transcript(transcript_path, *, session_id=None, project_slug=""):
         meta["error"] = "parse_fail"
         return [], meta
     meta["raw_candidates"] = len(cands)
+    proposal_provenance = _proposal_provenance(res)
+    meta["proposal_provenance"] = proposal_provenance
 
     out, seen = [], set()
     sid = session_id or os.path.basename(transcript_path).rsplit(".", 1)[0]
@@ -348,7 +454,8 @@ def mine_transcript(transcript_path, *, session_id=None, project_slug=""):
                     seen.add(key)
                     accepted = {"kind": kind, "claim": claim,
                                 "transcript_quote": quote,
-                                "miner_policy": MINER_POLICY_VERSION}
+                                "miner_policy": MINER_POLICY_VERSION,
+                                "proposal_provenance": proposal_provenance}
         if accepted is None:
             continue
         accepted["session_id"] = sid
