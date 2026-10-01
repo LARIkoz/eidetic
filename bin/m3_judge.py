@@ -104,15 +104,16 @@ SPANS:
 
 # --- config -------------------------------------------------------------------
 # Owner decision D9 (2026-09-24, confirmed 2026-10-01): Eidetic processes the owner's
-# conversations locally only, so the judge runs on shimnachi/local (Qwen3.6-35B-A3B,
-# AC-0 judge test 733/733 ok, 64/64 faithful) instead of writer/palmyra-x5. The SDK
-# executes shimnachi/local under task `memory_mining` (Eidetic's own chain; its
-# `strict_judge` task has no local lane). Pinned route, no failover: when Shimnachi is
-# down the claim is rejected now and the next session tries again.
+# conversations locally only, so the judge runs on shimnachi/local (Qwen3.6-35B-A3B)
+# instead of writer/palmyra-x5. The local lane sends exactly the request the AC-0 run
+# of 2026-09-24 measured (733/733 ok, 64/64 faithful filed, 0 noise, 0 partial): see
+# _shimnachi_v6_chat. No failover: when Shimnachi is down the claim is rejected now and
+# the next session tries again. Any other provider goes through the SDK (`strict_judge`).
 _JUDGE_PROVIDER = os.environ.get("EIDETIC_M3_JUDGE_PROVIDER", "shimnachi")
 _JUDGE_MODEL = os.environ.get("EIDETIC_M3_JUDGE_MODEL", "local")
-_JUDGE_TASK = os.environ.get(
-    "EIDETIC_M3_JUDGE_TASK", "memory_mining" if _JUDGE_PROVIDER == "shimnachi" else "strict_judge")
+_JUDGE_TASK = os.environ.get("EIDETIC_M3_JUDGE_TASK", "strict_judge")
+_LOCAL = _JUDGE_PROVIDER == "shimnachi"
+_LOCAL_PROMPT_VERSION = "m3-entailment-local-v6"
 # Verbatim-quote gate ON by default (AC-0 v2 "verified" mode: 0 leak at 71.9% recall).
 # Relax to raw-verdict (82.8% recall, still 0 leak on the eval) with =0.
 _REQUIRE_QUOTE = os.environ.get("EIDETIC_M3_JUDGE_REQUIRE_QUOTE", "1").strip() not in ("0", "false", "")
@@ -157,6 +158,16 @@ def _quote_ok(quote, spans):
     if len(q.split()) < 6:
         return False
     return any(q in _norm_tokens(s) for s in spans)
+
+
+def _quote_gate(quote, spans):
+    """The local lane keeps the gate AC-0 measured (literal verbatim quote inside one
+    span, 6+ words, m3_judge_core.quote_is_verbatim); external judges keep the
+    normalized gate above."""
+    if _LOCAL:
+        from m3_judge_core import quote_is_verbatim
+        return quote_is_verbatim(quote, spans)
+    return _quote_ok(quote, spans)
 
 
 def _parse_verdict(text):
@@ -213,16 +224,45 @@ def _build_user(claim, spans):
 _SDK = None
 
 
+def _shimnachi_v6_chat(claim, spans):
+    """The request the AC-0 run of 2026-09-24 measured, built by the same worker code
+    (bin/m3_judge_shimnachi_worker.py): prompt m3-entailment-local-v6, strict JSON
+    schema, temperature 0, seed 1, reasoning budget 128, max 400 tokens. Returns an
+    SDK-shaped result; raises on any transport or gateway error."""
+    import m3_judge_shimnachi_worker as worker
+    import m3_recall_miner
+    m3_recall_miner._ensure_shimnachi_class_token(_SHARED_ROOT)  # noqa: SLF001
+    url = os.environ.get("SHIMNACHI_LOCAL_URL", "http://127.0.0.1:18080").rstrip("/")
+    token = os.environ.get("SHIMNACHI_LOCAL_TOKEN", "")
+    if not token:
+        raise RuntimeError("SHIMNACHI_LOCAL_TOKEN missing (runtime/clients/eidetic.env)")
+    payload = {
+        "model": "shimnachi/local",
+        "messages": worker._messages({"payload": {"claim": claim, "spans": spans}},  # noqa: SLF001
+                                     _LOCAL_PROMPT_VERSION),
+        "temperature": 0.0,
+        "max_tokens": 400,
+        "seed": 1,
+        "reasoning_budget_tokens": 128,
+        "stream": False,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "eidetic_m3_entailment", "strict": True,
+                            "schema": worker.OUTPUT_SCHEMA},
+        },
+    }
+    response = worker._post_json(f"{url}/v1/chat/completions", token, payload,  # noqa: SLF001
+                                 timeout=240.0)
+    return {"response_shape": {"ok": True},
+            "content": response["choices"][0]["message"]["content"]}
+
+
 def _get_sdk():
     global _SDK
     if _SDK is not None:
         return _SDK
     if _SHARED_ROOT not in sys.path:
         sys.path.insert(0, _SHARED_ROOT)
-    if _JUDGE_PROVIDER == "shimnachi":
-        # The local lane needs Eidetic's own client token; the miner already loads it.
-        import m3_recall_miner
-        m3_recall_miner._ensure_shimnachi_class_token(_SHARED_ROOT)  # noqa: SLF001
     from shared_api_cache import get_sdk  # ImportError ⇒ caller soft-degrades
     _SDK = get_sdk()
     _SDK.assert_contract()
@@ -242,22 +282,26 @@ def verdict(claim, spans):
     `score` folds this to 1.0/0.0 — byte-identical behavior and logging to the
     pre-split scorer."""
     spans = [s for s in (spans or []) if (s or "").strip()]
-    # The judge is an external API: only redacted text leaves the machine (owner
-    # 2026-10-01). The quote gate below checks the same redacted spans.
-    claim = egress_redact.redact(claim or "")
-    spans = [egress_redact.redact(s) for s in spans]
+    if not _LOCAL:
+        # An external judge gets redacted text only (owner 2026-10-01); the quote gate
+        # below checks the same redacted spans.
+        claim = egress_redact.redact(claim or "")
+        spans = [egress_redact.redact(s) for s in spans]
     if not spans:
         return "not_entailed"
     try:
-        sdk = _get_sdk()
-        res = sdk.chat_for_route(
-            provider=_JUDGE_PROVIDER, model=_JUDGE_MODEL,
-            task=_JUDGE_TASK, volume="bounded",
-            allow_same_family_failover=False,
-            system=SYSTEM, user=_build_user(claim, spans),
-            max_tokens=400, temperature=0.0, timeout=90,
-            retry_on_parse_fail=(_JUDGE_PROVIDER != "writer"),
-        )
+        if _LOCAL:
+            res = _shimnachi_v6_chat(claim, spans)
+        else:
+            sdk = _get_sdk()
+            res = sdk.chat_for_route(
+                provider=_JUDGE_PROVIDER, model=_JUDGE_MODEL,
+                task=_JUDGE_TASK, volume="bounded",
+                allow_same_family_failover=False,
+                system=SYSTEM, user=_build_user(claim, spans),
+                max_tokens=400, temperature=0.0, timeout=90,
+                retry_on_parse_fail=(_JUDGE_PROVIDER != "writer"),
+            )
     except Exception as exc:  # infra/route error → reject this claim, loudly
         _log(f"ROUTE_ERROR claim={claim[:80]!r} err={exc!r}")
         return "judge_unavailable"
@@ -273,9 +317,9 @@ def verdict(claim, spans):
     if isinstance(ent, str):
         ent = ent.strip().lower() == "true"
     quote = str(parsed.get("quote") or "")
-    filed = bool(ent) and (not _REQUIRE_QUOTE or _quote_ok(quote, spans))
+    filed = bool(ent) and (not _REQUIRE_QUOTE or _quote_gate(quote, spans))
     # Auditable: every verdict, with the grounding quote (SPEC §NFR-4).
-    _log(f"VERDICT entailed={bool(ent)} filed={filed} quote_ok={_quote_ok(quote, spans)} "
+    _log(f"VERDICT entailed={bool(ent)} filed={filed} quote_ok={_quote_gate(quote, spans)} "
          f"claim={claim[:90]!r} quote={quote[:90]!r}")
     return "entailed" if filed else "not_entailed"
 
@@ -295,6 +339,12 @@ def register(m3_autofile):
     Probes the route once so a dead pool (e.g. dashscope rotation_exhausted) is a
     LOUD do-not-register, not a per-claim surprise mid-run."""
     try:
+        if _LOCAL:
+            _shimnachi_v6_chat("The sky is green.", ["The sky is blue today."])
+            m3_autofile.register_support(score)
+            _log(f"REGISTERED judge=shimnachi/local prompt={_LOCAL_PROMPT_VERSION} "
+                 f"require_quote={_REQUIRE_QUOTE}")
+            return True
         sdk = _get_sdk()
         probe = sdk.chat_for_route(
             provider=_JUDGE_PROVIDER, model=_JUDGE_MODEL,
