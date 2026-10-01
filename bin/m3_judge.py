@@ -31,6 +31,11 @@ import re
 import sys
 import time
 
+_BIN_DIR = os.path.dirname(os.path.abspath(__file__))
+if _BIN_DIR not in sys.path:
+    sys.path.insert(0, _BIN_DIR)
+import egress_redact  # noqa: E402
+
 # --- canonical judge prompt (SOURCE of truth; the eval-fixture keeps a frozen
 #     copy for reproducibility) -------------------------------------------------
 SYSTEM = """You are the filing gate of a personal memory wiki. Your ONLY job: decide whether a CLAIM is ENTAILED by the cited SOURCE SPANS.
@@ -224,6 +229,10 @@ def verdict(claim, spans):
     `score` folds this to 1.0/0.0 — byte-identical behavior and logging to the
     pre-split scorer."""
     spans = [s for s in (spans or []) if (s or "").strip()]
+    # The judge is an external API: only redacted text leaves the machine (owner
+    # 2026-10-01). The quote gate below checks the same redacted spans.
+    claim = egress_redact.redact(claim or "")
+    spans = [egress_redact.redact(s) for s in spans]
     if not spans:
         return "not_entailed"
     try:
