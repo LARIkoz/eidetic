@@ -580,7 +580,7 @@ def render_template(meta, body, vault_type, link_map, project_slug, aliases, fil
 
 # ---------- polish (Haiku rewrite) ----------
 
-POLISH_MODEL_SONNET = os.environ.get("EIDETIC_POLISH_MODEL_SONNET", "claude-sonnet-4-6")
+POLISH_MODEL_SONNET = os.environ.get("EIDETIC_POLISH_MODEL_SONNET", "claude-sonnet-5-5")
 POLISH_MODEL_HAIKU = os.environ.get("EIDETIC_POLISH_MODEL_HAIKU", "claude-haiku-4-5-20251001")
 TOPIC_CLUSTER_MODEL = os.environ.get("EIDETIC_TOPIC_CLUSTER_MODEL", POLISH_MODEL_SONNET)
 TOPIC_SYNTHESIS_MODEL = os.environ.get("EIDETIC_TOPIC_SYNTHESIS_MODEL", "claude-opus-4-6")

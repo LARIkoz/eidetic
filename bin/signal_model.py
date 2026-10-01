@@ -6,7 +6,7 @@ Resolution order (mirrors embed.py's profile resolution):
   1. EIDETIC_SIGNAL_CLAUDE_MODEL — runtime override: a friendly name (sonnet |
      haiku) mapped to a pinned id, or a full "claude-..." id verbatim.
   2. <memory-system>/.signal_model — the INSTALL-TIME choice, same normalization.
-  3. default: claude-sonnet-4-6 (quality).
+  3. default: claude-sonnet-5-5 (quality).
 
 Both the env override and the file normalize identically (see _normalize): the env
 path previously returned its value verbatim, so the documented
@@ -24,10 +24,10 @@ import sys
 # Friendly install choices -> pinned exact ids. Update the ids here when the model
 # generation moves; the install UX and configs keep using the stable friendly names.
 NAMES = {
-    "sonnet": "claude-sonnet-4-6",
+    "sonnet": "claude-sonnet-5-5",
     "haiku": "claude-haiku-4-5-20251001",
 }
-DEFAULT = "claude-sonnet-4-6"
+DEFAULT = "claude-sonnet-5-5"
 
 
 def _root(env, root):

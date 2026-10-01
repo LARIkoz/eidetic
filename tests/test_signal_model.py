@@ -24,7 +24,7 @@ class SignalModelResolveTest(unittest.TestCase):
             f.write(value)
 
     def test_default_when_no_env_no_file(self):
-        self.assertEqual(signal_model.resolve(env={}, root=self.root), "claude-sonnet-4-6")
+        self.assertEqual(signal_model.resolve(env={}, root=self.root), "claude-sonnet-5-5")
 
     def test_env_explicit_wins(self):
         env = {"EIDETIC_SIGNAL_CLAUDE_MODEL": "claude-opus-4-8"}
@@ -37,7 +37,7 @@ class SignalModelResolveTest(unittest.TestCase):
 
     def test_file_sonnet_maps_to_pinned_id(self):
         self._write("sonnet")
-        self.assertEqual(signal_model.resolve(env={}, root=self.root), "claude-sonnet-4-6")
+        self.assertEqual(signal_model.resolve(env={}, root=self.root), "claude-sonnet-5-5")
 
     def test_file_full_id_passthrough(self):
         self._write("claude-custom-9-9")
@@ -45,7 +45,7 @@ class SignalModelResolveTest(unittest.TestCase):
 
     def test_garbage_file_falls_back_to_default(self):
         self._write("banana")
-        self.assertEqual(signal_model.resolve(env={}, root=self.root), "claude-sonnet-4-6")
+        self.assertEqual(signal_model.resolve(env={}, root=self.root), "claude-sonnet-5-5")
 
     def test_friendly_name_is_case_insensitive(self):
         self._write("Haiku")  # a hand-edit with different case must still map
@@ -64,7 +64,7 @@ class SignalModelResolveTest(unittest.TestCase):
 
     def test_env_friendly_name_case_insensitive(self):
         env = {"EIDETIC_SIGNAL_CLAUDE_MODEL": "Sonnet"}
-        self.assertEqual(signal_model.resolve(env=env, root=self.root), "claude-sonnet-4-6")
+        self.assertEqual(signal_model.resolve(env=env, root=self.root), "claude-sonnet-5-5")
 
     def test_env_bare_alias_never_leaks(self):
         # the bug C10: env 'haiku' used to be returned verbatim -> exported as the bare
