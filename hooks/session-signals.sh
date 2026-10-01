@@ -40,6 +40,45 @@ SIGNAL_CLAUDE_SYSTEM="${EIDETIC_SIGNAL_CLAUDE_SYSTEM:-You are a session-signal E
 SIGNAL_CODEX_MODEL="${EIDETIC_SIGNAL_CODEX_MODEL:-gpt-5.5}"
 SIGNAL_CODEX_REASONING="${EIDETIC_SIGNAL_CODEX_REASONING:-medium}"
 SIGNAL_CODEX_TIMEOUT="${EIDETIC_SIGNAL_CODEX_TIMEOUT:-120}"
+# Antigravity route, tried before codex when configured. EIDETIC_SIGNAL_AGY_VOICE names a
+# cli-council voice (`council voice <name>`; its fallback chain covers further accounts);
+# EIDETIC_SIGNAL_AGY_MODEL runs the local `agy-p --model <label>` instead. Both unset = off.
+SIGNAL_AGY_VOICE="${EIDETIC_SIGNAL_AGY_VOICE:-}"
+SIGNAL_AGY_MODEL="${EIDETIC_SIGNAL_AGY_MODEL:-}"
+SIGNAL_AGY_TIMEOUT="${EIDETIC_SIGNAL_AGY_TIMEOUT:-90}"
+
+# One line per run, so a dead route shows up in a file instead of vanishing: every
+# route failed silently from 2026-09-23 to 2026-10-01 because hook stderr is discarded.
+signal_log() {
+    mkdir -p "$MEMORY_SYSTEM/events" 2>/dev/null || return 0
+    printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" \
+        >> "$MEMORY_SYSTEM/events/session-signals.log" 2>/dev/null || true
+}
+
+run_agy_extraction() {
+    local prompt_file="$1" framed out_dir status=0
+    framed=$(mktemp "${TMPDIR:-/tmp}/eidetic-agy-signals.XXXXXX") || return 1
+    # agy has no system-prompt flag: the extractor frame leads the prompt instead.
+    { printf '%s\n\n' "$SIGNAL_CLAUDE_SYSTEM"; cat "$prompt_file"; } > "$framed"
+    if [ -n "$SIGNAL_AGY_VOICE" ] && command -v council >/dev/null 2>&1; then
+        out_dir=$(mktemp -d "${TMPDIR:-/tmp}/eidetic-agy-voice.XXXXXX") || { rm -f "$framed"; return 1; }
+        council voice "$SIGNAL_AGY_VOICE" --prompt-file "$framed" --out-dir "$out_dir" \
+            --timeout "$SIGNAL_AGY_TIMEOUT" >/dev/null 2>&1 || status=$?
+        if [ "$status" -eq 0 ] && [ -s "$out_dir/answer.md" ]; then
+            cat "$out_dir/answer.md"
+        else
+            status=1
+        fi
+        rm -rf "$out_dir"
+    elif [ -n "$SIGNAL_AGY_MODEL" ] && command -v agy-p >/dev/null 2>&1; then
+        agy-p -q --model "$SIGNAL_AGY_MODEL" --timeout "$SIGNAL_AGY_TIMEOUT" --file "$framed" \
+            2>/dev/null || status=$?
+    else
+        status=1
+    fi
+    rm -f "$framed"
+    return "$status"
+}
 
 acquire_memory_lock() {
     local lockdir="$MEMORY_SYSTEM/.memory.lock"
@@ -385,14 +424,31 @@ RESULT="EMPTY"
 # while an interactive Opus session is live shares the Anthropic quota pool and
 # can kick the extension. At true session end (Stop hook) the var is unset, so
 # the normal Claude-first → codex-fallback order applies.
+SIGNAL_ROUTE="none"
 if [ -z "${EIDETIC_SIGNAL_SKIP_CLAUDE:-}" ] && CLAUDE_RESULT=$(run_claude_extraction "$PROMPT_FILE" 2>/dev/null); then
     RESULT=$(filter_signal_lines "$CLAUDE_RESULT")
+    is_empty_result "$RESULT" || SIGNAL_ROUTE="claude"
 fi
-if is_empty_result "$RESULT"; then
-    CODEX_RESULT=$(run_codex_extraction_with_fallback "$PROMPT_FILE" || echo "EMPTY")
-    RESULT=$(filter_signal_lines "$CODEX_RESULT")
+# A successful agy answer of EMPTY means "nothing notable": no second model is asked.
+if [ "$SIGNAL_ROUTE" = "none" ] && { [ -n "$SIGNAL_AGY_VOICE" ] || [ -n "$SIGNAL_AGY_MODEL" ]; }; then
+    if AGY_RESULT=$(run_agy_extraction "$PROMPT_FILE"); then
+        RESULT=$(filter_signal_lines "$AGY_RESULT")
+        SIGNAL_ROUTE="agy"
+    else
+        signal_log "route=agy status=failed voice=${SIGNAL_AGY_VOICE:-} model=${SIGNAL_AGY_MODEL:-}"
+    fi
+fi
+if [ "$SIGNAL_ROUTE" = "none" ]; then
+    if CODEX_RESULT=$(run_codex_extraction_with_fallback "$PROMPT_FILE"); then
+        RESULT=$(filter_signal_lines "$CODEX_RESULT")
+        SIGNAL_ROUTE="codex"
+    else
+        signal_log "route=codex status=failed model=$SIGNAL_CODEX_MODEL"
+    fi
 fi
 rm -f "$PROMPT_FILE"
+SIGNAL_LINES=$(printf '%s\n' "$RESULT" | grep -c -E '^(Decision|Rule|Worked|Failed|Knowledge):' || true)
+signal_log "route=$SIGNAL_ROUTE lines=${SIGNAL_LINES:-0}"
 
 if is_empty_result "$RESULT"; then
     exit 0
