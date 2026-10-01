@@ -46,6 +46,11 @@ SIGNAL_CODEX_TIMEOUT="${EIDETIC_SIGNAL_CODEX_TIMEOUT:-120}"
 SIGNAL_AGY_VOICE="${EIDETIC_SIGNAL_AGY_VOICE:-}"
 SIGNAL_AGY_MODEL="${EIDETIC_SIGNAL_AGY_MODEL:-}"
 SIGNAL_AGY_TIMEOUT="${EIDETIC_SIGNAL_AGY_TIMEOUT:-90}"
+# Local route (owner decision D9: the owner's conversations are processed locally only).
+# EIDETIC_SIGNAL_LOCAL=shimnachi tries shimnachi/local first; EIDETIC_SIGNAL_LOCAL_ONLY=1
+# then forbids every cloud route, so a Shimnachi outage skips this run instead.
+SIGNAL_LOCAL="${EIDETIC_SIGNAL_LOCAL:-}"
+SIGNAL_LOCAL_ONLY="${EIDETIC_SIGNAL_LOCAL_ONLY:-}"
 
 # One line per run, so a dead route shows up in a file instead of vanishing: every
 # route failed silently from 2026-09-23 to 2026-10-01 because hook stderr is discarded.
@@ -53,6 +58,13 @@ signal_log() {
     mkdir -p "$MEMORY_SYSTEM/events" 2>/dev/null || return 0
     printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" \
         >> "$MEMORY_SYSTEM/events/session-signals.log" 2>/dev/null || true
+}
+
+run_local_extraction() {
+    local prompt_file="$1"
+    [ -f "$MEMORY_SYSTEM/bin/local_signal_extract.py" ] || return 1
+    EIDETIC_SIGNAL_SYSTEM="$SIGNAL_CLAUDE_SYSTEM" \
+        python3 "$MEMORY_SYSTEM/bin/local_signal_extract.py" < "$prompt_file" 2>/dev/null
 }
 
 run_agy_extraction() {
@@ -429,7 +441,18 @@ if [ -z "${EIDETIC_SIGNAL_SKIP_CLAUDE:-}" ] && CLAUDE_RESULT=$(run_claude_extrac
     RESULT=$(filter_signal_lines "$CLAUDE_RESULT")
     is_empty_result "$RESULT" || SIGNAL_ROUTE="claude"
 fi
-# A successful agy answer of EMPTY means "nothing notable": no second model is asked.
+# A successful local or agy answer of EMPTY means "nothing notable": no second model is asked.
+if [ "$SIGNAL_ROUTE" = "none" ] && [ "$SIGNAL_LOCAL" = "shimnachi" ]; then
+    if LOCAL_RESULT=$(run_local_extraction "$PROMPT_FILE"); then
+        RESULT=$(filter_signal_lines "$LOCAL_RESULT")
+        SIGNAL_ROUTE="local"
+    else
+        signal_log "route=local status=failed"
+    fi
+fi
+if [ "$SIGNAL_ROUTE" = "none" ] && [ "$SIGNAL_LOCAL_ONLY" = "1" ]; then
+    SIGNAL_ROUTE="skipped-local-only"
+fi
 if [ "$SIGNAL_ROUTE" = "none" ] && { [ -n "$SIGNAL_AGY_VOICE" ] || [ -n "$SIGNAL_AGY_MODEL" ]; }; then
     if AGY_RESULT=$(run_agy_extraction "$PROMPT_FILE"); then
         RESULT=$(filter_signal_lines "$AGY_RESULT")

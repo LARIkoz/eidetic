@@ -345,7 +345,7 @@ def _ensure_shimnachi_class_token(shared_root):
 
     The shared runtime never picks a client class on a caller's behalf; each
     caller self-identifies. Explicit env always wins. Missing file is a silent
-    no-op — the SDK then skips shimnachi and fails over to the API lanes.
+    no-op — the pinned local route then fails and the session yields no candidates.
     """
     if os.environ.get("SHIMNACHI_LOCAL_TOKEN", "").strip():
         return
@@ -395,13 +395,16 @@ def mine_transcript(transcript_path, *, session_id=None, project_slug=""):
     try:
         from shared_api_cache import get_sdk
         sdk = get_sdk()
-        # task=memory_mining: the Eidetic-only chain with Anthropic lanes
-        # excluded (owner directive 2026-07-28) and shimnachi/local as the
-        # first failover. Never point this back at structured_classification —
-        # that chain fails over to claude_batch.
-        res = sdk.chat(task="memory_mining", volume="bounded",
-                       system=SYSTEM, user=excerpt,
-                       max_tokens=2000, temperature=0.0, timeout=120)
+        # Owner decision D9 (2026-09-24, confirmed 2026-10-01): the owner's
+        # conversations are processed locally only. Pinned to shimnachi/local with
+        # no failover: the task chain's cloud lanes (Mistral) never see a
+        # transcript; when Shimnachi is down this session yields no candidates.
+        # Never point this back at structured_classification (claude_batch failover).
+        res = sdk.chat_for_route(provider="shimnachi", model="local",
+                                 task="memory_mining", volume="bounded",
+                                 allow_same_family_failover=False,
+                                 system=SYSTEM, user=excerpt,
+                                 max_tokens=2000, temperature=0.0, timeout=120)
     except Exception as exc:  # SDK absent / route dead → no candidates, loudly
         meta["error"] = f"sdk:{exc!r}"[:200]
         return [], meta

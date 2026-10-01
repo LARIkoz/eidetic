@@ -10,7 +10,8 @@ existing "ANY material claim ≤ floor ⇒ reject the WHOLE answer" contract
 Measured earning of the loop (AC-0, 2026-07-08, kurdyuk output/karpathy-llm-wiki-spec):
 writer/palmyra-x5, prompt v2: 82.8% faithful at 0% noise / 0% partial (raw), 71.9% with
 the verbatim-quote gate ON (v1 was 79.7/64.1) — both clear the ≥60/≤5/=0 kill criterion. mistral-small
-(31.2% on v2) does NOT. So the default route here is palmyra; the verbatim gate is ON by
+(31.2% on v2) does NOT. Palmyra was the default until 2026-10-01 (now shimnachi/local, see
+_JUDGE_PROVIDER); the verbatim gate is ON by
 default (the cheap, strong hallucination gate — see feedback-claim-support-verbatim-span-gate).
 
 Soft-degrade (SPEC §NFR-4, AC §6.2): if the shared LLM SDK is absent (e.g. a box
@@ -22,7 +23,7 @@ IS active, a persistent route error on a specific claim scores 0.0
 decision half-LLM/half-lexical). Every LLM verdict is logged with its quoted span
 so a human can audit what the wiki accreted.
 
-Routing goes through the shared entrypoint (`strict_judge` task), never a raw
+Routing goes through the shared entrypoint (task `_JUDGE_TASK`), never a raw
 provider call or a top-up (absolute rule). Reversible: unregister / delete this
 module.
 """
@@ -102,8 +103,16 @@ SPANS:
 {"entailed": true, "quote": "before ANY bulk write into a cache directory, take a backup of that directory first"}"""
 
 # --- config -------------------------------------------------------------------
-_JUDGE_PROVIDER = os.environ.get("EIDETIC_M3_JUDGE_PROVIDER", "writer")
-_JUDGE_MODEL = os.environ.get("EIDETIC_M3_JUDGE_MODEL", "palmyra-x5")
+# Owner decision D9 (2026-09-24, confirmed 2026-10-01): Eidetic processes the owner's
+# conversations locally only, so the judge runs on shimnachi/local (Qwen3.6-35B-A3B,
+# AC-0 judge test 733/733 ok, 64/64 faithful) instead of writer/palmyra-x5. The SDK
+# executes shimnachi/local under task `memory_mining` (Eidetic's own chain; its
+# `strict_judge` task has no local lane). Pinned route, no failover: when Shimnachi is
+# down the claim is rejected now and the next session tries again.
+_JUDGE_PROVIDER = os.environ.get("EIDETIC_M3_JUDGE_PROVIDER", "shimnachi")
+_JUDGE_MODEL = os.environ.get("EIDETIC_M3_JUDGE_MODEL", "local")
+_JUDGE_TASK = os.environ.get(
+    "EIDETIC_M3_JUDGE_TASK", "memory_mining" if _JUDGE_PROVIDER == "shimnachi" else "strict_judge")
 # Verbatim-quote gate ON by default (AC-0 v2 "verified" mode: 0 leak at 71.9% recall).
 # Relax to raw-verdict (82.8% recall, still 0 leak on the eval) with =0.
 _REQUIRE_QUOTE = os.environ.get("EIDETIC_M3_JUDGE_REQUIRE_QUOTE", "1").strip() not in ("0", "false", "")
@@ -210,6 +219,10 @@ def _get_sdk():
         return _SDK
     if _SHARED_ROOT not in sys.path:
         sys.path.insert(0, _SHARED_ROOT)
+    if _JUDGE_PROVIDER == "shimnachi":
+        # The local lane needs Eidetic's own client token; the miner already loads it.
+        import m3_recall_miner
+        m3_recall_miner._ensure_shimnachi_class_token(_SHARED_ROOT)  # noqa: SLF001
     from shared_api_cache import get_sdk  # ImportError ⇒ caller soft-degrades
     _SDK = get_sdk()
     _SDK.assert_contract()
@@ -239,7 +252,7 @@ def verdict(claim, spans):
         sdk = _get_sdk()
         res = sdk.chat_for_route(
             provider=_JUDGE_PROVIDER, model=_JUDGE_MODEL,
-            task="strict_judge", volume="bounded",
+            task=_JUDGE_TASK, volume="bounded",
             allow_same_family_failover=False,
             system=SYSTEM, user=_build_user(claim, spans),
             max_tokens=400, temperature=0.0, timeout=90,
@@ -285,7 +298,7 @@ def register(m3_autofile):
         sdk = _get_sdk()
         probe = sdk.chat_for_route(
             provider=_JUDGE_PROVIDER, model=_JUDGE_MODEL,
-            task="strict_judge", volume="bounded", allow_same_family_failover=False,
+            task=_JUDGE_TASK, volume="bounded", allow_same_family_failover=False,
             system='Reply with ONLY this JSON object: {"entailed": false, "quote": ""}',
             user="ping", max_tokens=40, temperature=0.0, timeout=60,
             retry_on_parse_fail=(_JUDGE_PROVIDER != "writer"))
