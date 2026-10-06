@@ -37,6 +37,9 @@ Indexing is serialized per canonical database path before scanning files or
 loading models. A waiting incremental request scans again after acquiring the
 lock, so a file added while it waited is not lost. A lock timeout exits with 75,
 not a false successful index result.
+The separate vector-writer lock returns the same retry exit code immediately
+when another vector build is active, rather than reporting unperformed work as
+success.
 
 A true unchanged incremental run skips relation propagation and semantic hooks.
 Relation propagation has its own durable retry marker: an interruption after

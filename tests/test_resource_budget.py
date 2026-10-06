@@ -197,6 +197,75 @@ print(json.dumps(dict(started=started, admitted=admitted)))
                 timing = json.loads(result.stdout)
                 self.assertGreaterEqual(timing["admitted"], deadline)
 
+    def check_interrupted_cooldown_is_not_charged_twice(self, initial_slot):
+        budget._cores = 1
+        budget._last_cpu, budget._last_wall = 10.0, 100.0
+        clock = dict(cpu=10.03, wall=100.03)
+        save = budget._save_state
+
+        def save_then_delay(root, state):
+            save(root, state)
+            # Paging/fsync/scheduling may move the new baseline past the debt.
+            # A fixed bound on the next deadline's growth would be incorrect.
+            clock["wall"] = 101.0
+
+        path = self.root / ".resource-budget.state.json"
+        with mock.patch.object(budget.time, "process_time", side_effect=lambda: clock["cpu"]), \
+                mock.patch.object(budget.time, "monotonic", side_effect=lambda: clock["wall"]), \
+                mock.patch.object(budget, "_boot_identity", return_value="test-boot"):
+            with mock.patch.object(budget, "_save_state", side_effect=save_then_delay), \
+                    mock.patch.object(budget, "_sleep_until", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    if initial_slot:
+                        with budget.compute_slot():
+                            self.fail("Interrupted pre-work cooldown admitted compute")
+                    else:
+                        budget.cpu_checkpoint(force=True)
+            self.assertEqual((budget._last_cpu, budget._last_wall), (10.03, 101.0))
+            deadline = json.loads(path.read_text())["cpu_deadline"]
+            self.assertAlmostEqual(deadline, 100.15)
+            clock["cpu"] += 0.001
+            with mock.patch.object(budget, "_sleep_until"):
+                budget.cpu_checkpoint(force=True)
+            following_deadline = json.loads(path.read_text())["cpu_deadline"]
+            self.assertAlmostEqual(following_deadline, max(deadline, 101.0) + 0.001 / 0.2)
+
+    def test_checkpoint_interrupted_cooldown_does_not_double_charge(self):
+        self.check_interrupted_cooldown_is_not_charged_twice(initial_slot=False)
+
+    def test_prework_interrupted_cooldown_does_not_double_charge(self):
+        self.check_interrupted_cooldown_is_not_charged_twice(initial_slot=True)
+
+    def test_failed_charge_persistence_does_not_advance_cpu_baseline(self):
+        baseline = budget._last_cpu, budget._last_wall
+        with mock.patch.object(budget, "_save_state", side_effect=budget.ResourceBudgetError("failed save")), \
+                mock.patch.object(budget, "_sleep_until") as sleep:
+            with self.assertRaises(budget.ResourceBudgetError):
+                budget.cpu_checkpoint(force=True)
+            self.assertEqual((budget._last_cpu, budget._last_wall), baseline)
+            with self.assertRaises(budget.ResourceBudgetError):
+                with budget.compute_slot():
+                    self.fail("Failed pre-work persistence admitted compute")
+            self.assertEqual((budget._last_cpu, budget._last_wall), baseline)
+            sleep.assert_not_called()
+
+    def test_failed_model_charge_persistence_keeps_unpaid_cpu_baseline(self):
+        save = budget._save_state
+        calls = 0
+
+        def fail_second_save(root, state):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise budget.ResourceBudgetError("failed model charge save")
+            return save(root, state)
+
+        with mock.patch.object(budget, "_save_state", side_effect=fail_second_save):
+            with self.assertRaises(budget.ResourceBudgetError):
+                with budget.compute_slot():
+                    baseline = budget._last_cpu, budget._last_wall
+        self.assertEqual((budget._last_cpu, budget._last_wall), baseline)
+
     def parallel_work(self, mode):
         script = """
 import json, time, resource_budget as b

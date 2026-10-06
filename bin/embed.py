@@ -123,6 +123,7 @@ def _engine_stamp():
 
 
 _model = None
+_model_kind = None
 
 
 def _sweep_orphan_coreml_caches(max_age_s=7200, cap=500):
@@ -180,12 +181,14 @@ def _embed_providers():
 
 
 def _compute_kind():
+    if _model is not None and _model_kind is not None:
+        return _model_kind
     providers = _embed_providers() or []
     return "gpu" if any(p != "CPUExecutionProvider" for p in providers) else "cpu"
 
 
 def get_model():
-    global _model
+    global _model, _model_kind
     if _model is None:
         apply_background_policy()
         # Cold imports/model-file I/O are CPU work, not a GPU occupancy window.
@@ -199,10 +202,13 @@ def get_model():
                                        providers=providers, **kwargs)
                           if providers else TextEmbedding(MODEL_NAME, cache_dir=FASTEMBED_CACHE,
                                                          **kwargs))
+                _model_kind = ("gpu" if any(p != "CPUExecutionProvider" for p in (providers or []))
+                               else "cpu")
             except Exception:
                 # Preserve the CPU fallback, including the thread budget.
                 _model = TextEmbedding(MODEL_NAME, cache_dir=FASTEMBED_CACHE,
                                        providers=["CPUExecutionProvider"], **kwargs)
+                _model_kind = "cpu"
     return _model
 
 
@@ -610,16 +616,19 @@ def main(argv=None):
     lock_fd = _acquire_embed_lock(vector_db)
     if lock_fd is None:
         print(
-            "embed.py: another embed run holds the lock; skipping (no-op).",
+            "embed.py: another embed run holds the lock; request not indexed, retry later.",
             file=sys.stderr,
         )
-        return 0
+        return 75
 
-    if len(argv) > 3 and argv[3] == "--full":
-        run_full(index_db, vector_db)
-    else:
-        run_incremental(index_db, vector_db)
-    return 0
+    try:
+        if len(argv) > 3 and argv[3] == "--full":
+            run_full(index_db, vector_db)
+        else:
+            run_incremental(index_db, vector_db)
+        return 0
+    finally:
+        lock_fd.close()
 
 
 def _reexec_under_mlx_venv(target=None):

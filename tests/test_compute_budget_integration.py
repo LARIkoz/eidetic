@@ -25,14 +25,14 @@ class ComputeIntegrationTest(unittest.TestCase):
         self.env = patch.dict(os.environ, {"EIDETIC_RESOURCE_ROOT": self.tmp.name})
         self.env.start()
         self.addCleanup(self.env.stop)
-        self.saved = embed._model, rerank._model, rerank._unavailable
+        self.saved = embed._model, embed._model_kind, rerank._model, rerank._unavailable
         embed._model = rerank._model = None
         rerank._unavailable = False
         embed._query_cache.clear()
         self.addCleanup(self.restore)
 
     def restore(self):
-        embed._model, rerank._model, rerank._unavailable = self.saved
+        embed._model, embed._model_kind, rerank._model, rerank._unavailable = self.saved
         embed._query_cache.clear()
 
     def test_query_vector_reused_but_geometry_change_misses(self):
@@ -62,6 +62,23 @@ class ComputeIntegrationTest(unittest.TestCase):
         for call in constructor.call_args_list:
             self.assertLessEqual(call.kwargs["threads"], 2)
         self.assertEqual(constructor.call_args.kwargs["providers"], ["CPUExecutionProvider"])
+        # Retain actual CPU execution even though CoreML is still configured.
+        with patch.object(embed, "_embed_providers", return_value=["CoreMLExecutionProvider"]):
+            self.assertEqual(embed._compute_kind(), "cpu")
+
+    def test_busy_vector_writer_reports_retry_and_releases_lock_after_failure(self):
+        index_path, vector_path = self.vector_fixture()
+        lock = embed._acquire_embed_lock(vector_path)
+        try:
+            self.assertEqual(embed.main(["embed.py", index_path, vector_path]), 75)
+        finally:
+            lock.close()
+        with patch.object(embed, "run_incremental", side_effect=RuntimeError("failed")):
+            with self.assertRaises(RuntimeError):
+                embed.main(["embed.py", index_path, vector_path])
+        acquired = embed._acquire_embed_lock(vector_path)
+        self.assertIsNotNone(acquired)
+        acquired.close()
 
     def test_fastembed_cold_load_is_outside_gpu_windows(self):
         try:

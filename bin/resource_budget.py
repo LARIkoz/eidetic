@@ -234,12 +234,16 @@ def _sleep_until(deadline):
 
 
 def _settle(root, state, policy, cpu, start, gpu_elapsed=0.0, *, wait=True):
+    global _last_cpu, _last_wall
     capacity = _cpu_count() * policy["cpu_percent"] / 100.0
     state["cpu_deadline"] = max(state["cpu_deadline"], start) + max(0.0, cpu) / capacity
     if gpu_elapsed:
         state["gpu_deadline"] = max(state["gpu_deadline"], start) + gpu_elapsed * 100.0 / policy["gpu_percent"]
     # Persist before sleeping, so an interrupted cooldown survives its owner.
     _save_state(root, state)
+    # Once debt is durable, retries must not charge this CPU again. A failed
+    # save leaves the previous baseline intact so unpaid CPU is still due.
+    _last_cpu, _last_wall = time.process_time(), time.monotonic()
     if wait:
         _sleep_until(max(state["cpu_deadline"], state["gpu_deadline"]))
 
@@ -266,7 +270,6 @@ def cpu_checkpoint(force=False):
         with _shared_lock() as root:
             state = _load_state(root)
             _settle(root, state, policy, time.process_time() - _last_cpu, _last_wall)
-            _last_cpu, _last_wall = time.process_time(), time.monotonic()
 
 
 @contextmanager
@@ -319,4 +322,3 @@ def compute_slot(kind="cpu"):
                             elapsed if _gpu_active else 0.0, wait=not cancelled)
                 finally:
                     _gpu_active = False
-                    _last_cpu, _last_wall = time.process_time(), time.monotonic()
