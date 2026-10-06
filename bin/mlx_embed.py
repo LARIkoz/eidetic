@@ -19,6 +19,8 @@ importable (and embed.py's engine selection is testable) on a host WITHOUT mlx.
 import os
 import sys
 
+from resource_budget import apply_background_policy, compute_slot, settings
+
 # XLM-RoBERTa-large / multilingual-e5-large architecture (fixed — this module only
 # serves this one model, the fastembed default's twin).
 MLX_MODEL_REPO = "mlx-community/multilingual-e5-large-mlx"
@@ -204,12 +206,34 @@ def _encode(texts):
 def embed_texts(texts):
     """Encode already-prefixed passages → list of float32 blobs (1024-d, L2-norm),
     byte-format identical to embed.embed_texts (np.float32.tobytes)."""
-    import numpy as np
     if not texts:
         return []
-    out = _encode(texts)
-    arr = np.array(out, dtype=np.float32)
-    return [arr[i].tobytes() for i in range(arr.shape[0])]
+    apply_background_policy()
+    with compute_slot("cpu"):
+        import numpy as np
+        import mlx.core as mx
+        # Cold Python imports and model-file I/O are CPU work. Charging their
+        # wall time as GPU occupancy would create minutes of needless cooldown.
+        _load()
+
+    policy = settings()
+    batch_size = policy["batch_size"] if policy["enabled"] else len(texts)
+    if policy["enabled"]:
+        # This bounds reusable buffers, not model weights or total process RAM.
+        mx.set_cache_limit(policy["mlx_cache_mb"] * 1024 * 1024)
+    result = []
+    for offset in range(0, len(texts), batch_size):
+        with compute_slot("gpu"):
+            try:
+                out = _encode(texts[offset:offset + batch_size])
+                arr = np.array(out, dtype=np.float32)
+                result.extend(arr[i].tobytes() for i in range(arr.shape[0]))
+                del out, arr
+            finally:
+                # Synchronize submitted work even on an encoding/conversion
+                # error, before the shared cooldown or lock release.
+                mx.synchronize()
+    return result
 
 
 def embed_query_texts(texts):

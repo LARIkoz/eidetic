@@ -33,8 +33,14 @@ _unavailable = False
 def get_model():
     global _model
     if _model is None:
-        from fastembed.rerank.cross_encoder import TextCrossEncoder
-        _model = TextCrossEncoder(model_name=MODEL_NAME, cache_dir=FASTEMBED_CACHE)
+        from resource_budget import apply_background_policy, compute_slot, settings
+        apply_background_policy()
+        with compute_slot("cpu"):
+            from fastembed.rerank.cross_encoder import TextCrossEncoder
+            policy = settings()
+            kwargs = {"threads": policy["threads"]} if policy["enabled"] else {}
+            _model = TextCrossEncoder(model_name=MODEL_NAME, cache_dir=FASTEMBED_CACHE,
+                                      providers=["CPUExecutionProvider"], **kwargs)
     return _model
 
 
@@ -49,8 +55,16 @@ def scores(query, docs):
     if _unavailable or not docs:
         return []
     try:
-        model = get_model()
-        return [float(s) for s in model.rerank(query, docs)]
+        from resource_budget import compute_slot, settings
+        policy = settings()
+        batch_size = policy["batch_size"] if policy["enabled"] else len(docs)
+        result = []
+        for offset in range(0, len(docs), batch_size):
+            with compute_slot("cpu"):
+                model = get_model()
+                result.extend(float(s) for s in model.rerank(
+                    query, docs[offset:offset + batch_size], batch_size=batch_size))
+        return result
     except Exception as e:  # pragma: no cover — defensive degrade path
         _unavailable = True
         print(

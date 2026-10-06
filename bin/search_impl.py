@@ -1304,4 +1304,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    from resource_budget import apply_background_policy, cpu_checkpoint
+    apply_background_policy()
+    try:
+        main()
+    finally:
+        cpu_checkpoint(force=True)

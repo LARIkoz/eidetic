@@ -23,6 +23,7 @@ Design contract (see docs/engine.md for the full table):
 import importlib.util
 import os
 import sys
+import threading
 
 ENGINE_API = "1.1"  # MAJOR.MINOR — see docs/engine.md breaking-change rules.
 # v1.1 (additive, M1 build-step-1): + embed_query_batch (S1), Index.neighbors
@@ -45,16 +46,29 @@ class EngineUnavailable(RuntimeError):
 # --- private module loading (additive: load siblings by path, never edit them) ---
 _embed_mod = None
 _rerank_mod = None
+_sibling_lock = threading.RLock()
 
 
-def _load_sibling(name):
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py")
-    spec = importlib.util.spec_from_file_location("eidetic_" + name, path)
-    if spec is None or spec.loader is None:
-        raise ImportError("cannot load " + path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+def _load_sibling(name, shared=False):
+    # The public API also supports import-by-path outside bin/. Register the
+    # shared governor once so its process accounting and nested slots agree
+    # with direct CLI imports, without altering the consumer's sys.path.
+    with _sibling_lock:
+        if shared and name in sys.modules:
+            return sys.modules[name]
+        if name in ("embed", "rerank", "mlx_embed"):
+            _load_sibling("resource_budget", shared=True)
+        if name == "embed":
+            _load_sibling("mlx_embed", shared=True)
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), name + ".py")
+        spec = importlib.util.spec_from_file_location(name if shared else "eidetic_" + name, path)
+        if spec is None or spec.loader is None:
+            raise ImportError("cannot load " + path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        if shared:
+            sys.modules[name] = mod
+        return mod
 
 
 def _embed():
@@ -353,9 +367,11 @@ class Index:
                 return []
             rows = self._conn.execute(
                 "SELECT chunk_id, path, name, section_heading, content_hash, embedding "
-                "FROM vectors").fetchall()
+                "FROM vectors")
             scored = []
+            from resource_budget import cpu_checkpoint
             for chunk_id, path, name, heading, digest, blob in rows:
+                cpu_checkpoint()
                 if chunk_id in excl_ids or path in excl_paths:
                     continue
                 vec = np.frombuffer(blob, dtype=np.float32)

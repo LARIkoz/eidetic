@@ -7,13 +7,19 @@ splits by ## headings, and upserts into SQLite FTS5.
 Zero external deps: python3 stdlib + sqlite3.
 """
 
+from contextlib import contextmanager
+import fcntl
 import glob
 import json
+import math
 import os
 import re
 import sqlite3
 import sys
 import time
+
+from resource_budget import apply_background_policy, cpu_checkpoint
+from evidence import events_enabled
 
 # Single source of truth: bin/constants.py. Literal fallback only for when the
 # module is run somewhere constants.py is not importable (W3 dedup).
@@ -149,6 +155,8 @@ CREATE TABLE IF NOT EXISTS card_events (
 # `backfill_v6c` (audit F3, turn 11) repopulates `card_events` under its new
 # per-`path` schema. A store lacking the current key gets one forced re-read.
 BACKFILL_STAMP_KEY = "backfill_v6c"
+PENDING_INGEST_KEY = "pending_ingest_paths_v1"
+RELATION_PENDING_KEY = "relation_propagation_needed_v1"
 
 # Explicit statuses that demote AT LEAST as hard as a propagated supersession
 # (status weight <= superseded's 0.35). Only these override a propagated
@@ -173,6 +181,89 @@ EXCLUDE_FILES = {"MEMORY.md", "BACKLOG.md"}
 # so a column added on one path always exists on the other. RELATION_EXPLICIT_
 # COLUMNS (also shared) drives the writer-only forced re-read below.
 DERIVED_COLUMNS = MEMORY_CHUNK_MIGRATIONS
+
+
+class IndexLockBusy(TimeoutError):
+    """An indexing request did not acquire its database lock before its deadline."""
+
+
+@contextmanager
+def index_lock(db_path, timeout=None):
+    """Serialize CLI writers before discovery, migrations, or model loading.
+
+    The sidecar remains in place: unlinking it would let a new writer lock a
+    different inode while an existing waiter still holds the old one. Realpath
+    makes a symlinked database/root share the same lock, including before the
+    database exists and across the atomic replacement used by a full reindex.
+    """
+    if timeout is None:
+        timeout = float(os.environ.get("EIDETIC_INDEX_LOCK_TIMEOUT", "300"))
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError("EIDETIC_INDEX_LOCK_TIMEOUT must be finite and non-negative")
+    canonical_db = os.path.realpath(os.path.expanduser(db_path))
+    os.makedirs(os.path.dirname(canonical_db), exist_ok=True)
+    lock_path = canonical_db + ".index.lock"
+    deadline = time.monotonic() + timeout
+    with open(lock_path, "a") as lock_file:
+        while True:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise IndexLockBusy(
+                        f"index busy after {timeout:g}s: {canonical_db}; "
+                        "request was not indexed; retry after the active writer exits"
+                    ) from None
+                time.sleep(min(0.1, remaining))
+        try:
+            yield canonical_db
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def pending_ingest_paths(conn):
+    """Read unfinished semantic work without silently dropping malformed state."""
+    row = conn.execute("SELECT value FROM schema_meta WHERE key = ?",
+                       (PENDING_INGEST_KEY,)).fetchone()
+    if row is None:
+        return []
+    paths = json.loads(row[0])
+    if not isinstance(paths, list) or any(not isinstance(p, str) for p in paths):
+        raise ValueError("Invalid pending ingest paths in schema_meta")
+    return paths
+
+
+def set_pending_ingest_paths(conn, paths):
+    conn.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+                 (PENDING_INGEST_KEY, json.dumps(list(dict.fromkeys(paths)))))
+
+
+def relation_propagation_needed(conn):
+    row = conn.execute("SELECT value FROM schema_meta WHERE key = ?",
+                       (RELATION_PENDING_KEY,)).fetchone()
+    if row is None:
+        return False
+    if row[0] not in ("0", "1"):
+        raise ValueError("Invalid relation propagation marker in schema_meta")
+    return row[0] == "1"
+
+
+def set_relation_propagation_needed(conn, needed):
+    conn.execute("INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+                 (RELATION_PENDING_KEY, "1" if needed else "0"))
+
+
+def ingest_batch_size():
+    """Bound semantic work per request so FTS writers can acquire the lock again."""
+    try:
+        size = int(os.environ.get("EIDETIC_INGEST_BATCH_SIZE", "4"))
+    except ValueError:
+        raise ValueError("EIDETIC_INGEST_BATCH_SIZE must be an integer from 1 to 128") from None
+    if not 1 <= size <= 128:
+        raise ValueError("EIDETIC_INGEST_BATCH_SIZE must be an integer from 1 to 128")
+    return size
 
 
 def parse_frontmatter(text):
@@ -829,7 +920,9 @@ def _collect_base_files(memory_system, manifest):
                   file=sys.stderr)
             continue
         for dirpath, _subdirs, fnames in os.walk(root):
+            cpu_checkpoint()
             for f in fnames:
+                cpu_checkpoint()
                 if not f.endswith(".md") or f in EXCLUDE_FILES or f.endswith(".bak"):
                     continue
                 fp = os.path.join(dirpath, f)
@@ -850,9 +943,11 @@ def collect_files(memory_system=None):
     seen = set()
     for pattern in scan_dirs(memory_system):
         for dirpath in glob.glob(pattern):
+            cpu_checkpoint()
             if not os.path.isdir(dirpath):
                 continue
             for f in os.listdir(dirpath):
+                cpu_checkpoint()
                 if not f.endswith(".md"):
                     continue
                 if f in EXCLUDE_FILES:
@@ -866,6 +961,7 @@ def collect_files(memory_system=None):
 
     skill_pattern = os.path.expanduser("~/.claude/skills/*/SKILL.md")
     for f in glob.glob(skill_pattern):
+        cpu_checkpoint()
         if f not in seen:
             seen.add(f)
             files.append(f)
@@ -1242,7 +1338,8 @@ def propagate_declared_relations(conn):
     own explicit frontmatter always wins; below-authority declarations are
     gated (see _declarer_outranks) and only surfaced. Resolution is by
     declared name / file stem (or path suffix) within the declarer's project;
-    semantic matching is v6.
+    semantic matching is v6. Returns False on a diagnosed schema failure so
+    callers can retain their durable retry marker instead of acknowledging it.
     """
     try:
         updates, unresolved, gated = compute_relation_state(conn)
@@ -1255,7 +1352,7 @@ def propagate_declared_relations(conn):
                 f"WARN: declared-relation propagation skipped — {problem}",
                 file=sys.stderr,
             )
-        return
+        return False
     for (path, column), value in updates.items():
         conn.execute(
             f"UPDATE memory_chunks SET {column} = ? "
@@ -1269,6 +1366,7 @@ def propagate_declared_relations(conn):
             file=sys.stderr,
         )
     conn.commit()
+    return True
 
 
 def run_full(conn, files):
@@ -1280,6 +1378,8 @@ def run_full(conn, files):
     if not db_path:
         raise RuntimeError("Cannot determine DB path")
 
+    pending = pending_ingest_paths(conn)
+    pending_set = set(pending)
     db_dir = os.path.dirname(db_path)
     fd, tmp_path = tempfile.mkstemp(dir=db_dir, suffix=".tmp.db")
     os.close(fd)
@@ -1288,8 +1388,10 @@ def run_full(conn, files):
         tmp_conn = sqlite3.connect(tmp_path)
         tmp_conn.executescript(DB_SCHEMA)
 
+        surviving_pending = set()
         indexed = 0
         for filepath in files:
+            cpu_checkpoint()
             try:
                 with open(filepath, "r", encoding="utf-8", errors="replace") as f:
                     text = f.read()
@@ -1297,13 +1399,19 @@ def run_full(conn, files):
                 if body.strip():
                     index_file(tmp_conn, filepath, meta, body)
                     indexed += 1
+                    if filepath in pending_set:
+                        surviving_pending.add(filepath)
             except Exception as e:
                 print(f"WARN: skip {filepath}: {e}", file=sys.stderr)
         tmp_conn.commit()
-        propagate_declared_relations(tmp_conn)
+        if propagate_declared_relations(tmp_conn) is False:
+            tmp_conn.close()
+            raise RuntimeError("Relation propagation failed; full index was not replaced")
         # --full honestly re-read every file, so *_explicit/status_explicit are
         # correct — stamp the back-fill as done so incrementals never re-heal.
         set_backfill_stamp(tmp_conn)
+        if surviving_pending:
+            set_pending_ingest_paths(tmp_conn, [p for p in pending if p in surviving_pending])
         tmp_conn.commit()
         tmp_conn.close()
 
@@ -1320,6 +1428,12 @@ def run_full(conn, files):
 
 def run_incremental(conn, files):
     """Incremental reindex: only changed files."""
+    batch_size = ingest_batch_size()
+    semantic_enabled = events_enabled()
+    relations_pending = relation_propagation_needed(conn)
+    previous_pending = list(dict.fromkeys(pending_ingest_paths(conn)))
+    pending = list(previous_pending)
+    pending_set = set(pending)
     existing = {}
     for row in conn.execute("SELECT path, mtime FROM index_meta"):
         existing[row[0]] = row[1]
@@ -1334,6 +1448,7 @@ def run_incremental(conn, files):
     skipped = 0
 
     for filepath in files:
+        cpu_checkpoint()
         current_paths.add(filepath)
         mtime = file_mtime(filepath)
 
@@ -1348,15 +1463,20 @@ def run_incremental(conn, files):
             if body.strip():
                 index_file(conn, filepath, meta, body)
                 changed_cards.append(filepath)
+                if semantic_enabled and filepath not in pending_set:
+                    pending.append(filepath)
+                    pending_set.add(filepath)
                 indexed += 1
             else:
                 clear_indexed_file(conn, filepath, mtime)
+                pending_set.discard(filepath)
                 indexed += 1
         except Exception as e:
             print(f"WARN: skip {filepath}: {e}", file=sys.stderr)
 
     removed = 0
     for old_path in existing_for_cleanup:
+        cpu_checkpoint()
         if old_path not in current_paths:
             conn.execute("DELETE FROM memory_chunks WHERE path = ?", (old_path,))
             conn.execute("DELETE FROM index_meta WHERE path = ?", (old_path,))
@@ -1367,43 +1487,82 @@ def run_incremental(conn, files):
             conn.execute("DELETE FROM card_events WHERE path = ?", (old_path,))
             removed += 1
 
+    pending = [p for p in pending if p in current_paths and p in pending_set]
+    if pending != previous_pending:
+        # Persist the queue with mtimes: a killed writer must not turn unfinished
+        # semantic work into an apparently up-to-date incremental next time.
+        set_pending_ingest_paths(conn, pending)
+    index_changed = (indexed > 0 or removed > 0 or force_backfill
+                     or not backfill_stamp_present(conn))
+    if index_changed:
+        # The marker and FTS mtimes commit together. A stopped writer must retry
+        # truth maintenance even when the next scan sees no changed files.
+        set_relation_propagation_needed(conn, True)
+        relations_pending = True
     conn.commit()
-    propagate_declared_relations(conn)
-    # The back-fill re-read (if migrate_schema forced one) has now run for every
-    # file, so *_explicit/status_explicit are populated — stamp it done so the
-    # next migrate_schema does NOT force a re-read again (NEW-1: no perpetual
-    # re-index on stores that use propagated relations).
-    set_backfill_stamp(conn)
-    conn.commit()
+    if not relations_pending and not pending:
+        return indexed, skipped, removed
+
+    if relations_pending:
+        if propagate_declared_relations(conn) is False:
+            raise RuntimeError("Relation propagation failed; pending work retained for retry")
+        # The back-fill re-read has run; stamp it once so unchanged indexes do
+        # not continually rewrite relations and invalidate vector rowids.
+        set_backfill_stamp(conn)
+        set_relation_propagation_needed(conn, False)
+        conn.commit()
+
+    # FTS is current for every scanned file. Semantic maintenance drains oldest
+    # pending cards first, in bounded batches; future requests resume the tail.
+    # An idle installation may retain pending work until its next index request.
+    # A disabled caller cannot acknowledge work queued by an enabled caller:
+    # the hooks themselves would return successfully without doing that work.
+    semantic_batch = pending[:batch_size] if semantic_enabled else []
+    hooks_completed = True
 
     # M1 semantic contradiction detection (spec-m1-contradiction FR-1/FR-7). This
     # is DARK-SAFE and DORMANT: run_on_ingest is a pure no-op unless
     # EIDETIC_CONFIDENCE_EVENTS is on AND a production confirmer is registered
     # (a turn-2 wiring) AND a vectors.db exists — so it adds zero cost and cannot
     # change any card here. It never raises into the indexer.
-    if changed_cards:
+    if semantic_batch:
         try:
             import m1_contradiction
             row = conn.execute("PRAGMA database_list").fetchone()
             db_file = row[2] if row else ""
             if db_file:
-                m1_contradiction.run_on_ingest(conn, db_file, changed_cards)
+                m1_contradiction.run_on_ingest(conn, db_file, semantic_batch)
         except Exception as e:
+            hooks_completed = False
             print(f"WARN: M1 hook skipped: {e}", file=sys.stderr)
 
     # M2 multi-page synthesis (spec-m2-synthesis FR-1/FR-9). DARK-SAFE: a complete
     # no-op unless EIDETIC_CONFIDENCE_EVENTS is on. Runs AFTER M1 so M1 owns
     # contradictions and M2 defers to it; M2 revises only its own sentinel-delimited
     # synthesis region on managed neighbors. Never raises into the indexer.
-    if changed_cards:
+    if semantic_batch:
         try:
             import m2_synthesis
             row = conn.execute("PRAGMA database_list").fetchone()
             db_file = row[2] if row else ""
             if db_file:
-                m2_synthesis.run_on_ingest(conn, db_file, changed_cards)
+                m2_synthesis.run_on_ingest(conn, db_file, semantic_batch)
         except Exception as e:
+            hooks_completed = False
             print(f"WARN: M2 hook skipped: {e}", file=sys.stderr)
+
+    if semantic_batch and hooks_completed:
+        pending = pending[len(semantic_batch):]
+        set_pending_ingest_paths(conn, pending)
+        conn.commit()
+    elif semantic_batch:
+        # An escaping hook error must not let a poison batch starve later work.
+        # Keep every failed card, but retry it after the rest of the queue.
+        rotated = pending[len(semantic_batch):] + semantic_batch
+        if rotated != pending:
+            pending = rotated
+            set_pending_ingest_paths(conn, pending)
+            conn.commit()
 
     # FR-4 producer (spec §Wiring): AFTER the M2 pass, mint `verified_by_test` on
     # M3-filed pages whose project had a passing test THIS session. Self-gated by
@@ -1413,7 +1572,9 @@ def run_incremental(conn, files):
     # index.sh --incremental (the SAME key lifecycle_signals stamps on
     # test_signals); when it is absent the producer falls back to the newest
     # session_id in the day's test_signals as the correlation key. Never raises
-    # into the indexer.
+    # into the indexer. Unlike M1/M2, this uses ALL current changed cards and
+    # the current caller's session only. Never replay it from a semantic queue:
+    # a later request may carry a different session and test provenance.
     if changed_cards and os.environ.get("EIDETIC_PRODUCER", "").strip().lower() in (
             "1", "on", "true", "yes"):
         try:
@@ -1428,40 +1589,58 @@ def run_incremental(conn, files):
         except Exception as e:
             print(f"WARN: producer hook skipped: {e}", file=sys.stderr)
 
+    if pending:
+        resume = ("next enabled index request resumes the queue" if semantic_enabled
+                  else "semantic hooks disabled; queue preserved")
+        print(f"Semantic maintenance: {len(pending)} cards pending; "
+              f"{resume} (FTS is current)")
+
     if force_backfill:
         print("Lifecycle metadata backfill: reindexed existing memory files")
     return indexed, skipped, removed
 
 
 def main():
+    apply_background_policy()
     mode = sys.argv[1] if len(sys.argv) > 1 else "--incremental"
     db_path = sys.argv[2] if len(sys.argv) > 2 else os.path.expanduser(
         "~/.claude/memory-system/db/index.db"
     )
 
     t0 = time.time()
-    files = collect_files(memory_system_from_db(db_path))
-    conn = init_db(db_path)
-
-    if mode == "--full":
-        indexed = run_full(conn, files)
-        conn = sqlite3.connect(db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
-        elapsed = time.time() - t0
-        total = conn.execute("SELECT COUNT(*) FROM memory_chunks").fetchone()[0]
-        print(f"Full index: {indexed} files, {total} chunks, {elapsed:.2f}s")
-    else:
-        indexed, skipped, removed = run_incremental(conn, files)
-        elapsed = time.time() - t0
-        total = conn.execute("SELECT COUNT(*) FROM memory_chunks").fetchone()[0]
-        print(
-            f"Incremental: {indexed} indexed, {skipped} skipped, "
-            f"{removed} removed, {total} chunks, {elapsed:.2f}s"
-        )
-
-    conn.close()
+    try:
+        # Keep this at the CLI boundary, not import time: M1/M2 import this
+        # module's parsing helpers while the writer already owns the lock.
+        with index_lock(db_path) as canonical_db:
+            files = collect_files(memory_system_from_db(canonical_db))
+            conn = init_db(canonical_db)
+            try:
+                if mode == "--full":
+                    indexed = run_full(conn, files)
+                    conn = sqlite3.connect(canonical_db)
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA busy_timeout=5000")
+                    elapsed = time.time() - t0
+                    total = conn.execute("SELECT COUNT(*) FROM memory_chunks").fetchone()[0]
+                    print(f"Full index: {indexed} files, {total} chunks, {elapsed:.2f}s")
+                else:
+                    indexed, skipped, removed = run_incremental(conn, files)
+                    elapsed = time.time() - t0
+                    total = conn.execute("SELECT COUNT(*) FROM memory_chunks").fetchone()[0]
+                    print(
+                        f"Incremental: {indexed} indexed, {skipped} skipped, "
+                        f"{removed} removed, {total} chunks, {elapsed:.2f}s"
+                    )
+            finally:
+                try:
+                    cpu_checkpoint(force=True)
+                finally:
+                    conn.close()
+    except IndexLockBusy as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 75  # EX_TEMPFAIL: never silently claim that a busy request indexed.
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

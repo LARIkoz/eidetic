@@ -15,6 +15,7 @@ import os
 import sqlite3
 import sys
 import time
+from resource_budget import apply_background_policy, compute_slot, cpu_checkpoint, settings
 
 # --- Embedding profiles: model + dim + retrieval prefixes ---------------------
 # The embedder is config-driven so an English-only corpus can opt into a smaller,
@@ -178,18 +179,30 @@ def _embed_providers():
     return None
 
 
+def _compute_kind():
+    providers = _embed_providers() or []
+    return "gpu" if any(p != "CPUExecutionProvider" for p in providers) else "cpu"
+
+
 def get_model():
     global _model
     if _model is None:
-        from fastembed import TextEmbedding
-        providers = _embed_providers()
-        try:
-            _model = (TextEmbedding(MODEL_NAME, cache_dir=FASTEMBED_CACHE, providers=providers)
-                      if providers else TextEmbedding(MODEL_NAME, cache_dir=FASTEMBED_CACHE))
-        except Exception:
-            # A provider (e.g. CoreML) failed to init or this fastembed lacks the
-            # providers arg → fall back to the pure-CPU default; never block embedding.
-            _model = TextEmbedding(MODEL_NAME, cache_dir=FASTEMBED_CACHE)
+        apply_background_policy()
+        # Cold imports/model-file I/O are CPU work, not a GPU occupancy window.
+        with compute_slot("cpu"):
+            from fastembed import TextEmbedding
+            providers = _embed_providers()
+            policy = settings()
+            kwargs = {"threads": policy["threads"]} if policy["enabled"] else {}
+            try:
+                _model = (TextEmbedding(MODEL_NAME, cache_dir=FASTEMBED_CACHE,
+                                       providers=providers, **kwargs)
+                          if providers else TextEmbedding(MODEL_NAME, cache_dir=FASTEMBED_CACHE,
+                                                         **kwargs))
+            except Exception:
+                # Preserve the CPU fallback, including the thread budget.
+                _model = TextEmbedding(MODEL_NAME, cache_dir=FASTEMBED_CACHE,
+                                       providers=["CPUExecutionProvider"], **kwargs)
     return _model
 
 
@@ -311,16 +324,34 @@ def content_hash(name, desc, content, heading):
     return hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest()
 
 
-def embed_texts(texts):
+def _embed_prefixed(texts):
+    if not texts:
+        return []
     if EMBED_ENGINE == "mlx":
         import mlx_embed
-        return mlx_embed.embed_texts([PASSAGE_PREFIX + t for t in texts])
+        return mlx_embed.embed_texts(texts)
 
+    apply_background_policy()
     import numpy as np
-
+    policy = settings()
+    batch_size = policy["batch_size"] if policy["enabled"] else max(1, len(texts))
     model = get_model()
-    embeddings = list(model.embed([PASSAGE_PREFIX + t for t in texts]))
-    return [np.array(e, dtype=np.float32).tobytes() for e in embeddings]
+    blobs = []
+    for offset in range(0, len(texts), batch_size):
+        with compute_slot(_compute_kind()):
+            batch = texts[offset:offset + batch_size]
+            embeddings = model.embed(batch, batch_size=batch_size)
+            blobs.extend(np.array(e, dtype=np.float32).tobytes() for e in embeddings)
+    return blobs
+
+
+def embed_texts(texts):
+    return _embed_prefixed([PASSAGE_PREFIX + t for t in texts])
+
+
+# M1 and M2 often ask for the same card's neighbors in one ingest. Reuse only
+# vectors, never search results (the database can change between those passes).
+_query_cache = {}
 
 
 def embed_query_texts(texts):
@@ -330,26 +361,27 @@ def embed_query_texts(texts):
     sides as passage: inflates similarity and un-discriminates any gate built
     on it (compound._vector_gate). Callers comparing a QUERY-like text against
     stored/candidate passages must use this path, not embed_texts."""
-    if EMBED_ENGINE == "mlx":
-        import mlx_embed
-        return mlx_embed.embed_texts([QUERY_PREFIX + t for t in texts])
-
-    import numpy as np
-
-    model = get_model()
-    embeddings = list(model.embed([QUERY_PREFIX + t for t in texts]))
-    return [np.array(e, dtype=np.float32).tobytes() for e in embeddings]
+    result = []
+    for text in texts:
+        key = (EMBED_ENGINE, EMBED_PROFILE, MODEL_NAME, HASH_SCHEME, QUERY_PREFIX, text)
+        blob = _query_cache.get(key)
+        if blob is None:
+            blobs = _embed_prefixed([QUERY_PREFIX + text])
+            if not blobs:
+                return []
+            blob = blobs[0]
+            if len(text) <= 16384:
+                if len(_query_cache) >= 128:
+                    _query_cache.pop(next(iter(_query_cache)))
+                _query_cache[key] = blob
+        result.append(blob)
+    return result
 
 
 def run_full(index_db_path, vector_db_path):
-    import shutil
-    backup_path = vector_db_path + ".pre-reindex.bak"
-    if os.path.exists(vector_db_path):
-        shutil.copy2(vector_db_path, backup_path)
-
+    apply_background_policy()
     index_conn = None
     vec_conn = None
-    success = False
     total = 0
     t0 = time.time()
 
@@ -363,14 +395,19 @@ def run_full(index_db_path, vector_db_path):
         rows = index_conn.execute("""
             SELECT id, path, name, description, content, section_heading, mtime
             FROM memory_chunks
-        """).fetchall()
+        """)
 
+        # Publish replacement vectors and their geometry stamps atomically.
+        # Readers retain the previous committed index throughout the rebuild.
+        vec_conn.execute("BEGIN IMMEDIATE")
         vec_conn.execute("DELETE FROM vectors")
-        vec_conn.commit()
 
         batch_size = 64
-        for i in range(0, len(rows), batch_size):
-            batch = rows[i:i + batch_size]
+        while True:
+            batch = rows.fetchmany(batch_size)
+            if not batch:
+                break
+            cpu_checkpoint()
             texts = []
             for _, path, name, desc, content, heading, mtime in batch:
                 texts.append(embedding_text(name, desc, content, heading))
@@ -385,7 +422,6 @@ def run_full(index_db_path, vector_db_path):
                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
                     (chunk_id, path, name, heading or "", digest, blobs[j], mtime)
                 )
-            vec_conn.commit()
             total += len(batch)
         # Stamp which model/dim built this db -> detect silent model drift on next run.
         vec_conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('model',?)", (MODEL_NAME,))
@@ -397,25 +433,24 @@ def run_full(index_db_path, vector_db_path):
         vec_conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('fastembed_version',?)", (_fastembed_version(),))
         vec_conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('embed_engine',?)", (_engine_stamp(),))
         vec_conn.commit()
-        success = True
     except Exception as e:
-        print(f"ERROR: vector reindex failed, restoring backup: {e}", file=sys.stderr)
-        if os.path.exists(backup_path):
-            shutil.copy2(backup_path, vector_db_path)
+        if vec_conn is not None:
+            vec_conn.rollback()
+        print(f"ERROR: vector reindex failed; previous index preserved: {e}", file=sys.stderr)
         raise
     finally:
         if vec_conn is not None:
             vec_conn.close()
         if index_conn is not None:
             index_conn.close()
-        if success and os.path.exists(backup_path):
-            os.remove(backup_path)
+        cpu_checkpoint(force=True)
 
     elapsed = time.time() - t0
     print(f"Embedded {total} chunks in {elapsed:.1f}s ({total/elapsed:.0f} chunks/s)")
 
 
 def run_incremental(index_db_path, vector_db_path):
+    apply_background_policy()
     index_conn = None
     vec_conn = None
     try:
@@ -427,6 +462,7 @@ def run_incremental(index_db_path, vector_db_path):
 
         existing = {}
         for row in vec_conn.execute("SELECT chunk_id, path, section_heading, content_hash, mtime FROM vectors"):
+            cpu_checkpoint()
             existing[row[0]] = {
                 "path": row[1],
                 "section_heading": row[2] or "",
@@ -437,12 +473,13 @@ def run_incremental(index_db_path, vector_db_path):
         rows = index_conn.execute("""
             SELECT id, path, name, description, content, section_heading, mtime
             FROM memory_chunks
-        """).fetchall()
+        """)
 
         current_ids = set()
         to_embed = []
 
         for chunk_id, path, name, desc, content, heading, mtime in rows:
+            cpu_checkpoint()
             current_ids.add(chunk_id)
             digest = content_hash(name, desc, content, heading)
             prev = existing.get(chunk_id)
@@ -470,6 +507,7 @@ def run_incremental(index_db_path, vector_db_path):
         t0 = time.time()
 
         for i in range(0, len(to_embed), batch_size):
+            cpu_checkpoint()
             batch = to_embed[i:i + batch_size]
             texts = []
             for _, path, name, desc, content, heading, mtime in batch:
@@ -495,6 +533,7 @@ def run_incremental(index_db_path, vector_db_path):
             vec_conn.close()
         if index_conn is not None:
             index_conn.close()
+        cpu_checkpoint(force=True)
 
 
 def search(vector_db_path, query, limit=5):
@@ -504,20 +543,18 @@ def search(vector_db_path, query, limit=5):
     try:
         if not _vector_meta_ok(vec_conn):
             return []  # drift detected + warned; fail safe to FTS-only
-        if EMBED_ENGINE == "mlx":
-            import mlx_embed
-            q_vec = np.frombuffer(
-                mlx_embed.embed_texts([QUERY_PREFIX + query])[0], dtype=np.float32)
-        else:
-            model = get_model()
-            q_vec = np.array(list(model.embed([QUERY_PREFIX + query]))[0], dtype=np.float32)
+        blobs = embed_query_texts([query])
+        if not blobs:
+            return []
+        q_vec = np.frombuffer(blobs[0], dtype=np.float32)
 
         rows = vec_conn.execute(
             "SELECT chunk_id, path, name, section_heading, content_hash, embedding FROM vectors"
-        ).fetchall()
+        )
 
         scores = []
         for chunk_id, path, name, heading, digest, blob in rows:
+            cpu_checkpoint()
             vec = np.frombuffer(blob, dtype=np.float32)
             if vec.shape != q_vec.shape:
                 continue

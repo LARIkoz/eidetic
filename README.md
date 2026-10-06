@@ -314,6 +314,10 @@ It checks deps, index, memory files on disk, vectors + lag, model-cache location
 
 Platform: macOS / Linux (uses `fcntl` file locks).
 
+Background indexing and model work share a [20% CPU/GPU average resource budget](docs/resource-budget.md).
+Concurrent index requests are serialized, unchanged indexes skip semantic work,
+and unfinished semantic maintenance resumes in bounded batches.
+
 ### Updates
 
 Background update check every 6 hours. When available:
