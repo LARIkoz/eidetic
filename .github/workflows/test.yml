@@ -500,7 +500,8 @@ jobs:
           # Test Rule
           Custom install smoke.
           EOF
-          bash install.sh >/dev/null
+          # Routing smoke is model-free; Apple Silicon defaults would bootstrap MLX.
+          EIDETIC_NONINTERACTIVE=1 EIDETIC_EMBED_ENGINE=fastembed bash install.sh >/dev/null
           python3 - << 'PY'
           import json
           import os
