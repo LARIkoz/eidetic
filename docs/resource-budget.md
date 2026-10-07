@@ -49,11 +49,12 @@ can resume it even when the file modification times have not changed. This does
 not retroactively recover work interrupted in older indexer versions, or make
 M1/M2 multi-file updates transactional.
 
-Each incremental run drains at most four pending semantic cards, leaving the
+Each incremental CLI run drains at most one pending semantic card, leaving the
 rest durably queued and reporting the remaining count. Later indexing requests
 drain the oldest pending work first; an escaping hook error rotates the failed
 batch to the tail without dropping it. `EIDETIC_INGEST_BATCH_SIZE` can change this
-batch size (1–128); no background worker is silently installed. FTS freshness is
+batch size (1–128). Install/update register an asynchronous Stop maintenance hook;
+feature activation still follows the user's settings. FTS freshness is
 independent of this semantic backlog. If there are no further indexing requests,
 the backlog waits for the next run.
 
@@ -135,3 +136,7 @@ check pacing and unchanged geometry, not corpus-wide retrieval quality.
 
 MLX API references: [synchronize](https://ml-explore.github.io/mlx/build/html/python/_autosummary/mlx.core.synchronize.html),
 [set_cache_limit](https://ml-explore.github.io/mlx/build/html/python/_autosummary/mlx.core.set_cache_limit.html).
+
+On macOS the ledger uses `CLOCK_UPTIME_RAW`, the boot-relative clock shared
+by system Python 3.9 and modern Python. Interpreter-relative monotonic offsets
+are never persisted; existing modern-Python deadlines keep their clock domain.

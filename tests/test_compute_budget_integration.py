@@ -201,7 +201,24 @@ print("ok")
             policy.assert_called_once()
             model.assert_not_called()
             self.assertGreater(checkpoint.call_count, 1)
-            self.assertEqual(checkpoint.call_args.kwargs, {"force": True})
+            self.assertEqual(checkpoint.call_args.kwargs, {"force": True, "wait": True})
+
+    def test_interrupted_incremental_preserves_completed_microbatch(self):
+        index_path, vector_path = self.vector_fixture()
+        with sqlite3.connect(index_path) as conn:
+            conn.executemany("INSERT INTO memory_chunks VALUES(?, 'card', 'name', '', 'body', '', 1)",
+                             [(2,), (3,)])
+        with patch.object(embed, "apply_background_policy"), \
+             patch.object(embed, "embed_texts", side_effect=[[b"completed"], RuntimeError("interrupted")]):
+            with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                embed.run_incremental(index_path, vector_path)
+        with sqlite3.connect(vector_path) as conn:
+            self.assertEqual(conn.execute("SELECT embedding FROM vectors WHERE chunk_id=2").fetchone(), (b"completed",))
+            self.assertIsNone(conn.execute("SELECT embedding FROM vectors WHERE chunk_id=3").fetchone())
+        with patch.object(embed, "apply_background_policy"), \
+             patch.object(embed, "embed_texts", return_value=[b"resumed"]) as model:
+            embed.run_incremental(index_path, vector_path)
+            self.assertEqual(model.call_count, 1)
 
     def test_reranker_microbatches_preserve_order_and_cpu_provider(self):
         calls = []

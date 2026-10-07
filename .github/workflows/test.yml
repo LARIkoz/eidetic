@@ -844,6 +844,7 @@ jobs:
           with pathlib.Path(os.environ["HOOK_LOG"]).open("a", encoding="utf-8") as f:
               f.write("|".join(sys.argv[1:]) + "\n")
           EOF
+          cp bin/vector_maintenance.py bin/bounded_worker.py bin/resource_budget.py "$EIDETIC_MEMORY_SYSTEM/bin/"
           chmod +x "$EIDETIC_MEMORY_SYSTEM/bin/index.sh" "$EIDETIC_MEMORY_SYSTEM/bin/search.sh"
           cat > "$tmp/fakebin/python3" << 'EOF'
           #!/bin/bash

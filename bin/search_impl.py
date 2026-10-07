@@ -798,7 +798,7 @@ def search_detail(db_path, selector, section=None, output_json=False, json_objec
         print(result["content"])
 
 
-def _run_query(db_path, query, limit, type_filter, warn=False):
+def _run_query(db_path, query, limit, type_filter, warn=False, lexical_only=False):
     """Full retrieval for one query string → annotated results list (own conn).
 
     Extracted from search() so the async dual-query can run a native and a
@@ -863,7 +863,7 @@ def _run_query(db_path, query, limit, type_filter, warn=False):
         vector_db = db_path.replace("index.db", "vectors.db")
         has_phrase = any(r.get("match") == "phrase" for r in results[:3])
         force_vector = has_non_ascii
-        if (force_vector or _needs_vector(results, limit)) and os.path.exists(vector_db):
+        if not lexical_only and (force_vector or _needs_vector(results, limit)) and os.path.exists(vector_db):
             vec_results = _vector_search(
                 vector_db, conn, query, limit, type_filter, drift_data,
                 warn=warn,
@@ -1042,6 +1042,40 @@ def _search_dual(db_path, query, limit, type_filter, backend, target, warn):
     return _fuse_dual(native, translated, limit)
 
 
+def _enriched_results(db_path, query, limit, type_filter):
+    backend = _resolve_query_translation(query, db_path)
+    if backend:
+        target = _corpus_lang(db_path) or "en"
+        return _search_dual(db_path, query, limit, type_filter, backend, target, False)
+    return _run_query(db_path, query, limit, type_filter)
+
+
+def _bounded_results(db_path, query, limit, type_filter):
+    """Always retain a model-free answer before attempting optional enrichment."""
+    from bounded_worker import run, timeout_seconds
+    native = _run_query(db_path, query, limit, type_filter, lexical_only=True)
+    # A confident exact lexical answer needs no model or subprocess at all.
+    if not any(ord(c) > 127 for c in query) and not _needs_vector(native, limit):
+        return native, ""
+    request = json.dumps([db_path, query, limit, type_filter])
+    timeout = timeout_seconds("EIDETIC_SEARCH_TIMEOUT", 30)
+    environment = dict(os.environ, EIDETIC_RESOURCE_WAIT_SECONDS=str(min(timeout, 30)))
+    try:
+        result = run([sys.executable, os.path.abspath(__file__), "--enrichment-worker"],
+                     timeout=timeout, env=environment, input_text=request)
+    except Exception:
+        return native, "semantic worker unavailable"
+    if result.returncode == 0 and not result.timed_out:
+        try:
+            payload = json.loads(result.stdout)
+            if isinstance(payload, list):
+                return payload, ""
+        except ValueError:
+            pass
+    reason = "semantic search timed out" if result.timed_out else "semantic search unavailable"
+    return native, reason
+
+
 def search(db_path, query, limit=10, type_filter=None, output_json=False, json_object=False, output_mode="auto"):
     """Search FTS5 index with compound ranking."""
     if not os.path.exists(db_path):
@@ -1051,17 +1085,17 @@ def search(db_path, query, limit=10, type_filter=None, output_json=False, json_o
     limit = _normalize_limit(limit)
     warn = not (output_json or json_object)
 
-    backend = _resolve_query_translation(query, db_path)
-    if backend:
-        target = _corpus_lang(db_path) or "en"
-        results = _search_dual(db_path, query, limit, type_filter, backend, target, warn)
-    else:
-        results = _run_query(db_path, query, limit, type_filter, warn=warn)
+    results, degraded = _bounded_results(db_path, query, limit, type_filter)
+    if degraded and (warn or output_json):
+        print(f"WARNING: {degraded}; returning lexical results", file=sys.stderr)
 
     _log_usage(results, query, db_path)  # read-side telemetry (fail-open, opt-out)
 
     if output_json or json_object:
         payload = _search_response(query, limit, type_filter, results) if json_object else results
+        if json_object:
+            payload["retrieval_mode"] = "hybrid" if any(r.get("match") in {"vector", "hybrid"} for r in results) else "lexical"
+            payload["degraded_reason"] = degraded
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
         if not results:
@@ -1304,9 +1338,36 @@ def main():
 
 
 if __name__ == "__main__":
-    from resource_budget import apply_background_policy, cpu_checkpoint
+    from resource_budget import apply_background_policy, cpu_admission, cpu_checkpoint, ResourceBudgetBusy
     apply_background_policy()
-    try:
-        main()
-    finally:
-        cpu_checkpoint(force=True)
+    if sys.argv[1:] == ["--enrichment-worker"]:
+        from bounded_worker import cooperative_termination
+        cooperative_termination()
+        request = json.load(sys.stdin)
+        from resource_budget import deferred_count
+        try:
+            # Keep model-library diagnostics away from the JSON protocol.
+            from contextlib import redirect_stdout
+            with redirect_stdout(sys.stderr):
+                results = _enriched_results(*request)
+            if deferred_count():
+                sys.exit(75)
+            print(json.dumps(results, ensure_ascii=False))
+        finally:
+            try:
+                cpu_checkpoint(force=True, wait=False)
+            except ResourceBudgetBusy:
+                pass
+    else:
+        try:
+            try:
+                cpu_admission()
+            except ResourceBudgetBusy as exc:
+                print(f"ERROR: {exc}; retry recall later", file=sys.stderr)
+                sys.exit(75)
+            main()
+        finally:
+            try:
+                cpu_checkpoint(force=True, wait=False)
+            except ResourceBudgetBusy as exc:
+                print(f"WARNING: {exc}; CPU charge retained", file=sys.stderr)

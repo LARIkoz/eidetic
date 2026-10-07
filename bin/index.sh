@@ -1,6 +1,6 @@
 #!/bin/bash
 # AI Memory System v1 — FTS5 Indexer
-# Usage: index.sh [--full|--incremental]
+# Usage: index.sh [--full|--incremental|--lexical-only]
 # Zero external deps: python3 stdlib + sqlite3
 set -euo pipefail
 
@@ -33,9 +33,9 @@ _EMBED_ENGINE=""
 [ -n "${EIDETIC_EMBED_ENGINE:-}" ] && _EMBED_ENGINE="$EIDETIC_EMBED_ENGINE"
 
 _CAN_EMBED=0
-if [ "$_EMBED_ENGINE" = "mlx" ]; then
+if [ "$MODE" = "--full" ] && [ "$_EMBED_ENGINE" = "mlx" ]; then
     python3 -c "import mlx.core" >/dev/null 2>&1 && _CAN_EMBED=1
-else
+elif [ "$MODE" = "--full" ]; then
     python3 -c "import fastembed" >/dev/null 2>&1 && _CAN_EMBED=1
 fi
 

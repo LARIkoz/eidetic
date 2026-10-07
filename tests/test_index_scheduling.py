@@ -58,7 +58,7 @@ def m1(*args):
 sys.modules["m1_contradiction"] = types.SimpleNamespace(run_on_ingest=m1)
 sys.modules["m2_synthesis"] = types.SimpleNamespace(run_on_ingest=lambda *a: event("m2"))
 sys.argv = ["index_impl.py", "--incremental", db]
-sys.exit(idx.main())
+sys.exit(idx.main(defer_semantics=False))
 '''
 
 

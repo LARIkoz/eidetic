@@ -18,7 +18,7 @@ import sqlite3
 import sys
 import time
 
-from resource_budget import apply_background_policy, cpu_checkpoint
+from resource_budget import apply_background_policy, cpu_checkpoint, ResourceBudgetBusy, deferred_count
 from evidence import events_enabled
 
 # Single source of truth: bin/constants.py. Literal fallback only for when the
@@ -1426,9 +1426,9 @@ def run_full(conn, files):
         raise
 
 
-def run_incremental(conn, files):
+def run_incremental(conn, files, *, defer_semantics=False):
     """Incremental reindex: only changed files."""
-    batch_size = ingest_batch_size()
+    ingest_batch_size()  # Reject malformed policy before writing any index rows.
     semantic_enabled = events_enabled()
     relations_pending = relation_propagation_needed(conn)
     previous_pending = list(dict.fromkeys(pending_ingest_paths(conn)))
@@ -1512,59 +1512,10 @@ def run_incremental(conn, files):
         set_relation_propagation_needed(conn, False)
         conn.commit()
 
-    # FTS is current for every scanned file. Semantic maintenance drains oldest
-    # pending cards first, in bounded batches; future requests resume the tail.
-    # An idle installation may retain pending work until its next index request.
-    # A disabled caller cannot acknowledge work queued by an enabled caller:
-    # the hooks themselves would return successfully without doing that work.
-    semantic_batch = pending[:batch_size] if semantic_enabled else []
-    hooks_completed = True
+    if not defer_semantics:
+        pending = maintain_pending(conn, pending, semantic_enabled)
 
-    # M1 semantic contradiction detection (spec-m1-contradiction FR-1/FR-7). This
-    # is DARK-SAFE and DORMANT: run_on_ingest is a pure no-op unless
-    # EIDETIC_CONFIDENCE_EVENTS is on AND a production confirmer is registered
-    # (a turn-2 wiring) AND a vectors.db exists — so it adds zero cost and cannot
-    # change any card here. It never raises into the indexer.
-    if semantic_batch:
-        try:
-            import m1_contradiction
-            row = conn.execute("PRAGMA database_list").fetchone()
-            db_file = row[2] if row else ""
-            if db_file:
-                m1_contradiction.run_on_ingest(conn, db_file, semantic_batch)
-        except Exception as e:
-            hooks_completed = False
-            print(f"WARN: M1 hook skipped: {e}", file=sys.stderr)
-
-    # M2 multi-page synthesis (spec-m2-synthesis FR-1/FR-9). DARK-SAFE: a complete
-    # no-op unless EIDETIC_CONFIDENCE_EVENTS is on. Runs AFTER M1 so M1 owns
-    # contradictions and M2 defers to it; M2 revises only its own sentinel-delimited
-    # synthesis region on managed neighbors. Never raises into the indexer.
-    if semantic_batch:
-        try:
-            import m2_synthesis
-            row = conn.execute("PRAGMA database_list").fetchone()
-            db_file = row[2] if row else ""
-            if db_file:
-                m2_synthesis.run_on_ingest(conn, db_file, semantic_batch)
-        except Exception as e:
-            hooks_completed = False
-            print(f"WARN: M2 hook skipped: {e}", file=sys.stderr)
-
-    if semantic_batch and hooks_completed:
-        pending = pending[len(semantic_batch):]
-        set_pending_ingest_paths(conn, pending)
-        conn.commit()
-    elif semantic_batch:
-        # An escaping hook error must not let a poison batch starve later work.
-        # Keep every failed card, but retry it after the rest of the queue.
-        rotated = pending[len(semantic_batch):] + semantic_batch
-        if rotated != pending:
-            pending = rotated
-            set_pending_ingest_paths(conn, pending)
-            conn.commit()
-
-    # FR-4 producer (spec §Wiring): AFTER the M2 pass, mint `verified_by_test` on
+    # FR-4 producer: mint session-bound `verified_by_test` on
     # M3-filed pages whose project had a passing test THIS session. Self-gated by
     # EIDETIC_PRODUCER AND affirm_filed_page's own _active() gate — but skip the
     # call entirely when the env is off to avoid overhead. The session_id is the
@@ -1600,22 +1551,94 @@ def run_incremental(conn, files):
     return indexed, skipped, removed
 
 
-def main():
+def maintain_pending(conn, pending, semantic_enabled):
+    # FTS is current for every scanned file. Semantic maintenance drains oldest
+    # pending cards first, in bounded batches; future requests resume the tail.
+    # An idle installation may retain pending work until its next index request.
+    # A disabled caller cannot acknowledge work queued by an enabled caller:
+    # the hooks themselves would return successfully without doing that work.
+    before_deferrals = deferred_count()
+    semantic_batch = pending[:ingest_batch_size()] if semantic_enabled else []
+    hooks_completed = True
+
+    # M1 semantic contradiction detection (spec-m1-contradiction FR-1/FR-7). This
+    # is DARK-SAFE and DORMANT: run_on_ingest is a pure no-op unless
+    # EIDETIC_CONFIDENCE_EVENTS is on AND a production confirmer is registered
+    # (a turn-2 wiring) AND a vectors.db exists — so it adds zero cost and cannot
+    # change any card here. It never raises into the indexer.
+    if semantic_batch:
+        try:
+            import m1_contradiction
+            row = conn.execute("PRAGMA database_list").fetchone()
+            db_file = row[2] if row else ""
+            if db_file:
+                m1_contradiction.run_on_ingest(conn, db_file, semantic_batch)
+        except Exception as e:
+            hooks_completed = False
+            print(f"WARN: M1 hook skipped: {e}", file=sys.stderr)
+
+    # M2 multi-page synthesis (spec-m2-synthesis FR-1/FR-9). DARK-SAFE: a complete
+    # no-op unless EIDETIC_CONFIDENCE_EVENTS is on. Runs AFTER M1 so M1 owns
+    # contradictions and M2 defers to it; M2 revises only its own sentinel-delimited
+    # synthesis region on managed neighbors. Never raises into the indexer.
+    if semantic_batch:
+        try:
+            import m2_synthesis
+            row = conn.execute("PRAGMA database_list").fetchone()
+            db_file = row[2] if row else ""
+            if db_file:
+                m2_synthesis.run_on_ingest(conn, db_file, semantic_batch)
+        except Exception as e:
+            hooks_completed = False
+            print(f"WARN: M2 hook skipped: {e}", file=sys.stderr)
+
+    hooks_completed = hooks_completed and deferred_count() == before_deferrals
+    if semantic_batch and hooks_completed:
+        pending = pending[len(semantic_batch):]
+        set_pending_ingest_paths(conn, pending)
+        conn.commit()
+    elif semantic_batch:
+        # An escaping hook error must not let a poison batch starve later work.
+        # Keep every failed card, but retry it after the rest of the queue.
+        rotated = pending[len(semantic_batch):] + semantic_batch
+        if rotated != pending:
+            pending = rotated
+            set_pending_ingest_paths(conn, pending)
+            conn.commit()
+
+    return pending
+
+
+def main(*, defer_semantics=True):
     apply_background_policy()
     mode = sys.argv[1] if len(sys.argv) > 1 else "--incremental"
     db_path = sys.argv[2] if len(sys.argv) > 2 else os.path.expanduser(
         "~/.claude/memory-system/db/index.db"
     )
 
+    if mode not in ("--incremental", "--full", "--semantic-only", "--lexical-only"):
+        print(f"ERROR: unknown index mode: {mode}", file=sys.stderr)
+        return 2
+    if mode == "--lexical-only":
+        defer_semantics = True
     t0 = time.time()
+    semantic_deferred = False
     try:
         # Keep this at the CLI boundary, not import time: M1/M2 import this
         # module's parsing helpers while the writer already owns the lock.
         with index_lock(db_path) as canonical_db:
-            files = collect_files(memory_system_from_db(canonical_db))
+            files = [] if mode == "--semantic-only" else collect_files(memory_system_from_db(canonical_db))
             conn = init_db(canonical_db)
             try:
-                if mode == "--full":
+                if mode == "--semantic-only":
+                    if not relation_propagation_needed(conn):
+                        original_pending = pending_ingest_paths(conn)
+                        pending = maintain_pending(conn, original_pending, events_enabled())
+                        semantic_deferred = bool(original_pending) and set(original_pending) == set(pending)
+                        print(f"Semantic maintenance: {len(pending)} cards pending")
+                    else:
+                        semantic_deferred = True
+                elif mode == "--full":
                     indexed = run_full(conn, files)
                     conn = sqlite3.connect(canonical_db)
                     conn.execute("PRAGMA journal_mode=WAL")
@@ -1624,7 +1647,7 @@ def main():
                     total = conn.execute("SELECT COUNT(*) FROM memory_chunks").fetchone()[0]
                     print(f"Full index: {indexed} files, {total} chunks, {elapsed:.2f}s")
                 else:
-                    indexed, skipped, removed = run_incremental(conn, files)
+                    indexed, skipped, removed = run_incremental(conn, files, defer_semantics=defer_semantics)
                     elapsed = time.time() - t0
                     total = conn.execute("SELECT COUNT(*) FROM memory_chunks").fetchone()[0]
                     print(
@@ -1633,14 +1656,35 @@ def main():
                     )
             finally:
                 try:
-                    cpu_checkpoint(force=True)
+                    try:
+                        cpu_checkpoint(force=True, wait=os.environ.get("EIDETIC_RETURN_COMPLETED_COMPUTE") != "1")
+                    except ResourceBudgetBusy as exc:
+                        print(f"WARN: {exc}; CPU charge retained", file=sys.stderr)
                 finally:
                     conn.close()
-    except IndexLockBusy as exc:
+    except (IndexLockBusy, ResourceBudgetBusy) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 75  # EX_TEMPFAIL: never silently claim that a busy request indexed.
-    return 0
+    if mode == "--incremental" and defer_semantics and events_enabled():
+        # The FTS transaction and lock have finished. Optional maintenance gets
+        # a separate bounded process; failure cannot turn FTS success into loss.
+        from bounded_worker import run, timeout_seconds
+        environment = dict(os.environ, EIDETIC_INDEX_LOCK_TIMEOUT="0", EIDETIC_RESOURCE_WAIT_SECONDS="30")
+        environment.setdefault("EIDETIC_INGEST_BATCH_SIZE", "1")
+        try:
+            result = run([sys.executable, os.path.abspath(__file__), "--semantic-only", db_path],
+                         timeout=timeout_seconds("EIDETIC_MAINTENANCE_TIMEOUT", 30), env=environment)
+        except Exception as exc:
+            print(f"Semantic worker unavailable ({type(exc).__name__}); FTS committed and queue retained", file=sys.stderr)
+            return 0
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.returncode or result.timed_out:
+            print("Semantic maintenance deferred; FTS committed and pending queue retained", file=sys.stderr)
+    return 75 if semantic_deferred else 0
 
 
 if __name__ == "__main__":
+    from bounded_worker import cooperative_termination
+    cooperative_termination()
     sys.exit(main())

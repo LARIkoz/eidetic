@@ -403,3 +403,11 @@ Full version history: [CHANGELOG.md](CHANGELOG.md)
 ## License
 
 MIT
+
+### Maintenance reliability
+
+Recall and incremental semantic/vector maintenance have bounded worker deadlines,
+retain completed progress, and expose degraded results explicitly. Install/update
+register the asynchronous maintenance hook without enabling opted-out features.
+See [the maintenance audit](docs/maintenance-audit.md) and
+[bounded recall](docs/bounded-recall.md) for behavior and remaining limits.

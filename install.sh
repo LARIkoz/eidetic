@@ -71,13 +71,14 @@ echo "   Backed up existing hooks"
 # Install memory system
 echo "2. Installing memory system..."
 mkdir -p "$MEMORY_SYSTEM"/{bin,db}
-for src in bin/*.sh; do
-    atomic_install "$src" "$MEMORY_SYSTEM/bin/$(basename "$src")" 755
-done
-for src in bin/*.py; do
+# Install backward-compatible dependencies before new callers and launchers.
+for src in bin/resource_budget.py bin/bounded_worker.py bin/maintenance_hooks.py bin/vector_maintenance.py bin/*.py; do
     mode=644
     [ -x "$src" ] && mode=755
     atomic_install "$src" "$MEMORY_SYSTEM/bin/$(basename "$src")" "$mode"
+done
+for src in bin/*.sh; do
+    atomic_install "$src" "$MEMORY_SYSTEM/bin/$(basename "$src")" 755
 done
 atomic_install mcp_server.py "$MEMORY_SYSTEM/mcp_server.py" 644
 if [ -d "schemas/sdk/engine/v1" ]; then
@@ -98,6 +99,10 @@ echo "   Models (enter = default; pre-set via env or EIDETIC_NONINTERACTIVE=1 fo
 #    Switching later: write the name to .embed_profile, then `bin/index.sh --full`
 #    (the model/dim stamp guard forces a clean rebuild).
 EMBED_PROFILE="${EIDETIC_EMBED_PROFILE:-}"
+if [ -z "$EMBED_PROFILE" ] && [ -f "$MEMORY_SYSTEM/.embed_profile" ]; then
+    previous=$(tr -d '[:space:]' < "$MEMORY_SYSTEM/.embed_profile")
+    case "$previous" in multilingual|english) EMBED_PROFILE="$previous" ;; esac
+fi
 [ -z "$EMBED_PROFILE" ] && EMBED_PROFILE="$(_prompt_choice "Embedder — multilingual (RU/EN/~100 langs) | english (smaller+faster, English-only)" multilingual multilingual english)"
 case "$EMBED_PROFILE" in multilingual|english) ;; *) EMBED_PROFILE=multilingual ;; esac
 printf '%s\n' "$EMBED_PROFILE" > "$MEMORY_SYSTEM/.embed_profile"
@@ -107,8 +112,18 @@ echo "   • Embedder: $EMBED_PROFILE"
 #     GPU (no onnx/CoreML, no compile-temp leak, ~18x faster). fastembed = portable
 #     onnxruntime default (any CPU). mlx only works on Apple Silicon + multilingual.
 EMBED_ENGINE="${EIDETIC_EMBED_ENGINE:-}"
+if [ -z "$EMBED_ENGINE" ] && [ -f "$MEMORY_SYSTEM/.embed_engine" ]; then
+    previous=$(tr -d '[:space:]' < "$MEMORY_SYSTEM/.embed_engine")
+    case "$previous" in mlx|fastembed) EMBED_ENGINE="$previous" ;; esac
+fi
+MLX_READY=0
+if "$HOME/.venvs/eidetic-mlx/bin/python3" -c "import mlx.core" >/dev/null 2>&1; then
+    MLX_READY=1
+elif python3 -c "import sys; sys.exit(sys.version_info < (3, 12))"; then
+    MLX_READY=1
+fi
 if [ -z "$EMBED_ENGINE" ]; then
-    if [ "$(uname)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] && [ "$EMBED_PROFILE" = "multilingual" ]; then
+    if [ "$(uname)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] && [ "$EMBED_PROFILE" = "multilingual" ] && [ "$MLX_READY" = "1" ]; then
         EMBED_ENGINE="$(_prompt_choice "Embed engine — mlx (Apple Silicon GPU, fast) | fastembed (portable CPU)" mlx mlx fastembed)"
     else
         EMBED_ENGINE="fastembed"
@@ -122,9 +137,13 @@ echo "   • Embed engine: $EMBED_ENGINE"
 if [ "$EMBED_ENGINE" = "mlx" ]; then
     MLX_VENV="$HOME/.venvs/eidetic-mlx"
     if ! "$MLX_VENV/bin/python3" -c "import mlx.core" >/dev/null 2>&1; then
+        if ! python3 -c "import sys; sys.exit(sys.version_info < (3, 12))"; then
+            echo "ERROR: MLX bootstrap requires Python 3.12+ on PATH. Use a supported Python or EIDETIC_EMBED_ENGINE=fastembed for the optional-vector/FTS installation." >&2
+            exit 1
+        fi
         echo "   Installing MLX venv at $MLX_VENV ..."
         python3 -m venv "$MLX_VENV"
-        "$MLX_VENV/bin/pip3" install --quiet mlx tokenizers huggingface_hub fastembed==0.8.0 numpy
+        "$MLX_VENV/bin/pip3" install --quiet -r "$SCRIPT_DIR/requirements-mlx.txt"
         echo "   ✓ MLX venv ready"
     else
         echo "   ✓ MLX venv already installed"
@@ -136,6 +155,10 @@ fi
 #    adds recall, never regresses (5/8 -> 7/8 @3). All backends fail-open.
 #    apple = Apple Translation NMT (macOS 26+, on-device); opusmt = Opus-MT/CTranslate2 (portable).
 TRANSLATE_BACKEND="${EIDETIC_QUERY_TRANSLATE:-}"
+if [ -z "$TRANSLATE_BACKEND" ] && [ -f "$MEMORY_SYSTEM/.translate_backend" ]; then
+    previous=$(tr -d '[:space:]' < "$MEMORY_SYSTEM/.translate_backend")
+    case "$previous" in off|auto|apple|opusmt|cli) TRANSLATE_BACKEND="$previous" ;; esac
+fi
 [ -z "$TRANSLATE_BACKEND" ] && TRANSLATE_BACKEND="$(_prompt_choice "Query translation (cross-lingual recall) — off | auto | apple | opusmt | cli" off off auto apple opusmt cli)"
 case "$TRANSLATE_BACKEND" in off|auto|apple|opusmt|cli) ;; *) TRANSLATE_BACKEND=off ;; esac
 printf '%s\n' "$TRANSLATE_BACKEND" > "$MEMORY_SYSTEM/.translate_backend"
@@ -158,6 +181,10 @@ fi
 #    Persisted to .signal_model; the Stop hook + doctor resolve it via bin/signal_model.py.
 #    Runtime override (full id): EIDETIC_SIGNAL_CLAUDE_MODEL.
 SIGNAL_MODEL="${EIDETIC_SIGNAL_MODEL:-}"
+if [ -z "$SIGNAL_MODEL" ] && [ -f "$MEMORY_SYSTEM/.signal_model" ]; then
+    previous=$(tr -d '[:space:]' < "$MEMORY_SYSTEM/.signal_model")
+    case "$previous" in sonnet|haiku) SIGNAL_MODEL="$previous" ;; esac
+fi
 [ -z "$SIGNAL_MODEL" ] && SIGNAL_MODEL="$(_prompt_choice "Card-extraction model (writes session-end memories) — sonnet (quality) | haiku (cheaper)" sonnet sonnet haiku)"
 case "$SIGNAL_MODEL" in sonnet|haiku) ;; *) SIGNAL_MODEL=sonnet ;; esac
 printf '%s\n' "$SIGNAL_MODEL" > "$MEMORY_SYSTEM/.signal_model"
@@ -211,19 +238,23 @@ mkdir -p "$RULES_DIR"
 
 # Register hooks in settings.json
 echo "5. Registering hooks..."
-if [ -f "$SETTINGS" ]; then
+if [ -d "$(dirname "$SETTINGS")" ]; then
     EIDETIC_INSTALL_MEMORY_SYSTEM="$MEMORY_SYSTEM" python3 << 'PYEOF'
 import json, os, shlex, sys, tempfile
 
 settings_path = os.path.expanduser("~/.claude/settings.json")
-with open(settings_path) as f:
-    settings = json.load(f)
+try:
+    with open(settings_path, encoding="utf-8") as f:
+        settings = json.load(f)
+except FileNotFoundError:
+    settings = {}
 
 hooks = settings.setdefault("hooks", {})
 memory_system = os.environ.get("EIDETIC_INSTALL_MEMORY_SYSTEM", "")
 default_memory_system = os.path.expanduser("~/.claude/memory-system")
 sys.path.insert(0, os.path.join(memory_system or default_memory_system, "bin"))
 from lifecycle_signals import ensure_lifecycle_hook
+from maintenance_hooks import ensure_maintenance_hook
 
 hook_prefix = ""
 if memory_system and os.path.abspath(os.path.expanduser(memory_system)) != os.path.abspath(default_memory_system):
@@ -276,6 +307,8 @@ elif not any("session-signals" in str(h) for h in stop):
     print("   Added session-signals to Stop")
 else:
     print("   session-signals already registered")
+
+ensure_maintenance_hook(settings, memory_system)
 
 lifecycle_updated = ensure_lifecycle_hook(settings, memory_system)
 if lifecycle_updated:

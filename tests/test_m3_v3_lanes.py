@@ -68,7 +68,9 @@ class _FakeSDK:
     def __init__(self, content):
         self.content = content
 
-    def chat(self, **kw):
+    def chat_for_route(self, **kw):
+        assert kw["provider"] == "shimnachi" and kw["model"] == "local"
+        assert kw["allow_same_family_failover"] is False
         return {"response_shape": {"ok": True}, "content": self.content}
 
 
@@ -536,12 +538,17 @@ class JudgeVerdictMappingTest(unittest.TestCase):
     SPANS = ["the retry budget was lowered from five to three after the review"]
 
     def _with_sdk(self, response=None, raise_exc=None):
+        # The production default is the local v6 transport, not the old SDK
+        # provider. Stub both boundaries so this test can never call a service.
+        from contextlib import ExitStack
+        stack = ExitStack()
         fake_sdk = mock.Mock()
-        if raise_exc is not None:
-            fake_sdk.chat_for_route.side_effect = raise_exc
-        else:
-            fake_sdk.chat_for_route.return_value = response
-        return mock.patch.object(m3_judge, "_get_sdk", return_value=fake_sdk)
+        fake_sdk.chat_for_route.side_effect = raise_exc
+        fake_sdk.chat_for_route.return_value = response
+        stack.enter_context(mock.patch.object(m3_judge, "_get_sdk", return_value=fake_sdk))
+        stack.enter_context(mock.patch.object(m3_judge, "_shimnachi_v6_chat",
+                                             return_value=response, side_effect=raise_exc))
+        return stack
 
     def test_entailed_with_quote(self):
         resp = {"response_shape": {"ok": True},

@@ -59,7 +59,7 @@ with open(sys.argv[1], encoding="utf-8") as f:
     print(json.load(f).get("git_sha", ""))
 PYEOF
 )
-    if [ "$LOCAL_SHA" = "$NEW_SHA" ]; then
+    if [ "$LOCAL_SHA" = "$NEW_SHA" ] && [ "$(cat "$MEMORY_SYSTEM/.refresh-pending" 2>/dev/null || echo 0)" != "1" ]; then
         echo "Already up to date."
         rm -f "$MEMORY_SYSTEM/.update-available"
         exit 0
@@ -109,13 +109,14 @@ atomic_install() {
     fi
 }
 
-for src in "$TMP_DIR/eidetic/bin/"*.sh; do
-    atomic_install "$src" "$MEMORY_SYSTEM/bin/$(basename "$src")" 755
-done
-for src in "$TMP_DIR/eidetic/bin/"*.py; do
+# Install backward-compatible dependencies before new callers and launchers.
+for src in "$TMP_DIR/eidetic/bin/"resource_budget.py "$TMP_DIR/eidetic/bin/"bounded_worker.py "$TMP_DIR/eidetic/bin/"maintenance_hooks.py "$TMP_DIR/eidetic/bin/"vector_maintenance.py "$TMP_DIR/eidetic/bin/"*.py; do
     mode=644
     [ -x "$src" ] && mode=755
     atomic_install "$src" "$MEMORY_SYSTEM/bin/$(basename "$src")" "$mode"
+done
+for src in "$TMP_DIR/eidetic/bin/"*.sh; do
+    atomic_install "$src" "$MEMORY_SYSTEM/bin/$(basename "$src")" 755
 done
 atomic_install "$TMP_DIR/eidetic/mcp_server.py" "$MEMORY_SYSTEM/mcp_server.py" 644
 if [ -d "$TMP_DIR/eidetic/schemas/sdk/engine/v1" ]; then
@@ -138,19 +139,23 @@ if [ -d "$TMP_DIR/eidetic/hooks" ]; then
 fi
 
 SETTINGS="$HOME/.claude/settings.json"
-if [ -f "$SETTINGS" ]; then
+if [ -d "$(dirname "$SETTINGS")" ]; then
     EIDETIC_INSTALL_MEMORY_SYSTEM="$MEMORY_SYSTEM" python3 << 'PYEOF'
 import json, os, shlex, sys, tempfile
 
 settings_path = os.path.expanduser("~/.claude/settings.json")
-with open(settings_path, encoding="utf-8") as f:
-    settings = json.load(f)
+try:
+    with open(settings_path, encoding="utf-8") as f:
+        settings = json.load(f)
+except FileNotFoundError:
+    settings = {}
 
 hooks = settings.setdefault("hooks", {})
 memory_system = os.environ.get("EIDETIC_INSTALL_MEMORY_SYSTEM", "")
 default_memory_system = os.path.expanduser("~/.claude/memory-system")
 sys.path.insert(0, os.path.join(memory_system or default_memory_system, "bin"))
 from lifecycle_signals import ensure_lifecycle_hook
+from maintenance_hooks import ensure_maintenance_hook
 
 hook_prefix = ""
 if memory_system and os.path.abspath(os.path.expanduser(memory_system)) != os.path.abspath(default_memory_system):
@@ -191,6 +196,7 @@ if not signal_updated:
         stop.append({"hooks": [signal_entry]})
 
 ensure_lifecycle_hook(settings, memory_system)
+ensure_maintenance_hook(settings, memory_system)
 
 settings_dir = os.path.dirname(settings_path) or "."
 fd, tmp = tempfile.mkstemp(dir=settings_dir, prefix=os.path.basename(settings_path) + ".tmp.")
@@ -222,13 +228,15 @@ fi
 
 echo "Refreshing derived indexes..."
 REFRESH_FAILED=0
+printf '1\n' > "$MEMORY_SYSTEM/.refresh-pending"
 run_refresh_step() {
     local label="$1"
     shift
     if "$@" 2>&1; then
         return 0
+    else
+        local rc=$?
     fi
-    local rc=$?
     echo "WARNING: refresh step failed ($label, exit $rc)"
     REFRESH_FAILED=1
     return 0
@@ -239,7 +247,7 @@ if python3 -c "import tree_sitter" 2>/dev/null; then
     run_refresh_step "code-index" python3 "$MEMORY_SYSTEM/bin/code_index.py" "$MEMORY_SYSTEM/db/index.db" "$MEMORY_SYSTEM" --slug claude-memory-system
 fi
 if [ -f "$MEMORY_SYSTEM/db/vectors.db" ]; then
-    run_refresh_step "vectors" python3 "$MEMORY_SYSTEM/bin/embed.py" "$MEMORY_SYSTEM/db/index.db" "$MEMORY_SYSTEM/db/vectors.db"
+    run_refresh_step "vectors" python3 "$MEMORY_SYSTEM/bin/vector_maintenance.py" "$MEMORY_SYSTEM/bin/embed.py" "$MEMORY_SYSTEM/db/index.db" "$MEMORY_SYSTEM/db/vectors.db" "$MEMORY_SYSTEM/embed-last.log"
 fi
 run_refresh_step "memory-context" python3 "$MEMORY_SYSTEM/bin/assemble_context.py" "$MEMORY_SYSTEM/db/index.db" "$HOME/.claude/rules/memory-context.md" "$(pwd)"
 
@@ -277,6 +285,7 @@ echo "=== Updated to v$NEW_VER ==="
 echo "Preserved: db/ (index + vectors), rules/memory-context.md, settings.json hooks"
 COMMAND_MEMORY_SYSTEM=$(printf '%q' "$MEMORY_SYSTEM")
 if [ "$REFRESH_FAILED" -eq 0 ]; then
+    printf '0\n' > "$MEMORY_SYSTEM/.refresh-pending"
     echo "Derived indexes and memory context refreshed. Run $COMMAND_MEMORY_SYSTEM/bin/index.sh --full only if you need a full rebuild."
 else
     echo "WARNING: Runtime files updated, but one or more derived refresh steps failed."

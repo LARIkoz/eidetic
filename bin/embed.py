@@ -449,7 +449,7 @@ def run_full(index_db_path, vector_db_path):
             vec_conn.close()
         if index_conn is not None:
             index_conn.close()
-        cpu_checkpoint(force=True)
+        cpu_checkpoint(force=True, wait=os.environ.get("EIDETIC_RETURN_COMPLETED_COMPUTE") != "1")
 
     elapsed = time.time() - t0
     print(f"Embedded {total} chunks in {elapsed:.1f}s ({total/elapsed:.0f} chunks/s)")
@@ -508,7 +508,10 @@ def run_incremental(index_db_path, vector_db_path):
             vec_conn.commit()
             return
 
-        batch_size = 64
+        # Commit each governed microbatch so a short hook deadline makes
+        # durable progress instead of repeatedly discarding an entire 64-row batch.
+        policy = settings()
+        batch_size = min(64, policy["batch_size"]) if policy["enabled"] else 64
         total = 0
         t0 = time.time()
 
@@ -539,7 +542,7 @@ def run_incremental(index_db_path, vector_db_path):
             vec_conn.close()
         if index_conn is not None:
             index_conn.close()
-        cpu_checkpoint(force=True)
+        cpu_checkpoint(force=True, wait=os.environ.get("EIDETIC_RETURN_COMPLETED_COMPUTE") != "1")
 
 
 def search(vector_db_path, query, limit=5):

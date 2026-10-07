@@ -99,7 +99,9 @@ if [ ! -f "$DB" ] || [ ! -f "$SEARCH" ]; then
 fi
 
 # Incremental reindex (< 500ms)
-"$INDEX" --incremental >/dev/null 2>&1 || true
+if ! EIDETIC_INDEX_LOCK_TIMEOUT="${EIDETIC_INDEX_LOCK_TIMEOUT:-5}" "$INDEX" --lexical-only >"$MEMORY_SYSTEM/index-last.log" 2>&1; then
+    echo "⚠️  Eidetic text refresh deferred or failed; using the previous index. Retry on the next hook/index request. Log: $MEMORY_SYSTEM/index-last.log"
+fi
 
 # Drift detection (24h throttle, crash-guarded — B6: must not kill injection)
 python3 "$MEMORY_SYSTEM/bin/drift_check.py" "$DB" 2>/dev/null || true
@@ -130,37 +132,9 @@ if [ -f "$VECTORS_DB" ]; then
     python3 - "$MEMORY_SYSTEM/bin/embed.py" "$DB" "$VECTORS_DB" "$EMBED_LOG" <<'PY' 2>>"$EMBED_LOG" || true
 import os, sqlite3, subprocess, sys
 script, db_path, vectors_db, log_path = sys.argv[1:5]
-failed, reason = False, ""
-try:
-    # Default 30s; a slow machine or a large unembedded backlog can need more to
-    # converge — raise via EIDETIC_EMBED_TIMEOUT so every session makes progress
-    # instead of timing out short forever.
-    embed_timeout = int(os.environ.get("EIDETIC_EMBED_TIMEOUT", "30") or "30")
-    r = subprocess.run([sys.executable, script, db_path, vectors_db],
-                       timeout=embed_timeout, capture_output=True, text=True)
-    if r.returncode != 0:
-        failed = True
-        tail = (r.stderr or r.stdout or "nonzero exit").strip().splitlines()
-        reason = (tail[-1] if tail else "nonzero exit")[:160]
-        with open(log_path, "w") as f:
-            f.write(r.stderr or r.stdout or "")
-    else:
-        # clean embed -> clear any stale failure marker. The W5 log is
-        # failure-only; without this, one transient BrokenPipe keeps the doctor
-        # "degraded" forever (alarm fatigue that erodes trust in the new gate).
-        open(log_path, "w").close()
-except subprocess.TimeoutExpired:
-    # A long reindex keeps embedding; next session resumes — not a failure.
-    # Reaching a timeout means the embedder STARTED (its deps, incl. numpy,
-    # imported OK), so a since-resolved earlier crash recorded in the log is now
-    # stale — clear it so the doctor stops reporting a fixed problem forever.
-    try:
-        open(log_path, "w").close()
-    except OSError:
-        pass
-except Exception as e:
-    failed = True
-    reason = f"{type(e).__name__}: {e}"[:160]
+sys.path.insert(0, os.path.dirname(script))
+from vector_maintenance import refresh
+failed, reason = refresh(script, db_path, vectors_db, log_path)
 
 # Vector REAL coverage = ALIGNED chunks (the search guard would accept), via
 # coverage_audit — NOT the gross (chunks-vectors)/chunks lag, which counted dead

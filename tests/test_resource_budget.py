@@ -45,6 +45,7 @@ class ResourceBudgetTest(unittest.TestCase):
 import os, json
 before = dict(os.environ)
 import resource_budget as b
+budget = b
 os.environ['EIDETIC_MEMORY_SYSTEM'] = '/irrelevant/topic/base'
 assert b._root() == __import__('pathlib').Path(os.environ['EIDETIC_RESOURCE_ROOT'])
 os.environ.pop('EIDETIC_MEMORY_SYSTEM')
@@ -133,7 +134,7 @@ print(json.dumps(b.settings()))
         self.assertEqual(budget.settings()["cpu_percent"], 20)
         with mock.patch.object(Path, "open", side_effect=AssertionError("unexpected file access")):
             self.assertEqual(budget.settings()["gpu_percent"], 20)
-        budget._settings_cache = (self.root, time.monotonic() - 2, {})
+        budget._settings_cache = (self.root, budget.monotonic() - 2, {})
         self.config({"cpu_percent": 10})
         self.assertEqual(budget.settings()["cpu_percent"], 10)
 
@@ -144,21 +145,21 @@ print(json.dumps(b.settings()))
             pass
         state = json.loads(path.read_text())
         self.assertEqual(state["boot_id"], budget._boot_identity())
-        state["cpu_deadline"] = time.monotonic() + 1e12
+        state["cpu_deadline"] = budget.monotonic() + 1e12
         path.write_text(json.dumps(state))
         with self.assertRaises(budget.ResourceBudgetError):
             with budget.compute_slot():
                 self.fail("Nonsensical clock admitted work")
 
     def test_nested_gpu_promotes_cpu_and_exception_releases_stable_lock(self):
-        started = time.monotonic()
+        started = budget.monotonic()
         with self.assertRaisesRegex(ValueError, "body failure"):
             with budget.compute_slot("cpu"):
                 with budget.compute_slot("gpu"):
                     budget.cpu_checkpoint(force=True)
                     time.sleep(0.02)
                     raise ValueError("body failure")
-        self.assertGreaterEqual(time.monotonic() - started, 0.1)
+        self.assertGreaterEqual(budget.monotonic() - started, 0.1)
         inode = (self.root / ".resource-budget.lock").stat().st_ino
         self.run_python("import resource_budget as b\nwith b.compute_slot(): pass")
         self.assertEqual((self.root / ".resource-budget.lock").stat().st_ino, inode)
@@ -166,13 +167,14 @@ print(json.dumps(b.settings()))
     def test_model_cpu_is_not_charged_at_following_checkpoint(self):
         self.run_python("""
 import time, resource_budget as b
+budget = b
 b._cores = 1
 with b.compute_slot():
     end = time.process_time() + 0.04
     while time.process_time() < end: pass
-started = time.monotonic()
+started = budget.monotonic()
 b.cpu_checkpoint(force=True)
-assert time.monotonic() - started < 0.06
+assert budget.monotonic() - started < 0.06
 """)
 
     def test_cancellation_returns_promptly_and_next_process_pays_debt(self):
@@ -181,17 +183,18 @@ assert time.monotonic() - started < 0.06
                 with self.assertRaises(cancellation):
                     with budget.compute_slot("gpu"):
                         time.sleep(0.05)
-                        interrupted = time.monotonic()
+                        interrupted = budget.monotonic()
                         raise cancellation()
-                self.assertLess(time.monotonic() - interrupted, 0.1)
+                self.assertLess(budget.monotonic() - interrupted, 0.1)
                 state = json.loads((self.root / ".resource-budget.state.json").read_text())
                 deadline = state["gpu_deadline"]
-                self.assertGreater(deadline - time.monotonic(), 0.1)
+                self.assertGreater(deadline - budget.monotonic(), 0.1)
                 result = self.run_python("""
 import json, time, resource_budget as b
-started = time.monotonic()
+budget = b
+started = budget.monotonic()
 with b.compute_slot():
-    admitted = time.monotonic()
+    admitted = budget.monotonic()
 print(json.dumps(dict(started=started, admitted=admitted)))
 """)
                 timing = json.loads(result.stdout)
@@ -211,7 +214,7 @@ print(json.dumps(dict(started=started, admitted=admitted)))
 
         path = self.root / ".resource-budget.state.json"
         with mock.patch.object(budget.time, "process_time", side_effect=lambda: clock["cpu"]), \
-                mock.patch.object(budget.time, "monotonic", side_effect=lambda: clock["wall"]), \
+                mock.patch.object(budget, "monotonic", side_effect=lambda: clock["wall"]), \
                 mock.patch.object(budget, "_boot_identity", return_value="test-boot"):
             with mock.patch.object(budget, "_save_state", side_effect=save_then_delay), \
                     mock.patch.object(budget, "_sleep_until", side_effect=KeyboardInterrupt):
@@ -269,10 +272,11 @@ print(json.dumps(dict(started=started, admitted=admitted)))
     def parallel_work(self, mode):
         script = """
 import json, time, resource_budget as b
+budget = b
 b._cores = 1
 mode = MODE
 cpu = active = 0.0
-started = time.monotonic()
+started = budget.monotonic()
 for _ in range(3):
     if mode == 'checkpoint':
         initial = time.process_time()
@@ -281,14 +285,14 @@ for _ in range(3):
         b.cpu_checkpoint()
     else:
         with b.compute_slot(mode):
-            initial_cpu, initial_wall = time.process_time(), time.monotonic()
+            initial_cpu, initial_wall = time.process_time(), budget.monotonic()
             if mode == 'gpu': time.sleep(.02)
             else:
                 while time.process_time() - initial_cpu < .02: pass
             cpu += time.process_time() - initial_cpu
-            active += time.monotonic() - initial_wall
+            active += budget.monotonic() - initial_wall
 b.cpu_checkpoint(force=True)
-print(json.dumps(dict(start=started, end=time.monotonic(), cpu=cpu, active=active)))
+print(json.dumps(dict(start=started, end=budget.monotonic(), cpu=cpu, active=active)))
 """.replace("MODE", repr(mode))
         processes = [subprocess.Popen([sys.executable, "-c", script],
                                       env=dict(os.environ, PYTHONPATH=str(BIN)),
