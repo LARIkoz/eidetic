@@ -167,12 +167,12 @@ print(json.dumps(b.settings()))
     def test_model_cpu_is_not_charged_at_following_checkpoint(self):
         self.run_python("""
 import time, resource_budget as b
+from unittest import mock
 budget = b
 b._cores = 1
 with b.compute_slot():
     end = time.process_time() + 0.04
     while time.process_time() < end: pass
-from unittest import mock
 with mock.patch.object(b, "_settle", wraps=b._settle) as settle:
     b.cpu_checkpoint(force=True)
 # Compare actual charged CPU, not wall-clock scheduling jitter on CI.
