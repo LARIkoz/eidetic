@@ -3,6 +3,7 @@
 import importlib
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -96,6 +97,13 @@ class MaintenanceRuntimeTest(unittest.TestCase):
                    EIDETIC_QUERY_TRANSLATE="off", EIDETIC_NONINTERACTIVE="1", PYTHONNOUSERSITE="1")
         for name in ("EIDETIC_EMBED_PROFILE", "EIDETIC_EMBED_ENGINE", "EIDETIC_SIGNAL_MODEL"):
             env.pop(name, None)
+        # Exercise the stdlib-only install independently of CI's optional packages.
+        scripts = self.root / "stdlib-bin"
+        scripts.mkdir()
+        python = scripts / "python3"
+        python.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + ' -S "$@"\n')
+        python.chmod(0o755)
+        env["PATH"] = str(scripts) + os.pathsep + env.get("PATH", "")
         p = subprocess.run(["/bin/bash", str(REPO / "install.sh")], cwd=REPO, env=env,
                            capture_output=True, text=True, timeout=30)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)

@@ -172,9 +172,11 @@ b._cores = 1
 with b.compute_slot():
     end = time.process_time() + 0.04
     while time.process_time() < end: pass
-started = budget.monotonic()
-b.cpu_checkpoint(force=True)
-assert budget.monotonic() - started < 0.06
+from unittest import mock
+with mock.patch.object(b, "_settle", wraps=b._settle) as settle:
+    b.cpu_checkpoint(force=True)
+# Compare actual charged CPU, not wall-clock scheduling jitter on CI.
+assert settle.call_args.args[3] < 0.02, settle.call_args
 """)
 
     def test_cancellation_returns_promptly_and_next_process_pays_debt(self):

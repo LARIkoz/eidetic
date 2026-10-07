@@ -186,6 +186,9 @@ class DedupRoutesToM2Test(M3Base):
 
 # --- FR-2 support scorer (deterministic span-overlap, no LLM) ----------------
 def _fastembed_available():
+    # Import-only CI explicitly excludes real model integration tests.
+    if os.environ.get("EIDETIC_TEST_REAL_MODELS") == "0":
+        return False
     import importlib.util
     return importlib.util.find_spec("fastembed") is not None
 

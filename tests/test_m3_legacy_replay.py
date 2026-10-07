@@ -308,7 +308,9 @@ class ResumeAndSafetyTest(ReplayBase):
         with mock.patch.object(replay._miner, "mine_transcript", return_value=(
                 [self.candidate()], {"error": None,
                                      "miner_policy": miner.MINER_POLICY_VERSION})), \
-                mock.patch.object(replay._judge, "_get_sdk", return_value=sdk):
+                mock.patch.object(replay._judge, "_get_sdk", return_value=sdk), \
+                mock.patch.object(replay._judge, "_shimnachi_v6_chat",
+                                  return_value=sdk.chat_for_route.return_value):
             replay.run_replay(manifest, self.output, enable_judge=True)
         self.assertFalse(os.path.exists(os.path.join(self.events, "m3_judge.log")))
         self.assertEqual(self.results()[0][0]["final_outcome"],

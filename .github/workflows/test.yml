@@ -380,7 +380,7 @@ jobs:
           export HOME="$tmp/home"
           export EIDETIC_MEMORY_SYSTEM="$tmp/custom-memory-system"
           mkdir -p "$HOME/.claude/projects/custom-project/memory" "$EIDETIC_MEMORY_SYSTEM/bin" "$EIDETIC_MEMORY_SYSTEM/db"
-          cp bin/index.sh bin/index_impl.py bin/serendipity.py bin/compound.py "$EIDETIC_MEMORY_SYSTEM/bin/"
+          cp bin/index.sh bin/index_impl.py bin/resource_budget.py bin/bounded_worker.py bin/serendipity.py bin/compound.py "$EIDETIC_MEMORY_SYSTEM/bin/"
           cp mcp_server.py "$EIDETIC_MEMORY_SYSTEM/mcp_server.py"
           printf '{"version":"test"}\n' > "$EIDETIC_MEMORY_SYSTEM/.installed.json"
           chmod +x "$EIDETIC_MEMORY_SYSTEM/bin/index.sh"
@@ -2058,6 +2058,9 @@ jobs:
       # The entire suite, stdlib-only runner (tests are unittest.TestCase — no
       # pytest dependency). Non-zero exit fails the leg.
       - name: Run full suite (${{ matrix.mode }})
+        env:
+          EIDETIC_TEST_REAL_MODELS: "0"
+          HF_HUB_OFFLINE: "1"
         run: |
           echo "Running full unittest suite in mode=${{ matrix.mode }}"
           python3 -m unittest discover -s tests -v
