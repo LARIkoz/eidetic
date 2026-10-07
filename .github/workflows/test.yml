@@ -380,7 +380,7 @@ jobs:
           export HOME="$tmp/home"
           export EIDETIC_MEMORY_SYSTEM="$tmp/custom-memory-system"
           mkdir -p "$HOME/.claude/projects/custom-project/memory" "$EIDETIC_MEMORY_SYSTEM/bin" "$EIDETIC_MEMORY_SYSTEM/db"
-          cp bin/index.sh bin/index_impl.py bin/resource_budget.py bin/bounded_worker.py bin/serendipity.py bin/compound.py "$EIDETIC_MEMORY_SYSTEM/bin/"
+          cp bin/index.sh bin/*.py "$EIDETIC_MEMORY_SYSTEM/bin/"
           cp mcp_server.py "$EIDETIC_MEMORY_SYSTEM/mcp_server.py"
           printf '{"version":"test"}\n' > "$EIDETIC_MEMORY_SYSTEM/.installed.json"
           chmod +x "$EIDETIC_MEMORY_SYSTEM/bin/index.sh"
