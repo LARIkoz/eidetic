@@ -106,11 +106,19 @@ def embed_canary(index_db, vectors_db, search_fn=None, require_fastembed=True):
     if card is None:
         return {"status": "skip", "detail": "no vectors built yet — nothing to canary"}
     cid, name = card
+    from resource_budget import deferred_count, ResourceBudgetBusy
+    before_deferrals = deferred_count()
+    deferred = {"status": "deferred", "card": name,
+                "detail": "resource budget busy; retry the canary after pending work settles"}
     try:
         results = search_fn(vectors_db, name, FETCH_K)
+    except ResourceBudgetBusy:
+        return deferred
     except Exception as e:  # model load / numpy / db error
         return {"status": "fail", "card": name,
                 "detail": f"embed+vector search raised: {type(e).__name__}: {e}"}
+    if deferred_count() != before_deferrals:
+        return deferred
     if not results:
         return {"status": "fail", "card": name,
                 "detail": "vector search returned 0 results — model/dim drift, dead cache, or empty store"}

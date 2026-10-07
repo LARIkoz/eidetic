@@ -110,7 +110,7 @@ atomic_install() {
 }
 
 # Install backward-compatible dependencies before new callers and launchers.
-for src in "$TMP_DIR/eidetic/bin/"resource_budget.py "$TMP_DIR/eidetic/bin/"bounded_worker.py "$TMP_DIR/eidetic/bin/"maintenance_hooks.py "$TMP_DIR/eidetic/bin/"vector_maintenance.py "$TMP_DIR/eidetic/bin/"*.py; do
+for src in "$TMP_DIR/eidetic/bin/"resource_budget.py "$TMP_DIR/eidetic/bin/"maintenance_status.py "$TMP_DIR/eidetic/bin/"bounded_worker.py "$TMP_DIR/eidetic/bin/"maintenance_hooks.py "$TMP_DIR/eidetic/bin/"vector_maintenance.py "$TMP_DIR/eidetic/bin/"*.py; do
     mode=644
     [ -x "$src" ] && mode=755
     atomic_install "$src" "$MEMORY_SYSTEM/bin/$(basename "$src")" "$mode"

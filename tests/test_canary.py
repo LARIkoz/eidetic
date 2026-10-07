@@ -52,6 +52,18 @@ class EmbedCanaryTest(unittest.TestCase):
         self.vdb = _mk_vectors_db([(1, "short"), (7, "a distinctive memory card name here"), (3, "another card")])
         self.addCleanup(lambda: os.path.exists(self.vdb) and os.remove(self.vdb))
 
+    def test_budget_deferral_is_not_a_broken_embedder(self):
+        from unittest import mock
+        import resource_budget
+        with mock.patch.object(resource_budget, "deferred_count", side_effect=[0, 1]):
+            result = canary.embed_canary("idx", self.vdb, search_fn=lambda *args: [])
+        self.assertEqual(result["status"], "deferred")
+        with mock.patch.object(resource_budget, "deferred_count", return_value=0):
+            def busy(*args):
+                raise resource_budget.ResourceBudgetBusy("busy")
+            result = canary.embed_canary("idx", self.vdb, search_fn=busy)
+        self.assertEqual(result["status"], "deferred")
+
     def test_pick_prefers_long_distinctive_name(self):
         cid, name = canary.pick_canary_card(self.vdb)
         self.assertEqual(cid, 7)

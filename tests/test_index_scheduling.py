@@ -413,14 +413,14 @@ class IndexSchedulingTest(unittest.TestCase):
         output = io.StringIO()
         with redirect_stdout(output):
             self.assertEqual(idx.run_incremental(conn, paths), (5, 0, 0))
-        self.assertEqual(self.m1.call_args.args[2], paths[:4])
+        self.assertEqual([c.args[2][0] for c in self.m1.call_args_list], paths[:4])
         self.assertEqual(idx.pending_ingest_paths(conn), paths[4:])
         self.assertIn("1 cards pending", output.getvalue())
         self.assertIn("FTS is current", output.getvalue())
         self.assertEqual(idx.run_incremental(conn, paths), (0, 5, 0))
         self.assertEqual(self.m1.call_args.args[2], paths[4:])
         self.assertEqual(idx.pending_ingest_paths(conn), [])
-        self.assertEqual(self.m1.call_count, 2)
+        self.assertEqual(self.m1.call_count, 5)
 
     def test_old_pending_work_precedes_new_edits(self):
         paths = [self.card(name) for name in ("z", "y", "x")]

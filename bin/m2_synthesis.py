@@ -23,6 +23,8 @@ import os
 import re
 import secrets
 import sys
+import math
+from maintenance_status import note_failure
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -295,13 +297,16 @@ def _default_relevance(a_text, b_text):
     try:
         import engine
         s = engine.rerank(a_text or "", [b_text or ""])
-    except Exception:
+    except Exception as exc:
+        note_failure("m2_relevance", exc)
         return None
     if not s:
+        note_failure("m2_relevance", "unavailable")
         return None
     try:
         return float(s[0])
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        note_failure("m2_relevance", exc)
         return None
 
 
@@ -372,12 +377,21 @@ def _salient_claim(rec, limit=90):
     markdown; falls back to the card name/slug when the first line is noise. The
     output is markdown-free, whitespace-collapsed, word-boundary-capped, and
     deterministic (⇒ the consolidation body is deterministic, FR-8 idempotence)."""
+    in_evidence = False
     for raw in (rec.get("text") or "").splitlines():
         s = raw.strip()
+        if s.lower() == "## evidence":
+            in_evidence = True
+            continue
+        if in_evidence:
+            if not s.startswith("## "):
+                continue
+            in_evidence = False
+            continue
         if not s or s.startswith("<!--") or s.startswith("|") or s.startswith("---"):
             continue
         low = s.lstrip("#").strip().lower()
-        if low.startswith("## evidence") or low.startswith("m2 synthesis"):
+        if low.lstrip("_").startswith("m2 synthesis"):
             continue
         cleaned = _clean_oneliner(s, limit)
         if len(cleaned) >= 3:
@@ -557,20 +571,34 @@ def _apply_supersession(index_db_path, trigger, target):
     path = target["path"]
     with _EV.card_lock(path) as held:  # D3: spool-under-lock (read-modify-write atomic)
         if not held:
+            note_failure("m2_card_lock", "contended")
             print(f"WARN: M2 could not lock {path}; supersession skipped (no lost update)",
                   file=sys.stderr)
             return "lock_contended"
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8", newline="") as f:
                 content = f.read()
-        except OSError:
+        except OSError as exc:
+            note_failure("m2_card_read", exc)
             return "supersession_suggested"
         if _read_frontmatter_key(content, "superseded_by") == trigger["slug"]:
-            return "idempotent_skip"  # already superseded by this trigger
-        _atomic_write(path, _set_frontmatter_key(content, "superseded_by", trigger["slug"]))
-        _EV.append_event(path, "contradicted", actor=AUTOMATED_ACTOR,
-                         note=f"superseded by {trigger['slug']} (m2 supersession terminal)",
-                         _locked=True)
+            note = f"superseded by {trigger['slug']} (m2 supersession terminal)"
+            recorded = any(e["event_type"] == "contradicted" and e.get("note") == note
+                           for e in _M1._IDX.parse_evidence_events(content))
+            if not recorded:
+                wrote = _EV.append_event(path, "contradicted", actor=AUTOMATED_ACTOR,
+                                         note=note, _locked=True)
+                if not wrote:
+                    note_failure("m2_evidence", "not_written")
+                return "event_recovered" if wrote else "event_deferred"
+            return "idempotent_skip"
+        prepared = _set_frontmatter_key(content, "superseded_by", trigger["slug"])
+        wrote = _EV.append_event(path, "contradicted", actor=AUTOMATED_ACTOR,
+                                 note=f"superseded by {trigger['slug']} (m2 supersession terminal)",
+                                 _locked=True, _content=prepared)
+        if not wrote:
+            note_failure("m2_evidence", "not_written")
+            return "event_deferred"
     _oplog(index_db_path, OP_SUPERSESSION, target["slug"], trigger=trigger)
     return "superseded"
 
@@ -637,18 +665,45 @@ def process_trigger(index_db_path, trigger_path, meta, body, *, neighbors,
     # per-path.
     def _rel(P):
         try:
-            return relevance_fn(T.get("text", ""), P.get("text", ""))
-        except Exception:
+            value = relevance_fn(T.get("text", ""), P.get("text", ""))
+            if value is None:
+                note_failure("m2_relevance", "unavailable")
+                return None
+            value = float(value)
+            if not math.isfinite(value):
+                note_failure("m2_relevance", "invalid_score")
+                return None
+            return value
+        except Exception as exc:
+            note_failure("m2_relevance", exc)
             return None
     rel_by_path = {}
+    decisions = {}
     editable_claims = []
     for p_path, _s, P in selected:
-        if is_editable(P):
-            r = _rel(P)
-            rel_by_path[p_path] = r
-            if r is not None and r >= floor:
-                editable_claims.append({"path": p_path, "slug": P["slug"],
-                                        "salient": _salient_claim(P)})
+        if not is_editable(P):
+            continue
+        r = _rel(P)
+        rel_by_path[p_path] = r
+        try:
+            verdict = confirmer(T, P)
+        except Exception as exc:
+            note_failure("m2_confirmer", exc)
+            decisions[p_path] = ("confirmer_unavailable", False)
+            continue
+        is_sup = False
+        if verdict == "no_contradiction":
+            try:
+                is_sup = supersedes(T, P)
+            except Exception as exc:
+                note_failure("m2_supersedes", exc)
+                decisions[p_path] = ("supersedes_unavailable", False)
+                continue
+        decisions[p_path] = (verdict, is_sup)
+        # Only classified, non-conflicting claims can support another edit.
+        if verdict == "no_contradiction" and not is_sup and r is not None and r >= floor:
+            editable_claims.append({"path": p_path, "slug": P["slug"],
+                                    "salient": _salient_claim(P)})
 
     for path, score, P in selected:
         if not is_editable(P):
@@ -657,16 +712,20 @@ def process_trigger(index_db_path, trigger_path, meta, body, *, neighbors,
 
         # FR-3: a true contradiction is NEVER resolved by overwriting text — hand
         # the pair to M1's contradicted path (idempotent; M1 owns the emit).
-        try:
-            verdict = confirmer(T, P)
-        except Exception:
-            verdict = "no_contradiction"  # fail-closed
+        verdict, is_sup = decisions[path]
+        if verdict in ("confirmer_unavailable", "supersedes_unavailable"):
+            outcomes.append({"path": path, "action": verdict})
+            continue
         if verdict == "contradiction":
             _M1.process_card(trigger_path, meta, body,
                              neighbors=[{"score": score, "path": path}],
                              confirmer=confirmer, index_db_path=index_db_path)
             _oplog(index_db_path, OP_CONTRADICTION_DEFERRAL, P["slug"], trigger=T, score=score)
             outcomes.append({"path": path, "action": "deferred_to_m1"})
+            continue
+
+        if verdict != "no_contradiction":
+            outcomes.append({"path": path, "action": "confirmer_uncertain"})
             continue
 
         # FR-7 + M2CAL change #3: temporal supersession is SUGGESTION-ONLY by default.
@@ -682,10 +741,6 @@ def process_trigger(index_db_path, trigger_path, meta, body, *, neighbors,
         # human review and moves on. Rationale (M2CAL): ~100% measured FP — auto-
         # marking cards obsolete is destructive, so keep the DETECTION, drop the
         # default auto-MUTATION.
-        try:
-            is_sup = supersedes(T, P)
-        except Exception:
-            is_sup = False
         if is_sup:
             same_project = (P["project"] == T["project"])
             r_sup = rel_by_path.get(path)
@@ -704,6 +759,8 @@ def process_trigger(index_db_path, trigger_path, meta, body, *, neighbors,
         # M2.1-R1: look up THIS path's own reranker score (never a same-slug page's).
         r = rel_by_path.get(path)
         if r is None or r < floor:
+            if r is None:
+                note_failure("m2_relevance", "unavailable")
             _oplog_once(index_db_path, OP_RELEVANCE_SKIPPED, P["slug"], trigger=T)
             outcomes.append({"path": path, "action": "relevance_skipped", "rel": r})
             continue
@@ -725,13 +782,15 @@ def _edit_page(index_db_path, path, trigger, target_slug, score, synth_body_fn, 
     outcome = None
     with _EV.card_lock(path) as held:
         if not held:
+            note_failure("m2_card_lock", "contended")
             print(f"WARN: M2 could not lock {path}; edit skipped (no lost update)",
                   file=sys.stderr)
             return {"path": path, "action": "lock_contended"}
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8", newline="") as f:
                 content = f.read()
-        except OSError:
+        except OSError as exc:
+            note_failure("m2_card_read", exc)
             return {"path": path, "action": "unreadable"}
 
         # F1 (A1.7): the frontmatter `synthesis_region_id` IS present but the locator
@@ -744,6 +803,7 @@ def _edit_page(index_db_path, path, trigger, target_slug, score, synth_body_fn, 
         # matching id (AC-2e) — still falls through to a fresh create.)
         rid = read_region_id(content)
         if rid and _synthesis_region_bounds(content, rid) is None:
+            note_failure("m2_region", "broken_region")
             outcome = {"path": path, "action": "broken_region_skipped"}
         else:
             provenance = _provenance_line(trigger, score)
@@ -753,16 +813,47 @@ def _edit_page(index_db_path, path, trigger, target_slug, score, synth_body_fn, 
             # we would write, skip the edit AND the event (append_event stamps a fresh
             # ts, so the PK cannot dedup — this explicit content guard must).
             cur = current_region_body(content)
-            if cur is not None and cur.strip() == region_body.rstrip():
+            operation = _mint_id()
+            note = f"m2 synthesis from {trigger['slug']} op={operation}"
+            stored_operation = None
+            if cur is not None:
+                marker = re.match(r"<!-- eidetic:synthesis:operation=([0-9a-f]{32,64}) -->\n", cur)
+                if marker:
+                    stored_operation = marker.group(1)
+                    cur = cur[marker.end():]
+            def stable_body(text):
+                # Generation date is provenance, not a new knowledge revision.
+                return re.sub(r"(?m)^(_M2 synthesis .*? · )\d{4}-\d{2}-\d{2}( · score=)",
+                              r"\1DATE\2", text.strip())
+            if cur is not None and stable_body(cur) == stable_body(region_body):
+                # A prior process may have committed the region and failed before
+                # its event. Repair only that missing event under the same lock.
+                if stored_operation:
+                    note = f"m2 synthesis from {trigger['slug']} op={stored_operation}"
+                else:
+                    # Legacy unchanged regions have no operation marker. Keep
+                    # their existing evidence identity without a new nudge.
+                    note = f"m2 synthesis from {trigger['slug']}"
+                recorded = any(e["event_type"] == "observed" and e.get("note") == note
+                               for e in _M1._IDX.parse_evidence_events(content))
+                if not recorded:
+                    wrote = _EV.append_event(path, "observed", actor="agent-extracted",
+                                             note=note, _locked=True)
+                    if not wrote:
+                        note_failure("m2_evidence", "not_written")
+                    return {"path": path, "action": "event_recovered" if wrote else "event_deferred"}
                 return {"path": path, "action": "idempotent_skip"}
-            new_content, new_rid, op = apply_region(content, region_body)
+            marked_body = f"<!-- eidetic:synthesis:operation={operation} -->\n{region_body}"
+            new_content, new_rid, op = apply_region(content, marked_body)
             if new_content == content:
                 return {"path": path, "action": "idempotent_skip"}
-            _atomic_write(path, new_content)
             # FR-6 NO-LAUNDER: at most ONE tier-1 `observed` (+0.05, capped) — never
             # confirmed/verified_by_test. _locked: we already hold this card's flock.
-            _EV.append_event(path, "observed", actor="agent-extracted",
-                             note=f"m2 synthesis from {trigger['slug']}", _locked=True)
+            wrote = _EV.append_event(path, "observed", actor="agent-extracted",
+                                     note=note, _locked=True, _content=new_content)
+            if not wrote:
+                note_failure("m2_evidence", "not_written")
+                return {"path": path, "action": "event_deferred"}
             outcome = {"path": path, "action": "edited", "op": op, "region_id": new_rid}
     # lock released → mirror to the op-log (its own flock).
     if outcome["action"] == "broken_region_skipped":
@@ -801,4 +892,5 @@ def run_on_ingest(conn, index_db_path, changed_paths, confirmer=None, supersedes
                                 confirmer=confirmer, supersedes=supersedes,
                                 relevance_fn=relevance_fn)
         except Exception as e:
+            note_failure("m2_ingest", e)
             print(f"WARN: M2 skipped {path}: {e}", file=sys.stderr)

@@ -342,6 +342,7 @@ class Index:
 
             emb = _embed()
             if not emb._vector_meta_ok(self._conn):
+                _load_sibling("maintenance_status", shared=True).note_failure("neighbors", "stamp_mismatch")
                 return []  # stamp drift already warned by _vector_meta_ok
             excl_ids = set(exclude_chunk_ids)
             excl_paths = set(exclude_paths)
@@ -358,12 +359,14 @@ class Index:
             elif probe_text is not None:
                 blobs = emb.embed_query_texts([probe_text])
                 if not blobs:
+                    _load_sibling("maintenance_status", shared=True).note_failure("neighbors", "empty_embedding")
                     return []
                 q_vec = np.frombuffer(blobs[0], dtype=np.float32)
             else:
                 return []
             q_norm = float(np.linalg.norm(q_vec))
             if q_norm == 0.0:
+                _load_sibling("maintenance_status", shared=True).note_failure("neighbors", "zero_embedding")
                 return []
             rows = self._conn.execute(
                 "SELECT chunk_id, path, name, section_heading, content_hash, embedding "
@@ -376,6 +379,7 @@ class Index:
                     continue
                 vec = np.frombuffer(blob, dtype=np.float32)
                 if vec.shape != q_vec.shape:
+                    _load_sibling("maintenance_status", shared=True).note_failure("neighbors", "dimension_mismatch")
                     continue
                 sim = float(np.dot(q_vec, vec) / (q_norm * np.linalg.norm(vec) + 1e-8))
                 scored.append((sim, chunk_id, path, name or "", heading or "", digest or ""))
@@ -386,6 +390,7 @@ class Index:
                 for (s, cid, p, n, h, d) in scored[:limit]
             ]
         except Exception as exc:
+            _load_sibling("maintenance_status", shared=True).note_failure("neighbors", exc)
             print(f"eidetic-engine: neighbors unavailable ({type(exc).__name__}: {exc})",
                   file=sys.stderr)
             return []

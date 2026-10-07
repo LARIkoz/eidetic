@@ -21,6 +21,7 @@ neighbor source are INJECTABLE so tests are hermetic and deterministic.
 """
 
 import os
+import math
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -28,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import confidence as _C  # noqa: E402
 import evidence as _EV  # noqa: E402
 import index_impl as _IDX  # noqa: E402
+from maintenance_status import note_failure
 
 try:
     from constants import M1_NEIGHBORS, M1_CANDIDATE_MIN, M1_CANDIDATE_MIN_DEFAULT
@@ -62,7 +64,10 @@ def _record_from_file(path):
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             text = f.read()
-    except OSError:
+    except FileNotFoundError:
+        return None  # A removed neighbor is not retryable semantic work.
+    except OSError as exc:
+        note_failure("card_read", exc)
         return None
     meta, body = _IDX.parse_frontmatter(text)
     return _record(path, meta, body)
@@ -92,7 +97,7 @@ def pick_loser(a, b):
         return (a, b) if a["authority"] < b["authority"] else (b, a)
     if a["last_verified"] != b["last_verified"]:
         return (a, b) if a["last_verified"] < b["last_verified"] else (b, a)
-    return (a, b) if a["slug"] >= b["slug"] else (b, a)
+    return (a, b) if (a["slug"], a["path"]) >= (b["slug"], b["path"]) else (b, a)
 
 
 def _would_lower(loser):
@@ -115,7 +120,7 @@ def _already_contradicted(loser_path, winner_slug):
     if rec is None:
         return False
     for ev in rec["events"]:
-        if ev["event_type"] == "contradicted" and winner_slug in (ev.get("note") or ""):
+        if ev["event_type"] == "contradicted" and (ev.get("note") or "") == f"conflicts with {winner_slug}":
             return True
     return False
 
@@ -146,6 +151,7 @@ def _persist_relation_claim(index_db_path, loser, winner):
             conn.close()
         return True
     except Exception as e:
+        note_failure("m1_relation_claim", e)
         print(f"WARN: M1 relation_claim persist skipped: {e}",
               file=__import__("sys").stderr)
         return False
@@ -406,11 +412,21 @@ def _ce_same_topic(a_text, b_text):
     try:
         import engine
         s = engine.rerank(a_text, [b_text])
-    except Exception:
+    except Exception as exc:
+        note_failure("m1_rerank", exc)
         return None
     if not s:  # SOFT-unavailable (no model) → cannot corroborate
+        note_failure("m1_rerank", "unavailable")
         return None
-    return s[0] >= _CE_SAME_TOPIC_MIN
+    try:
+        score = float(s[0])
+        if not math.isfinite(score):
+            note_failure("m1_rerank", "invalid_score")
+            return None
+        return score >= _CE_SAME_TOPIC_MIN
+    except (TypeError, ValueError, OverflowError) as exc:
+        note_failure("m1_rerank", exc)
+        return None
 
 
 def production_confirmer(a, b):
@@ -420,11 +436,13 @@ def production_confirmer(a, b):
     no_contradiction (via `uncertain`). Deterministic ⇒ reproducible AC fixtures."""
     try:
         reason = opposition(a.get("text", ""), b.get("text", ""))
-    except Exception:
-        return "no_contradiction"
+    except Exception as exc:
+        note_failure("m1_opposition", exc)
+        return "uncertain"
     if not reason:
         return "no_contradiction"
-    if _ce_same_topic(a.get("text", ""), b.get("text", "")) is False:
+    same_topic = _ce_same_topic(a.get("text", ""), b.get("text", ""))
+    if same_topic is False or (_cross_encoder_enabled() and same_topic is None):
         return "uncertain"  # topically apart despite lexical opposition → NC upstream
     return "contradiction"
 
@@ -470,7 +488,8 @@ def process_card(card_path, meta, body, *, neighbors, confirmer=None, index_db_p
             v = confirmer(c, n)
             if v == "contradiction":
                 verdict = "contradiction"
-        except Exception:
+        except Exception as exc:
+            note_failure("m1_confirmer", exc)
             verdict = "no_contradiction"  # fail-closed
         if verdict != "contradiction":
             outcomes.append({"path": path, "action": "no_contradiction"})
@@ -507,8 +526,10 @@ def process_card(card_path, meta, body, *, neighbors, confirmer=None, index_db_p
             continue
         wrote = _EV.append_event(loser["path"], "contradicted", actor=AUTOMATED_ACTOR,
                                  note=_note_for(winner))
+        if not wrote:
+            note_failure("m1_evidence", "not_written")
         outcomes.append({"loser": loser["path"], "winner": winner["slug"],
-                         "action": "event" if wrote else "gated_off"})
+                         "action": "event" if wrote else "event_deferred"})
     return outcomes
 
 
@@ -575,7 +596,8 @@ def run_on_ingest(conn, index_db_path, changed_paths):
                                     "last_verified": rec["last_verified"]},
                              rec["text"], neighbors=hits, confirmer=confirmer,
                              index_db_path=index_db_path)
-        except Exception as e:  # never break ingest on an M1 hiccup (fail-closed)
+        except Exception as e:  # preserve lexical ingest, but retain semantic work
+            note_failure("m1_ingest", e)
             print(f"WARN: M1 skipped {path}: {e}", file=__import__("sys").stderr)
 
 
@@ -584,11 +606,13 @@ def neighbors_via_door(index_db_path, probe_text, exclude_paths=()):
     no model (FR-1 no-op on an FTS-only install). Never raises."""
     vectors_db = index_db_path.replace("index.db", "vectors.db")
     if not os.path.exists(vectors_db):
+        note_failure("neighbors", "vectors_missing")
         return []
     try:
         import engine
         with engine.open_index(vectors_db) as idx:
             return idx.neighbors(probe_text=probe_text, limit=M1_NEIGHBORS,
                                  exclude_paths=set(exclude_paths))
-    except Exception:
+    except Exception as exc:
+        note_failure("neighbors", exc)
         return []

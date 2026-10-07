@@ -1552,60 +1552,62 @@ def run_incremental(conn, files, *, defer_semantics=False):
 
 
 def maintain_pending(conn, pending, semantic_enabled):
-    # FTS is current for every scanned file. Semantic maintenance drains oldest
-    # pending cards first, in bounded batches; future requests resume the tail.
-    # An idle installation may retain pending work until its next index request.
-    # A disabled caller cannot acknowledge work queued by an enabled caller:
-    # the hooks themselves would return successfully without doing that work.
-    before_deferrals = deferred_count()
-    semantic_batch = pending[:ingest_batch_size()] if semantic_enabled else []
-    hooks_completed = True
-
-    # M1 semantic contradiction detection (spec-m1-contradiction FR-1/FR-7). This
-    # is DARK-SAFE and DORMANT: run_on_ingest is a pure no-op unless
-    # EIDETIC_CONFIDENCE_EVENTS is on AND a production confirmer is registered
-    # (a turn-2 wiring) AND a vectors.db exists — so it adds zero cost and cannot
-    # change any card here. It never raises into the indexer.
-    if semantic_batch:
-        try:
-            import m1_contradiction
-            row = conn.execute("PRAGMA database_list").fetchone()
-            db_file = row[2] if row else ""
-            if db_file:
-                m1_contradiction.run_on_ingest(conn, db_file, semantic_batch)
-        except Exception as e:
-            hooks_completed = False
-            print(f"WARN: M1 hook skipped: {e}", file=sys.stderr)
-
-    # M2 multi-page synthesis (spec-m2-synthesis FR-1/FR-9). DARK-SAFE: a complete
-    # no-op unless EIDETIC_CONFIDENCE_EVENTS is on. Runs AFTER M1 so M1 owns
-    # contradictions and M2 defers to it; M2 revises only its own sentinel-delimited
-    # synthesis region on managed neighbors. Never raises into the indexer.
-    if semantic_batch:
-        try:
-            import m2_synthesis
-            row = conn.execute("PRAGMA database_list").fetchone()
-            db_file = row[2] if row else ""
-            if db_file:
-                m2_synthesis.run_on_ingest(conn, db_file, semantic_batch)
-        except Exception as e:
-            hooks_completed = False
-            print(f"WARN: M2 hook skipped: {e}", file=sys.stderr)
-
-    hooks_completed = hooks_completed and deferred_count() == before_deferrals
-    if semantic_batch and hooks_completed:
-        pending = pending[len(semantic_batch):]
-        set_pending_ingest_paths(conn, pending)
-        conn.commit()
-    elif semantic_batch:
-        # An escaping hook error must not let a poison batch starve later work.
-        # Keep every failed card, but retry it after the rest of the queue.
-        rotated = pending[len(semantic_batch):] + semantic_batch
-        if rotated != pending:
-            pending = rotated
-            set_pending_ingest_paths(conn, pending)
-            conn.commit()
-
+    """Retain work when a soft read or a swallowed hook error was incomplete."""
+    from maintenance_status import capture_failures, note_failure
+    batch = pending[:ingest_batch_size()] if semantic_enabled else []
+    if not batch:
+        return pending
+    failures_by_path = {}
+    row = conn.execute("PRAGMA database_list").fetchone()
+    db_file = row[2] if row else ""
+    for path in batch:
+        before_deferrals = deferred_count()
+        with capture_failures() as failures:
+            if not db_file:
+                note_failure("semantic_ingest", "no_database_path")
+            else:
+                try:
+                    import m1_contradiction
+                    m1_contradiction.run_on_ingest(conn, db_file, [path])
+                except Exception as exc:
+                    note_failure("m1_ingest", exc)
+                # A failed M1 check cannot authorize M2 for this trigger.
+                if not failures and deferred_count() == before_deferrals:
+                    try:
+                        import m2_synthesis
+                        m2_synthesis.run_on_ingest(conn, db_file, [path])
+                    except Exception as exc:
+                        note_failure("m2_ingest", exc)
+            if deferred_count() != before_deferrals:
+                note_failure("resource_budget", "deferred")
+        if failures:
+            failures_by_path[path] = failures
+            print("Semantic maintenance deferred: " + "; ".join(
+                issue["stage"] + "=" + issue["reason"] for issue in failures))
+    pending = pending[len(batch):] + [p for p in batch if p in failures_by_path]
+    # Status and queue acknowledgement commit together. Failed paths retain
+    # their reason even when a later batch succeeds; no raw exception text or
+    # card content is copied into this derived diagnostic record.
+    key = "semantic_maintenance_status_v1"
+    row = conn.execute("SELECT value FROM schema_meta WHERE key = ?", (key,)).fetchone()
+    status = json.loads(row[0]) if row else {}
+    previous = status.get("failures", {})
+    status["failures"] = {p: issue for p, issue in previous.items() if p in pending}
+    now = time.time()
+    for path in batch:
+        if path in failures_by_path:
+            status["failures"][path] = {"at": now, "issues": failures_by_path[path]}
+        else:
+            status["failures"].pop(path, None)
+    status["last_attempt"] = {"at": now, "paths": batch,
+                              "status": "deferred" if failures_by_path else "completed"}
+    status["pending_count"] = len(pending)
+    if len(failures_by_path) < len(batch):
+        status["last_completed_at"] = now
+    conn.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
+                 (key, json.dumps(status)))
+    set_pending_ingest_paths(conn, pending)
+    conn.commit()
     return pending
 
 

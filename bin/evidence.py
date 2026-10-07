@@ -174,7 +174,7 @@ def card_lock(card_path):
 
 
 def append_event(card_path, event_type, actor=None, session_id=None, note="",
-                 ts=None, delta=None, _locked=False):
+                 ts=None, delta=None, _locked=False, _content=None):
     """Append one typed event to a card's `## Evidence` under an exclusive lock.
 
     Returns True if a line was written, False on a no-op (unknown type, missing
@@ -185,12 +185,20 @@ def append_event(card_path, event_type, actor=None, session_id=None, note="",
     second acquisition from the same process on a different fd would EWOULDBLOCK and
     the event would be silently dropped; `_locked` avoids that self-deadlock.
     """
+    # A prepared region/marker and its event share one atomic replacement.
+    # Only a caller already holding the card lock may supply prepared content.
+    if _content is not None and not _locked:
+        from maintenance_status import note_failure
+        note_failure("evidence_write", "prepared_content_requires_lock")
+        return False
     # Phase-A gate (F1a): default install writes nothing to user files.
     if not events_enabled():
         return False
     if event_type not in _ACTOR_FOR:
         return False
     if not card_path or not os.path.exists(card_path):
+        from maintenance_status import note_failure
+        note_failure("evidence_write", "missing_card")
         return False
     if actor is None:
         actor = _ACTOR_FOR[event_type][0]
@@ -206,19 +214,30 @@ def append_event(card_path, event_type, actor=None, session_id=None, note="",
         if not _locked:
             lock_fd = open(lock_path, "a")
             if not _acquire_under_retry(lock_fd):
+                from maintenance_status import note_failure
+                note_failure("evidence_write", "lock_contended")
                 return False  # a stuck holder — bounded wait, no lost line under it
-        with open(card_path, "r", encoding="utf-8") as f:
+        with open(card_path, "r", encoding="utf-8", newline="") as f:
             content = f.read()
+        if _content is not None:
+            content = _content
         new_content = _insert_into_evidence(content, line)
         if new_content == content:
-            return False  # de-duped
+            # Keep the existing (timestamp, type) identity, but a different
+            # requested line colliding with it has not actually been written.
+            if line not in [existing.strip() for existing in content.splitlines()]:
+                from maintenance_status import note_failure
+                note_failure("evidence_write", "timestamp_collision")
+            return False  # de-duped, or retryable collision
         d = os.path.dirname(card_path)
         fd, tmp = tempfile.mkstemp(dir=d, suffix=".evtmp")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
             f.write(new_content)
         os.replace(tmp, card_path)
         return True
-    except Exception:
+    except Exception as exc:
+        from maintenance_status import note_failure
+        note_failure("evidence_write", exc)
         return False
     finally:
         if lock_fd is not None:

@@ -167,6 +167,19 @@ c.close()" 2>/dev/null)
     fi
 fi
 
+# Semantic completion is separate from lexical freshness and vector coverage.
+if [ -f "$DB" ] && [ -f "$SCRIPT_DIR/maintenance_status.py" ]; then
+    SEMANTIC_STATUS=$(python3 "$SCRIPT_DIR/maintenance_status.py" "$DB" --summary 2>&1)
+    SEMANTIC_EXIT=$?
+    if [ "$SEMANTIC_EXIT" = 0 ]; then
+        ok "$SEMANTIC_STATUS"
+    elif [ "$SEMANTIC_EXIT" = 3 ]; then
+        note "$SEMANTIC_STATUS"
+    else
+        warn "$SEMANTIC_STATUS" "bash $MEMORY_SYSTEM/bin/index.sh --incremental"
+    fi
+fi
+
 # ------------------------------------------------------------ VECTORS / MODEL
 hdr "Vectors & embedding model"
 if [ -f "$VDB" ]; then
@@ -264,6 +277,7 @@ if [ -f "$SCRIPT_DIR/canary.py" ] && [ -f "$DB" ]; then
         ok)   ok "embed→vector→search: $CANARY_EMBED_DETAIL" ;;
         warn) warn "embed→vector→search degraded: $CANARY_EMBED_DETAIL" "bash $MEMORY_SYSTEM/bin/index.sh --full   # rebuild vectors under the active model" ;;
         fail) bad "embed→vector→search BROKEN: $CANARY_EMBED_DETAIL" "bash $MEMORY_SYSTEM/bin/index.sh --full   # then check bin/embed.py model + ~/.cache/fastembed" ;;
+        deferred) warn "embed canary deferred: $CANARY_EMBED_DETAIL" "retry bin/doctor.sh after background maintenance settles" ;;
         skip) note "embed canary skipped: $CANARY_EMBED_DETAIL" ;;
         *)    note "embed canary did not run (canary.py error or no output)" ;;
     esac

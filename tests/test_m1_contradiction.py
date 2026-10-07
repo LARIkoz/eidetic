@@ -288,7 +288,7 @@ class M1Test(unittest.TestCase):
         class Boom(dict):
             def get(self, *a):
                 raise RuntimeError("boom")
-        self.assertEqual(m1.production_confirmer(Boom(), {"text": "x"}), "no_contradiction")
+        self.assertEqual(m1.production_confirmer(Boom(), {"text": "x"}), "uncertain")
 
     # --- FR-1/FR-7 ingest hook end-to-end (production confirmer, both legs)
     def test_ingest_hook_active_but_precise(self):
@@ -408,7 +408,7 @@ class M1Test(unittest.TestCase):
         mN, bN = self._meta_body(nfile)
         before = open(o, encoding="utf-8").read()
         out = m1.process_card(nfile, mN, bN, neighbors=[{"score": 0.66, "path": o}], confirmer=YES)
-        self.assertEqual([x["action"] for x in out], ["gated_off"])  # decided, but not written
+        self.assertEqual([x["action"] for x in out], ["event_deferred"])  # decided, but not written
         self.assertEqual(open(o, encoding="utf-8").read(), before)
         self.assertNotIn("## Evidence", open(o, encoding="utf-8").read())
 

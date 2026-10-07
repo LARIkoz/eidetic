@@ -72,7 +72,7 @@ echo "   Backed up existing hooks"
 echo "2. Installing memory system..."
 mkdir -p "$MEMORY_SYSTEM"/{bin,db}
 # Install backward-compatible dependencies before new callers and launchers.
-for src in bin/resource_budget.py bin/bounded_worker.py bin/maintenance_hooks.py bin/vector_maintenance.py bin/*.py; do
+for src in bin/resource_budget.py bin/maintenance_status.py bin/bounded_worker.py bin/maintenance_hooks.py bin/vector_maintenance.py bin/*.py; do
     mode=644
     [ -x "$src" ] && mode=755
     atomic_install "$src" "$MEMORY_SYSTEM/bin/$(basename "$src")" "$mode"
