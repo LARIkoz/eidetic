@@ -1643,11 +1643,12 @@ jobs:
                   card_kind TEXT,
                   status TEXT,
                   superseded_by TEXT,
-                  mtime INTEGER
+                  mtime INTEGER,
+                  confidence REAL
               )
           """)
           old_ns = 946684800000000000
-          conn.execute("INSERT INTO memory_chunks VALUES (1, '/tmp/old.md', 'old', '', '', 'old body', 'observed', 'user-explicit', '', 'project', 'old-project', 'finding', 'current', '', ?)", (old_ns,))
+          conn.execute("INSERT INTO memory_chunks VALUES (1, '/tmp/old.md', 'old', '', '', 'old body', 'observed', 'user-explicit', '', 'project', 'old-project', 'finding', 'current', '', ?, NULL)", (old_ns,))
           text, used, _ = assemble_context.fetch_recent(conn, 10000)
           assert "old body" not in text
           assert used == 0
