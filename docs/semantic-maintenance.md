@@ -77,3 +77,34 @@ Tests exercise the real hooks with injected read/model/write failures, low-score
 completion, feature opt-out, queue rotation, preserved diagnostics, atomic mutation/event writes, and
 recovery across interrupted writes and changed discovery. The model-free tests establish these contracts;
 live model availability and search quality require separate evidence.
+
+## Ordered qualification backlog
+
+1. **Sustained catch-up under concurrent writers.** Sample pending paths, failure
+   classes, vector coverage and completed paths before and after bounded passes.
+   Keep the configured resource governor. Acceptance requires evidence of
+   completion for a fixed initial cohort, plus separate counts for newly queued
+   work; a smaller total alone cannot prove that an old path completed.
+2. **Handoff failure visibility.** The canonical `eidetic handoff-index` port
+   delegates to the handoff skill maintained in `LARIkoz/claude-setup`. Preserve
+   index stderr and its exit code there. Test successful indexing, fatal exit,
+   temporary deferral and a stale preexisting index row. An old row must never
+   turn a failed invocation into a successful handoff.
+3. **Russian retrieval qualification.** Create a labeled evaluation covering
+   paraphrases, wrong-project distractors, superseded cards and negative
+   controls. Record confidence calibration and retrieval failures as well as
+   rank. Exact-match spot checks are insufficient acceptance evidence.
+4. **Install/update/rollback qualification.** Test an interrupted multi-file
+   update and rollback, then a fresh MLX installation. Verify a coherent runtime
+   version, preserved configuration and a real embed/vector/search canary.
+   Per-file atomic replacement does not prove whole-version atomicity.
+5. **Unified diagnostics.** Integrate semantic pending status into the canonical
+   port doctor without treating a disabled caller as an empty queue. Keep
+   lexical search availability, vector coverage and semantic completion distinct.
+6. **Historical and platform audit.** Scope previously acknowledged semantic work
+   before any replay. Reproduce intermittent Darwin process-group cleanup
+   failures independently; do not reset ledgers or kill unrelated workers.
+
+These are acceptance tasks, not claims that the corresponding features or
+qualification evidence already exist. Prioritize reproducible failures over
+expanding the maintenance loop or increasing its resource allowance.
