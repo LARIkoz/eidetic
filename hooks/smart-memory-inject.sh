@@ -9,6 +9,20 @@ set -euo pipefail
 
 MEMORY_SYSTEM="${EIDETIC_MEMORY_SYSTEM:-$HOME/.claude/memory-system}"
 
+# Per-machine switches from $MEMORY_SYSTEM/local.env (for example EIDETIC_FEEDBACK_OVERFLOW=pointer). The repo
+# never ships that file, so update.sh never overwrites it. Only EIDETIC_* KEY=VALUE lines are read; nothing in the
+# file is executed, and a variable already set in the environment wins.
+if [ -f "$MEMORY_SYSTEM/local.env" ]; then
+    while IFS='=' read -r _eidetic_k _eidetic_v; do
+        case "$_eidetic_k" in
+            EIDETIC_[A-Z0-9_]*)
+                _eidetic_v="${_eidetic_v%\"}"; _eidetic_v="${_eidetic_v#\"}"
+                if [ -z "${!_eidetic_k:-}" ]; then export "$_eidetic_k=$_eidetic_v"; fi
+                ;;
+        esac
+    done < <(grep -E '^EIDETIC_[A-Z0-9_]+=' "$MEMORY_SYSTEM/local.env" 2>/dev/null || true)
+fi
+
 # Capture Claude Code's session_id from the hook stdin payload BEFORE the lock
 # re-exec (an exported var survives `exec env ...` and the lock_runner subprocess),
 # so value-telemetry can join this SessionStart inject_log row to the SessionEnd

@@ -4,6 +4,15 @@ All notable changes to Eidetic are documented here.
 
 ## vNEXT (unreleased — version assigned at the release gate)
 
+**Opt-in feedback overflow pointer** (`EIDETIC_FEEDBACK_OVERFLOW=pointer`, default `names` = unchanged P3
+behaviour): past the feedback budget the injected context carries ONE line ("N more feedback cards are not listed
+here: `eidetic recall <topic>`") instead of every remaining card name, and the Recent Handoff block is dropped
+(MEMORY.md already points at the current handoff). On a 559-card install this cut the context from 21,156 to
+10,671 tokens. Per-machine switches now come from `<memory-system>/local.env` (EIDETIC_* KEY=VALUE lines only,
+nothing executed, never shipped by the repo, so `update.sh` cannot overwrite them). The printed and header token
+estimate uses 2.3 chars per token (chars/4 undercounted slug-heavy context by ~45%); telemetry keeps its historical
+chars//4 fields and adds `total_chars`, `est_tokens` and `feedback_overflow`.
+
 Public **Engine API v1.0** (`bin/engine.py`, `ENGINE_API 1.0`): the embedding /
 vector / search core behind memory and topic bases is now a versioned public
 seam. In-repo consumers (search, canary, coverage) migrated onto the door

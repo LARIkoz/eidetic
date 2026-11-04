@@ -19,6 +19,24 @@ import time
 from datetime import datetime, timedelta
 
 TOKEN_BUDGET_CHARS = 24000
+
+# Printed and header token estimates. Card slugs and paths tokenize densely: on one install the 48,261-char
+# context counted 21,143 tokens (Anthropic count_tokens), 2.3 chars per token, while chars/4 printed ~11.7k.
+# Telemetry keeps its historical chars//4 fields for comparability and adds est_tokens.
+CHARS_PER_TOKEN = 2.3
+
+
+def _est_tokens(chars):
+    return int(chars / CHARS_PER_TOKEN)
+
+
+def _feedback_overflow_mode():
+    """EIDETIC_FEEDBACK_OVERFLOW: "names" (default, P3 never-invisible: every feedback card past the budget is
+    listed by name) or "pointer" (past the budget ONE line points to recall, and the Recent Handoff block is
+    dropped because MEMORY.md already points at the current handoff). Opt-in per machine via
+    <memory-system>/local.env, which the repo never ships."""
+    mode = os.environ.get("EIDETIC_FEEDBACK_OVERFLOW", "names").strip().lower()
+    return "pointer" if mode == "pointer" else "names"
 FEEDBACK_BUDGET_RATIO = 0.5
 PROJECT_BUDGET_RATIO = 0.3
 RECENT_BUDGET_RATIO = 0.2
@@ -338,14 +356,17 @@ def fetch_feedback(conn, budget_chars, current_slug=""):
         display_name = name or os.path.basename(path).replace(".md", "")
         display_desc = desc or (content[:150].replace("\n", " ").strip() if content else "")
 
+        slug = os.path.basename(path).replace(".md", "")
         cid = _match_cluster(display_name, display_desc)
         if cid:
-            clustered.setdefault(cid, []).append((w, display_name, display_desc))
+            clustered.setdefault(cid, []).append((w, display_name, display_desc, slug))
         else:
-            individual.append((w, display_name, display_desc))
+            individual.append((w, display_name, display_desc, slug))
 
     result = []
     used = 0
+    shown = set()
+    pointer = _feedback_overflow_mode() == "pointer"
 
     clustered_displayed = 0
     for cluster_def in RULE_CLUSTERS:
@@ -353,11 +374,12 @@ def fetch_feedback(conn, budget_chars, current_slug=""):
         if not members or len(members) < 3:
             individual.extend(members or [])
             continue
-        block = _format_cluster(cluster_def, [name for _, name, _ in members])
+        block = _format_cluster(cluster_def, [m[1] for m in members])
         if used + len(block) <= budget_chars:
             result.append(block)
             used += len(block)
             clustered_displayed += len(members)
+            shown.update(m[3] for m in members)
         else:
             individual.extend(members)
 
@@ -366,7 +388,7 @@ def fetch_feedback(conn, budget_chars, current_slug=""):
     top_cutoff = max(1, int(n * 0.4)) if n > 0 else 0
     mid_cutoff = max(top_cutoff + 1, int(n * 0.7)) if n > 1 else 0
 
-    for i, (w, name, desc) in enumerate(individual):
+    for i, (w, name, desc, slug) in enumerate(individual):
         if i < top_cutoff:
             capped = desc[:500] + ("..." if len(desc) > 500 else "")
             text = f"- **{name}**: {capped}\n"
@@ -377,17 +399,28 @@ def fetch_feedback(conn, budget_chars, current_slug=""):
             text = f"- {name}\n"
 
         if used + len(text) > budget_chars:
+            if pointer:
+                line = (f"- {n - i} more feedback cards are not listed here: `eidetic recall <topic>` "
+                        f"(or the memory-recall skill) finds them.\n")
+                result.append(line)
+                used += len(line)
+                break
             result.append("<!-- feedback budget exceeded; remaining rules kept name-only by invariant -->\n")
-            for _, rest_name, _ in individual[i:]:
+            for _, rest_name, _, rest_slug in individual[i:]:
                 result.append(f"- {rest_name}\n")
                 used += len(rest_name) + 3
+                shown.add(rest_slug)
             break
         result.append(text)
         used += len(text)
+        shown.add(slug)
 
     total_rules = clustered_displayed + n
-    # Phase 1: every feedback card is injected (P3 never-invisible), so all paths count.
-    feedback_slugs = sorted({os.path.basename(r[0]).replace(".md", "") for r in rows})
+    if pointer:
+        feedback_slugs = sorted(shown)
+    else:
+        # Phase 1: every feedback card is injected (P3 never-invisible), so all paths count.
+        feedback_slugs = sorted({os.path.basename(r[0]).replace(".md", "") for r in rows})
     return "".join(result), used, total_rules, feedback_slugs
 
 
@@ -574,7 +607,10 @@ def main():
     drift_map = load_drift_findings(db_path)
     drift_text, drift_used = fetch_drift_diagnostics(db_path)
 
-    handoff_text, handoff_used = fetch_fresh_handoff(cwd, slug)
+    if _feedback_overflow_mode() == "pointer":
+        handoff_text, handoff_used = "", 0
+    else:
+        handoff_text, handoff_used = fetch_fresh_handoff(cwd, slug)
 
     project_budget = int(TOKEN_BUDGET_CHARS * PROJECT_BUDGET_RATIO)
     recent_budget = int(TOKEN_BUDGET_CHARS * RECENT_BUDGET_RATIO)
@@ -589,7 +625,8 @@ def main():
     feedback_text, feedback_used, feedback_total, feedback_slugs = fetch_feedback(conn, feedback_budget, slug)
 
     total_chars = feedback_used + project_used + recent_used + handoff_used + drift_used
-    total_tokens = total_chars // 4
+    total_tokens = total_chars // 4  # historical telemetry unit; the printed estimate is est_tokens
+    est_tokens = _est_tokens(total_chars)
 
     stats = conn.execute("SELECT COUNT(DISTINCT path), COUNT(*) FROM memory_chunks").fetchone()
 
@@ -597,7 +634,7 @@ def main():
     output.append("# Memory Context (auto-generated)\n")
     output.append(f"_Assembled: {datetime.now().strftime('%Y-%m-%d %H:%M')} | "
                   f"{stats[0]} files, {stats[1]} chunks indexed | "
-                  f"~{total_tokens} tokens_\n\n")
+                  f"~{est_tokens} tokens_\n\n")
 
     if drift_text:
         output.append(drift_text)
@@ -653,6 +690,9 @@ def main():
                 "session_id": os.environ.get("EIDETIC_SESSION_ID", ""),
                 "project": os.path.basename(cwd.rstrip("/")) or "unknown",
                 "total_tokens": total_tokens,
+                "total_chars": total_chars,
+                "est_tokens": est_tokens,
+                "feedback_overflow": _feedback_overflow_mode(),
                 "feedback_tokens": feedback_used // 4,
                 "project_tokens": project_used // 4,
                 "recent_tokens": recent_used // 4,
@@ -674,9 +714,9 @@ def main():
 
     conn.close()
 
-    print(f"Memory context updated: {total_tokens} tokens, "
-          f"{feedback_used // 4}t feedback ({feedback_total} rules) + "
-          f"{project_used // 4}t project + {recent_used // 4}t recent")
+    print(f"Memory context updated: ~{est_tokens} tokens ({total_chars} chars), "
+          f"~{_est_tokens(feedback_used)}t feedback ({feedback_total} rules) + "
+          f"~{_est_tokens(project_used)}t project + ~{_est_tokens(recent_used)}t recent")
 
 
 if __name__ == "__main__":
