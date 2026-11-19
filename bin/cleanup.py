@@ -18,6 +18,12 @@ import time
 from collections import defaultdict
 from datetime import datetime
 
+try:
+    from constants import memory_system_scan_dirs
+except ImportError:
+    def memory_system_scan_dirs(memory_system):
+        return [os.path.join(memory_system, "signals") + os.sep]
+
 def default_memory_system():
     installed_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     if os.path.exists(os.path.join(installed_root, ".installed.json")):
@@ -39,8 +45,7 @@ SCAN_DIRS = [
     os.path.expanduser("~/.claude/projects/*/memory/signals/"),
     os.path.expanduser("~/.claude/agent-memory/"),
     os.path.expanduser("~/.claude/agent-memory/*/"),
-    os.path.join(MEMORY_SYSTEM, "signals") + os.sep,
-]
+] + memory_system_scan_dirs(MEMORY_SYSTEM)
 LINK_SOURCE_DIRS = SCAN_DIRS + [
     os.path.expanduser("~/.claude/skills/*/"),
 ]

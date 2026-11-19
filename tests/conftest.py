@@ -8,6 +8,21 @@ parametrize fastembed present/absent in a single process, so the two modes are
 two CI legs, not two parametrize cases.
 """
 
+import atexit
+import os
+import shutil
+import tempfile
+
+# Hermetic compute governor: a test that indexes or embeds without its own
+# EIDETIC_RESOURCE_ROOT used the LIVE ~/.claude/memory-system budget, so it
+# charged the live ledger and failed with "Shared compute busy" whenever the
+# installed system was cooling down (2026-11-19, test_m3_autofile). Tests that
+# need a specific root still override this per test.
+if not os.environ.get("EIDETIC_RESOURCE_ROOT"):
+    _governor_root = tempfile.mkdtemp(prefix="eidetic-test-governor-")
+    os.environ["EIDETIC_RESOURCE_ROOT"] = _governor_root
+    atexit.register(shutil.rmtree, _governor_root, True)
+
 
 def pytest_configure(config):
     config.addinivalue_line(

@@ -375,7 +375,7 @@ Always run the ruby linter before committing changes to the monorepo.
         self.assertIn("1 flagged", proc.stderr)
         self.assertIn(f"possible duplicate of {card_path}", proc.stderr)
         # The signal still lands as a new card (never lost)...
-        self.assertTrue(glob.glob(os.path.join(self.tmp, "signals", "*.md")))
+        self.assertTrue(glob.glob(os.path.join(self.tmp, "memory", "signals", "*.md")))
         # ...and the protected card was NOT written into.
         with open(card_path, encoding="utf-8") as f:
             self.assertEqual(f.read(), card_text)

@@ -15,6 +15,12 @@ import sqlite3
 import sys
 from datetime import datetime, timedelta
 
+try:
+    from constants import memory_system_scan_dirs
+except ImportError:
+    def memory_system_scan_dirs(memory_system):
+        return [os.path.join(memory_system, "signals") + os.sep]
+
 BASE_SCAN_DIRS = [
     os.path.expanduser("~/.claude/projects/*/memory/"),
     os.path.expanduser("~/.claude/projects/*/memory/signals/"),
@@ -44,9 +50,9 @@ def memory_system_from_db(db_path):
 def scan_dirs(memory_system=None):
     dirs = list(SCAN_DIRS)
     if memory_system:
-        signals_dir = os.path.join(memory_system, "signals") + os.sep
-        if signals_dir not in dirs:
-            dirs.append(signals_dir)
+        for extra in memory_system_scan_dirs(memory_system):
+            if extra not in dirs:
+                dirs.append(extra)
     return dirs
 
 

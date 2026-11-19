@@ -27,9 +27,11 @@ try:
     from constants import (
         EVIDENCE_WEIGHTS, SOURCE_WEIGHTS,
         MEMORY_CHUNK_MIGRATIONS, RELATION_EXPLICIT_COLUMNS, FORCED_REREAD_ON_ADD,
-        MAX_CHUNK_CHARS,
+        MAX_CHUNK_CHARS, memory_system_scan_dirs,
     )
 except ImportError:
+    def memory_system_scan_dirs(memory_system):
+        return [os.path.join(memory_system, "signals") + os.sep]
     EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
     SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3, "imported": 0.3}
     MEMORY_CHUNK_MIGRATIONS = {
@@ -876,9 +878,9 @@ def memory_system_from_db(db_path):
 def scan_dirs(memory_system=None):
     dirs = list(SCAN_DIRS)
     if memory_system:
-        signals_dir = os.path.join(memory_system, "signals") + os.sep
-        if signals_dir not in dirs:
-            dirs.append(signals_dir)
+        for extra in memory_system_scan_dirs(memory_system):
+            if extra not in dirs:
+                dirs.append(extra)
     return dirs
 
 

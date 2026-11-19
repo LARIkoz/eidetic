@@ -20,7 +20,7 @@ INDEX="$MEMORY_SYSTEM/bin/index.sh"
 # install-time .signal_model choice (sonnet|haiku) > the sonnet default. Fail-safe to
 # the pinned sonnet id if the resolver is unavailable.
 SIGNAL_CLAUDE_MODEL="$(python3 "$MEMORY_SYSTEM/bin/signal_model.py" 2>/dev/null || true)"
-[ -z "$SIGNAL_CLAUDE_MODEL" ] && SIGNAL_CLAUDE_MODEL="claude-sonnet-4-6"
+[ -z "$SIGNAL_CLAUDE_MODEL" ] && SIGNAL_CLAUDE_MODEL="claude-sonnet-5-5"  # = signal_model.DEFAULT
 SIGNAL_CLAUDE_TIMEOUT="${EIDETIC_SIGNAL_CLAUDE_TIMEOUT:-30}"
 # The Claude route (claude-batch / `claude --print`) inherits the full agentic Claude-Code
 # system prompt by default. On a session whose transcript TAIL is conversational (e.g. ends on
@@ -165,7 +165,7 @@ run_claude_extraction() {
     # Force the model via ANTHROPIC_MODEL — the env var the CLI actually honors — NOT just --model.
     # claude-batch rewrites an exact --model id into the legacy CLAUDE_MODEL env, which current
     # Claude Code IGNORES, silently falling back to the session default (often Opus). ANTHROPIC_MODEL
-    # also beats any ANTHROPIC_DEFAULT_SONNET_MODEL alias remap. Verified: yields claude-sonnet-4-6.
+    # also beats any ANTHROPIC_DEFAULT_SONNET_MODEL alias remap. Verified: yields the pinned id.
     export ANTHROPIC_MODEL="$SIGNAL_CLAUDE_MODEL"
     # Preferred: claude-batch — the kickout-safe wrapper. It is required on installs
     # whose CLI guard blocks a direct `claude --print` (interactive_session_auth_conflict).

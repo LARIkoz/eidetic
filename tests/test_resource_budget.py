@@ -329,5 +329,56 @@ print(json.dumps(dict(start=started, end=budget.monotonic(), cpu=cpu, active=act
         self.parallel_work("checkpoint")
 
 
+class ResourceBudgetHousekeepingTest(unittest.TestCase):
+    """2026-11-19: the live state held 11,754 recovered-charge identities
+    (1.46 MB rewritten + fsynced per settle) and 313 orphan state temps."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="eidetic-budget-hk-")
+        self.root = Path(self.directory.name)
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def _state(self, recovered):
+        return dict(boot_id="boot", cpu_deadline=0.0, gpu_deadline=0.0, updated=0.0,
+                    recovered_charges=recovered)
+
+    def test_old_and_legacy_recovered_charges_are_dropped_on_save(self):
+        now = budget.monotonic()
+        old = now - budget._RECOVERED_RETENTION_SECONDS - 5
+        state = self._state({
+            "fresh": {"cpu": 1.0, "gpu_elapsed": 0.0, "seen": now},
+            "old": {"cpu": 1.0, "gpu_elapsed": 0.0, "seen": old},
+            "legacy": {"cpu": 1.0, "gpu_elapsed": 0.0},
+            "bogus": {"cpu": 1.0, "gpu_elapsed": 0.0, "seen": True},
+        })
+        budget._save_state(self.root, state)
+        saved = json.loads((self.root / ".resource-budget.state.json").read_text())
+        self.assertEqual(sorted(saved["recovered_charges"]), ["fresh"])
+
+    def test_settled_charge_identity_is_stamped(self):
+        state = self._state({})
+        row = dict(boot_id="boot", cpu=0.5, start=budget.monotonic(), gpu_elapsed=0.0, charge_id="job-1")
+        (self.root / ".resource-budget-deferred.jsonl").write_text("\n" + json.dumps(row) + "\n")
+        policy = {"cpu_percent": 100, "gpu_percent": 100}
+        with mock.patch.object(budget, "_sleep_until"):
+            budget._settle(self.root, state, policy, cpu=0.0, start=budget.monotonic(), wait=False)
+        saved = json.loads((self.root / ".resource-budget.state.json").read_text())
+        self.assertIn("seen", saved["recovered_charges"]["job-1"])
+
+    def test_stale_state_temps_are_swept_fresh_ones_kept(self):
+        stale = self.root / ".resource-budget-state-stale"
+        fresh = self.root / ".resource-budget-state-fresh"
+        stale.write_text("{}")
+        fresh.write_text("{}")
+        past = time.time() - budget._STALE_TEMP_SECONDS - 60
+        os.utime(stale, (past, past))
+        budget._save_state(self.root, self._state({}))
+        self.assertFalse(stale.exists())
+        self.assertTrue(fresh.exists())
+        self.assertTrue((self.root / ".resource-budget.state.json").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

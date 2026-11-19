@@ -97,6 +97,15 @@ def _work_receipt(started=None, gpu=False):
 
 _CHECKPOINT_CPU_SECONDS = 0.025
 _MAX_FUTURE_SECONDS = 7 * 24 * 3600
+# Recovered-charge identities exist so a retried job's cumulative re-report is
+# charged once; retries land within minutes. Older identities are dropped so
+# the map, rewritten and fsynced on every settle, stays bounded (2026-11-19:
+# 11,754 entries, a 1.46 MB state file). Dropping one can only over-charge a
+# late re-report (more cooldown), never under-charge.
+_RECOVERED_RETENTION_SECONDS = 24 * 3600
+# A process killed between creating and renaming a state temp file leaves the
+# temp behind (2026-11-19: 313 orphans of up to 1.2 MB each).
+_STALE_TEMP_SECONDS = 600
 _pid = os.getpid()
 _mutex = threading.RLock()
 _depth = 0
@@ -305,8 +314,37 @@ def _load_state(root):
     return state
 
 
+def _recent_charge(record, floor):
+    seen = record.get("seen") if isinstance(record, dict) else None
+    return (not isinstance(seen, bool) and isinstance(seen, (int, float))
+            and math.isfinite(seen) and seen >= floor)
+
+
+def _prune_recovered(state, now):
+    recovered = state.get("recovered_charges")
+    if not isinstance(recovered, dict) or not recovered:
+        return
+    floor = now - _RECOVERED_RETENTION_SECONDS
+    for key in [k for k, record in recovered.items() if not _recent_charge(record, floor)]:
+        del recovered[key]
+
+
+def _sweep_stale_temps(root):
+    """Remove state temps no live writer can own: every save runs under the
+    shared lock and renames its temp within milliseconds."""
+    cutoff = time.time() - _STALE_TEMP_SECONDS
+    for path in root.glob(".resource-budget-state-*"):
+        try:
+            if path.is_file() and not path.is_symlink() and path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            pass
+
+
 def _save_state(root, state):
     state["updated"] = monotonic()
+    _prune_recovered(state, state["updated"])
+    _sweep_stale_temps(root)
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=root,
@@ -392,7 +430,7 @@ def _settle(root, state, policy, cpu, start, gpu_elapsed=0.0, *, wait=True):
                         current = {k: max(previous[k], row[k]) for k in ("cpu", "gpu_elapsed")}
                         for k in current:
                             row[k] = current[k] - previous[k]
-                        recovered[charge_id] = current
+                        recovered[charge_id] = dict(current, seen=monotonic())
                     state["cpu_deadline"] = max(state["cpu_deadline"], row["start"]) + row["cpu"] / capacity
                     if row["gpu_elapsed"]:
                         state["gpu_deadline"] = max(state["gpu_deadline"], row["start"]) + row["gpu_elapsed"] * 100.0 / policy["gpu_percent"]

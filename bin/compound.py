@@ -29,6 +29,15 @@ MEMORY_SYSTEM = os.path.expanduser(
 DB_PATH = os.path.join(MEMORY_SYSTEM, "db", "index.db")
 TODAY = datetime.now().strftime("%Y-%m-%d")
 
+try:
+    from constants import GLOBAL_MEMORY_SUBDIR, HISTORY_CHUNK_SQL
+except ImportError:
+    GLOBAL_MEMORY_SUBDIR = "memory"
+    HISTORY_CHUNK_SQL = (
+        "(COALESCE(c.section_heading, '') = 'History' "
+        "OR COALESCE(c.section_heading, '') LIKE 'History (part %')"
+    )
+
 
 # Threshold fallback (stage 3): >= COMPOUND overlapping salient keywords on
 # one card → compound into it; exactly FLAG → too ambiguous to auto-compound,
@@ -57,6 +66,13 @@ OVERLAP_FLAG_MIN = 2
 VECTOR_GATE_MIN_SIM_BY_PROFILE = {"multilingual": 0.85, "english": 0.60}
 VECTOR_GATE_MIN_SIM_DEFAULT = 0.85
 
+# A card's `## History` is compound's own output. Matching against it let one
+# stray line attract every later signal sharing its words (2026-11-19 audit: a
+# card about image routes collected PR-review lines from other projects), so
+# History chunks (constants.HISTORY_CHUNK_SQL) never count as evidence that a
+# signal belongs to a card.
+HISTORY_ENTRY_RE = re.compile(r"^-\s+\d{4}-\d{2}-\d{2}:\s+(.*\S)\s*$")
+
 
 def _sanitize_words(query):
     # Keep `-`: a hyphenated identifier (scikit-learn) stays ONE keyword unit,
@@ -76,11 +92,11 @@ def _keyword_paths(conn, word, limit=200):
     LIMIT: an unordered LIMIT returned an arbitrary subset, so the same signal
     could compound on one run and duplicate on the next."""
     try:
-        rows = conn.execute("""
+        rows = conn.execute(f"""
             SELECT DISTINCT c.path
             FROM memory_fts
             JOIN memory_chunks c ON memory_fts.rowid = c.id
-            WHERE memory_fts MATCH ?
+            WHERE memory_fts MATCH ? AND NOT {HISTORY_CHUNK_SQL}
             ORDER BY c.path
             LIMIT ?
         """, ('"' + word + '"', limit)).fetchall()
@@ -127,12 +143,12 @@ def search_fts5(conn, query, limit=3):
 
     def run_match(fts_query):
         try:
-            return conn.execute("""
+            return conn.execute(f"""
                 SELECT c.path, c.name, c.section_heading, c.content,
                        memory_fts.rank AS fts_rank
                 FROM memory_fts
                 JOIN memory_chunks c ON memory_fts.rowid = c.id
-                WHERE memory_fts MATCH ?
+                WHERE memory_fts MATCH ? AND NOT {HISTORY_CHUNK_SQL}
                 ORDER BY memory_fts.rank
                 LIMIT ?
             """, (fts_query, limit)).fetchall()
@@ -234,7 +250,7 @@ def _vector_gate(signal_text, candidate_text, embedder=None):
         return None
 
 
-def find_overlap_candidate(conn, query, signal_text, embedder=None):
+def find_overlap_candidate(conn, query, signal_text, embedder=None, scope_root=None):
     """Stage-3 thresholded fallback after phrase + AND both missed.
 
     Counts how many of the top-6 salient keywords individually hit the same
@@ -267,7 +283,7 @@ def find_overlap_candidate(conn, query, signal_text, embedder=None):
     counts = {}
     for _word, paths in salient:
         for path in paths:
-            if is_compound_candidate(path):
+            if is_compound_candidate(path) and in_scope(path, scope_root):
                 counts[path] = counts.get(path, 0) + 1
     if not counts:
         return None, None
@@ -277,9 +293,12 @@ def find_overlap_candidate(conn, query, signal_text, embedder=None):
         return None, None
 
     def _card_rows():
-        return conn.execute("""
-            SELECT path, name, section_heading, content, 0 AS fts_rank
-            FROM memory_chunks WHERE path = ? LIMIT 1
+        # The card's own text, not its History: the vector gate compares the
+        # signal with what the card is about.
+        return conn.execute(f"""
+            SELECT c.path, c.name, c.section_heading, c.content, 0 AS fts_rank
+            FROM memory_chunks c WHERE c.path = ?
+            ORDER BY {HISTORY_CHUNK_SQL}, c.id LIMIT 1
         """, (best_path,)).fetchall()
 
     # STRONG lexical: compound; gate may confirm, never veto (so it isn't called).
@@ -335,16 +354,58 @@ SIGNAL_PREFIX_RE = re.compile(r"^(Decision|Rule|Worked|Failed|Knowledge):\s+\S")
 
 
 def normalize_signals(raw):
-    return [
-        line.strip()
-        for line in raw.splitlines()
-        if SIGNAL_PREFIX_RE.match(line.strip())
-    ]
+    """Prefixed signal lines, in order, each once: the extractor can repeat a line."""
+    out = []
+    seen = set()
+    for line in raw.splitlines():
+        s = line.strip()
+        if SIGNAL_PREFIX_RE.match(s) and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
 
 
 def is_compound_candidate(path):
     """A returned exact FTS match is enough; FTS5 rank magnitudes are corpus-scale dependent."""
     return bool(path and "/memory/" in path and "SKILL.md" not in path)
+
+
+def in_scope(path, scope_root):
+    """True when `path` lives under `scope_root` (None = no scope).
+
+    A session's signals compound only into cards of that session's own memory
+    dir. Cross-project compounding wrote other projects' review results into
+    unrelated cards (2026-11-19 audit); a signal with no in-scope match becomes
+    a new line in the session's own signals file instead.
+    """
+    if not scope_root:
+        return True
+    root = os.path.realpath(scope_root).rstrip(os.sep) + os.sep
+    return os.path.realpath(path).startswith(root)
+
+
+def history_has_entry(filepath, signal_text):
+    """True when the card's History already holds this exact signal (any date).
+
+    The Stop hook runs at every assistant stop and re-reads the transcript
+    tail, so the same signal is extracted more than once; appending it again
+    produced 1,462 duplicate History lines across 197 cards (2026-11-19).
+    """
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception:
+        return False
+    bounds = _history_section_bounds(content)
+    if not bounds:
+        return False
+    start, end = bounds
+    target = signal_text.strip()
+    for line in content[start:end].splitlines():
+        m = HISTORY_ENTRY_RE.match(line.strip())
+        if m and m.group(1) == target:
+            return True
+    return False
 
 
 def _get_file_type(filepath):
@@ -446,29 +507,54 @@ def resolve_memory_dir(cwd):
     Shared by the Stop-hook signal path (create_signal_file) and the manual
     promotion path (remember.py) so both write to the same project memory dir.
     """
-    sanitized = cwd.rstrip("/").replace("/", "-").lstrip("-")
-
-    memory_dir = None
-    projects_dir = os.path.expanduser("~/.claude/projects/")
-    if os.path.isdir(projects_dir):
-        for d in os.listdir(projects_dir):
-            if d == sanitized or d == "-" + sanitized:
-                candidate = os.path.join(projects_dir, d, "memory")
-                if os.path.isdir(candidate):
-                    memory_dir = candidate
-                    break
-        if not memory_dir:
-            for d in os.listdir(projects_dir):
-                if sanitized.endswith(d.lstrip("-")) and len(d) > 10:
-                    candidate = os.path.join(projects_dir, d, "memory")
-                    if os.path.isdir(candidate):
-                        memory_dir = candidate
-                        break
+    memory_dir = _project_memory_dir(cwd)
+    if not memory_dir:
+        # A linked git worktree (Orca workspaces, _worktrees/*) belongs to the
+        # project of its main checkout.
+        main_root = _git_main_root(cwd)
+        if main_root and main_root != cwd.rstrip("/"):
+            memory_dir = _project_memory_dir(main_root)
 
     if not memory_dir:
-        memory_dir = MEMORY_SYSTEM
+        # The global store must be a scanned dir (constants.memory_system_scan_dirs);
+        # the memory-system root itself is never indexed.
+        memory_dir = os.path.join(MEMORY_SYSTEM, GLOBAL_MEMORY_SUBDIR)
         os.makedirs(memory_dir, exist_ok=True)
     return memory_dir
+
+
+def _project_memory_dir(cwd):
+    sanitized = cwd.rstrip("/").replace("/", "-").lstrip("-")
+    projects_dir = os.path.expanduser("~/.claude/projects/")
+    if not os.path.isdir(projects_dir):
+        return None
+    for d in os.listdir(projects_dir):
+        if d == sanitized or d == "-" + sanitized:
+            candidate = os.path.join(projects_dir, d, "memory")
+            if os.path.isdir(candidate):
+                return candidate
+    for d in os.listdir(projects_dir):
+        if sanitized.endswith(d.lstrip("-")) and len(d) > 10:
+            candidate = os.path.join(projects_dir, d, "memory")
+            if os.path.isdir(candidate):
+                return candidate
+    return None
+
+
+def _git_main_root(cwd):
+    """Root of the main checkout when `cwd` is inside a git repo, else None."""
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, timeout=3,
+        )
+    except Exception:
+        return None
+    common = out.stdout.strip()
+    if out.returncode != 0 or not common or os.path.basename(common.rstrip("/")) != ".git":
+        return None
+    return os.path.dirname(common.rstrip("/"))
 
 
 def create_signal_file(cwd, signals):
@@ -534,8 +620,10 @@ def main():
         conn.execute("PRAGMA busy_timeout=5000")
 
     compounded = 0
+    repeated = 0
     new_signals = []
     flagged = []
+    scope_root = resolve_memory_dir(cwd)
 
     for signal in signals:
         keywords = extract_keywords(signal)
@@ -548,9 +636,13 @@ def main():
         dup_candidate = None
 
         if conn and keywords:
-            results = search_fts5(conn, keywords, limit=3)
+            # Over-fetch, then scope: out-of-scope hits must not crowd out an
+            # in-scope match ranked just below them.
+            results = [r for r in search_fts5(conn, keywords, limit=20)
+                       if in_scope(r[0], scope_root)][:3]
             if not results:
-                action, payload = find_overlap_candidate(conn, keywords, signal)
+                action, payload = find_overlap_candidate(conn, keywords, signal,
+                                                         scope_root=scope_root)
                 if action == "compound":
                     results = payload
                 elif action == "flag":
@@ -562,6 +654,11 @@ def main():
                         if dup_candidate is None:
                             dup_candidate = path
                         continue
+                    if history_has_entry(path, signal):
+                        # Already recorded on this card: nothing to write.
+                        repeated += 1
+                        matched = True
+                        break
                     if update_existing(path, signal):
                         compounded += 1
                         matched = True
@@ -586,8 +683,10 @@ def main():
         conn.close()
 
     total = compounded + len(new_signals)
-    if total > 0:
+    if total > 0 or repeated:
         summary = f"{compounded} compounded, {len(new_signals)} new"
+        if repeated:
+            summary += f", {repeated} already recorded"
         if flagged:
             summary += f", {len(flagged)} flagged"
         print(f"Signals: {summary}", file=sys.stderr)

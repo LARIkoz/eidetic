@@ -90,14 +90,17 @@ class RememberOplogTest(unittest.TestCase):
         self.assertEqual(remember.target_slug("synthesis already", "synthesis"), "synthesis-already")
 
     def test_resolve_memory_dir_falls_back_to_global(self):
-        self.assertEqual(compound.resolve_memory_dir(NOMATCH_CWD), self.tmp)
+        # The global store is a scanned subdir, never the unindexed root itself.
+        self.assertEqual(compound.resolve_memory_dir(NOMATCH_CWD),
+                         os.path.join(self.tmp, "memory"))
 
     # --- consreview fixes ---
     def test_protected_feedback_card_is_never_appended_or_clobbered(self):
         # A same-slug user-validated feedback rule must be left fully intact:
         # not appended into (provenance), not overwritten (data loss).
         slug = remember.target_slug("Stay Tight", "rule")  # -> rule-stay-tight, type feedback
-        prot = os.path.join(self.tmp, f"{slug}.md")
+        os.makedirs(os.path.join(self.tmp, "memory"), exist_ok=True)
+        prot = os.path.join(self.tmp, "memory", f"{slug}.md")
         with open(prot, "w", encoding="utf-8") as f:
             f.write("---\nname: rule-stay-tight\ntype: feedback\nsource: user-explicit\n---\n# rule\nUSER RULE BODY\n")
         before = _read(prot)

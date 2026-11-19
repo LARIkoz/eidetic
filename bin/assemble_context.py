@@ -93,9 +93,13 @@ RULE_CLUSTERS = _load_rule_clusters()
 try:
     from constants import (
         EVIDENCE_WEIGHTS, SOURCE_WEIGHTS, DRIFT_PENALTIES, DECLARED_DRIFT_TYPES,
-        READER_SAFE_MIGRATIONS,
+        READER_SAFE_MIGRATIONS, HISTORY_CHUNK_SQL,
     )
 except ImportError:
+    HISTORY_CHUNK_SQL = (
+        "(COALESCE(c.section_heading, '') = 'History' "
+        "OR COALESCE(c.section_heading, '') LIKE 'History (part %')"
+    )
     EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
     SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
     DRIFT_PENALTIES = {"broken_wikilink": 0.8, "age_stale": 0.5, "confidence_escalation": 0.3,
@@ -424,20 +428,33 @@ def fetch_feedback(conn, budget_chars, current_slug=""):
     return "".join(result), used, total_rules, feedback_slugs
 
 
+def _lead_chunk_sql(where):
+    """Per card path, the id of its first non-History chunk (the first chunk at
+    all when the card is nothing but History), over chunks matching `where`."""
+    return f"""
+        SELECT c.path AS path,
+               COALESCE(MIN(CASE WHEN NOT {HISTORY_CHUNK_SQL} THEN c.id END), MIN(c.id)) AS id
+        FROM memory_chunks c
+        WHERE {where}
+        GROUP BY c.path"""
+
+
 def fetch_project(conn, cwd, budget_chars, drift_map=None):
     """Fetch project-relevant memories by matching project slug."""
     slug = detect_project_slug(cwd)
     drift_map = drift_map or {}
 
-    rows = conn.execute("""
-        SELECT DISTINCT c.path, c.name, c.description, c.section_heading, c.content,
+    # One entry per card (its lead chunk): listing a card once per section let a
+    # single long card fill the whole block (2026-11-19: 5 sections of one card).
+    rows = conn.execute(f"""
+        WITH pick AS ({_lead_chunk_sql("c.project LIKE ? ESCAPE '\\' AND c.type != 'feedback'")})
+        SELECT c.path, c.name, c.description, c.section_heading, c.content,
                c.evidence, c.source, c.last_verified, c.type, c.card_kind,
                c.status, c.superseded_by, c.confidence,
                memory_fts.rank AS fts_rank
-        FROM memory_chunks c
+        FROM pick JOIN memory_chunks c ON c.id = pick.id
         LEFT JOIN memory_fts ON memory_fts.rowid = c.id
-        WHERE c.project LIKE ? ESCAPE '\\' AND c.type != 'feedback'
-        ORDER BY c.mtime DESC, c.path, c.section_heading
+        ORDER BY c.mtime DESC, c.path
         LIMIT 50
     """, (f"%{_escape_like(slug[-60:])}%",)).fetchall()
 
@@ -483,22 +500,25 @@ def fetch_recent(conn, budget_chars, exclude_project=None, drift_map=None):
     cutoff = int((datetime.now() - timedelta(days=14)).timestamp())
     mtime_seconds = "CASE WHEN c.mtime > 10000000000 THEN c.mtime / 1000000000 ELSE c.mtime END"
 
-    query = """
-        SELECT DISTINCT c.path, c.name, c.description, c.section_heading, c.content,
-               c.evidence, c.source, c.last_verified, c.type, c.project,
-               c.card_kind, c.status, c.superseded_by, c.confidence
-        FROM memory_chunks c
-        WHERE {mtime_seconds} > ? AND c.type != 'feedback'
-    """.format(mtime_seconds=mtime_seconds)
+    where = f"{mtime_seconds} > ? AND c.type != 'feedback'"
     params = [cutoff]
 
     if exclude_project:
-        query += " AND (c.project IS NULL OR c.project NOT LIKE ? ESCAPE '\\')"
+        where += " AND (c.project IS NULL OR c.project NOT LIKE ? ESCAPE '\\')"
         params.append(f"%{_escape_like(exclude_project[-60:])}%")
 
+    # One entry per card (its lead chunk, never its History): per-section rows let
+    # one card take every slot (2026-11-19: 8 of 8 entries were the same card).
     # Total order: mtime alone ties for batch-written cards, making the LIMIT-30
-    # cutoff pick an arbitrary subset. (path, section_heading) is the unique key.
-    query += f" ORDER BY {mtime_seconds} DESC, c.path, c.section_heading LIMIT 30"
+    # cutoff pick an arbitrary subset; path is unique per card.
+    query = f"""
+        WITH pick AS ({_lead_chunk_sql(where)})
+        SELECT c.path, c.name, c.description, c.section_heading, c.content,
+               c.evidence, c.source, c.last_verified, c.type, c.project,
+               c.card_kind, c.status, c.superseded_by, c.confidence
+        FROM pick JOIN memory_chunks c ON c.id = pick.id
+        ORDER BY {mtime_seconds} DESC, c.path LIMIT 30
+    """
 
     rows = conn.execute(query, params).fetchall()
 

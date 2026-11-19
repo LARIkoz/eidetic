@@ -230,3 +230,31 @@ M3_NEIGHBORS = 8
 M3_DEDUP_MIN = {"multilingual": 0.85, "english": 0.60}
 M3_DEDUP_MIN_DEFAULT = 0.85
 M3_SUPPORT_MIN = 0.5
+
+
+# Global memory store for sessions whose cwd maps to no project memory dir
+# (compound.resolve_memory_dir fallback). It must be a SCANNED dir: the old
+# fallback was the memory-system root itself, which the indexer never scans, so
+# cards filed there were invisible to recall (12 such cards found 2026-11-19).
+GLOBAL_MEMORY_SUBDIR = "memory"
+
+
+def memory_system_scan_dirs(memory_system):
+    """Scanned dirs inside a memory-system root: the legacy global signals dir,
+    the global store, and the global store's signals dir (trailing separator,
+    the same shape as the ~/.claude scan patterns)."""
+    import os
+    return [
+        os.path.join(memory_system, sub) + os.sep
+        for sub in ("signals", GLOBAL_MEMORY_SUBDIR, os.path.join(GLOBAL_MEMORY_SUBDIR, "signals"))
+    ]
+
+
+# SQL predicate (alias `c` = memory_chunks) for a card's `## History` chunks —
+# compound's own appended signal lines. The indexer splits a long History into
+# "History (part N)" chunks. Used by compound (never match a signal against a
+# card's History) and assemble_context (show a card by its own text).
+HISTORY_CHUNK_SQL = (
+    "(COALESCE(c.section_heading, '') = 'History' "
+    "OR COALESCE(c.section_heading, '') LIKE 'History (part %')"
+)
