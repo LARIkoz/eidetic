@@ -11,16 +11,24 @@ All notable changes to Eidetic are documented here.
   compounded across projects (a card about image routes collected PR-review results from other projects). History
   chunks no longer count as a match, and a session's signals compound only into cards under its own memory dir
   (`in_scope`); anything else becomes a new line in the session's signals file.
-- *No repeated History lines.* The Stop hook re-extracts the same signal at every stop; the live store had 1,462
-  duplicate History lines in 197 cards. A signal already in a card's History is now reported as "already recorded"
-  and not written again; repeated lines in one extractor reply collapse.
+- *No repeated lines.* The Stop hook re-extracts the same signal at every stop; the live store had 1,462
+  duplicate History lines in 197 cards, and a signal first filed as `- S` in the day's signals file matched that very
+  file at the next stop and was appended to its History (698 repeats in one signals file). A signal already in the
+  candidate file (History entry or bare bullet) or in today's signals file is now reported as "already recorded" and
+  not written again; repeated lines in one extractor reply collapse.
+- *Scope applies inside each match stage.* The phrase and AND stages and the overlap counter query inside the
+  session's memory dir, so an out-of-scope phrase hit no longer ends the search and a global `LIMIT 200` cut-off no
+  longer drops a later-sorted project's cards for common words. Project dirs are matched by Claude Code's own naming
+  (every non-alphanumeric cwd character becomes `-`), and the History-chunk predicate also covers `History (2)` and
+  `History › <h3>` chunks.
 - *The global store is indexed.* With no project memory dir for the cwd, cards and signals went to the
   memory-system root, which the indexer never scans (12 `remember` cards were invisible to recall). The fallback is
   now `<memory-system>/memory/` (+ `memory/signals/`), scanned by index, lint and cleanup; the legacy
   `<memory-system>/signals/` stays scanned. A linked git worktree (Orca workspaces, `_worktrees/*`) now resolves to
   its main checkout's project memory dir.
 - *Injected context lists each card once.* The Project and Recent blocks listed a card once per section (8 of 8
-  Recent entries were one card) and often showed its History; each card now appears once, by its lead chunk.
+  Recent entries were one card) and often showed its History; each card now appears once, by its lead chunk (the
+  first non-History chunk that is more than a lone `# Title` line).
 - *Bounded governor state.* The recovered-charge map (11,754 entries, a 1.46 MB state file rewritten and fsynced on
   every settle) keeps identities for 24 h; orphan `.resource-budget-state-*` temps older than 10 minutes (313 found)
   are swept on save. Both can only over-charge, never under-charge.

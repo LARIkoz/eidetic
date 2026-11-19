@@ -30,7 +30,8 @@ class OneEntryPerCardTest(unittest.TestCase):
         now = int(time.time())
         rows = []
         # A long card: intro + 3 sections + History, newest of all.
-        for heading, body in [("Long Card", "LEAD TEXT of the long card"),
+        for heading, body in [("Long Card", "# Long Card"),
+                              ("Summary", "LEAD TEXT of the long card"),
                               ("Part A", "section a"), ("Part B", "section b"),
                               ("Part C", "section c"),
                               ("History", "- 2026-11-11: Worked: stray line")]:

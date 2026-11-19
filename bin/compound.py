@@ -35,7 +35,8 @@ except ImportError:
     GLOBAL_MEMORY_SUBDIR = "memory"
     HISTORY_CHUNK_SQL = (
         "(COALESCE(c.section_heading, '') = 'History' "
-        "OR COALESCE(c.section_heading, '') LIKE 'History (part %')"
+        "OR COALESCE(c.section_heading, '') LIKE 'History (%' "
+        "OR COALESCE(c.section_heading, '') LIKE 'History › %')"
     )
 
 
@@ -86,23 +87,37 @@ def _sanitize_words(query):
     return [w for w in sanitized.split() if len(w) > 2 and w.upper() not in ("AND", "OR", "NOT", "NEAR")]
 
 
-def _keyword_paths(conn, word, limit=200):
+def _keyword_paths(conn, word, limit=200, scope_root=None):
     """Distinct card paths matching ONE keyword (FTS porter stemming applies,
     so `performing` finds a card that says `performs`). ORDER BY path before
     LIMIT: an unordered LIMIT returned an arbitrary subset, so the same signal
-    could compound on one run and duplicate on the next."""
+    could compound on one run and duplicate on the next. With `scope_root` the
+    LIMIT applies inside the scope: a global alphabetical cut-off would drop a
+    later-sorted project's cards for common words before scoping."""
+    scope_sql, params = "", ['"' + word + '"']
+    if scope_root:
+        scope_sql = " AND c.path LIKE ? ESCAPE '\\'"
+        params.append(_like_prefix(scope_root))
+    params.append(limit)
     try:
         rows = conn.execute(f"""
             SELECT DISTINCT c.path
             FROM memory_fts
             JOIN memory_chunks c ON memory_fts.rowid = c.id
-            WHERE memory_fts MATCH ? AND NOT {HISTORY_CHUNK_SQL}
+            WHERE memory_fts MATCH ? AND NOT {HISTORY_CHUNK_SQL}{scope_sql}
             ORDER BY c.path
             LIMIT ?
-        """, ('"' + word + '"', limit)).fetchall()
+        """, params).fetchall()
     except sqlite3.OperationalError:
         return set()
-    return {r[0] for r in rows}
+    return {r[0] for r in rows if in_scope(r[0], scope_root)}
+
+
+def _like_prefix(root):
+    """LIKE pattern for paths under `root`, in the indexed (unresolved) path form."""
+    prefix = root.rstrip(os.sep) + os.sep
+    escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return escaped + "%"
 
 
 def _salient_words(conn, words):
@@ -126,7 +141,7 @@ def _salient_words(conn, words):
     return [(word, paths) for _df, _neglen, _pos, word, paths in scored]
 
 
-def search_fts5(conn, query, limit=3):
+def search_fts5(conn, query, limit=3, scope_root=None):
     """Search FTS5 for existing memory on same topic.
 
     Staged match: the strict phrase of up to 6 keywords first (cheap, precise),
@@ -142,18 +157,26 @@ def search_fts5(conn, query, limit=3):
         return []
 
     def run_match(fts_query):
+        # Scope each stage: an out-of-scope phrase hit must not end the search
+        # before the AND stage looks inside the scope.
+        scope_sql, params = "", [fts_query]
+        if scope_root:
+            scope_sql = " AND c.path LIKE ? ESCAPE '\\'"
+            params.append(_like_prefix(scope_root))
+        params.append(limit)
         try:
-            return conn.execute(f"""
+            rows = conn.execute(f"""
                 SELECT c.path, c.name, c.section_heading, c.content,
                        memory_fts.rank AS fts_rank
                 FROM memory_fts
                 JOIN memory_chunks c ON memory_fts.rowid = c.id
-                WHERE memory_fts MATCH ? AND NOT {HISTORY_CHUNK_SQL}
+                WHERE memory_fts MATCH ? AND NOT {HISTORY_CHUNK_SQL}{scope_sql}
                 ORDER BY memory_fts.rank
                 LIMIT ?
-            """, (fts_query, limit)).fetchall()
+            """, params).fetchall()
         except sqlite3.OperationalError:
             return []
+        return [r for r in rows if in_scope(r[0], scope_root)]
 
     rows = run_match('"' + " ".join(words[:6]) + '"')
     if rows:
@@ -281,9 +304,11 @@ def find_overlap_candidate(conn, query, signal_text, embedder=None, scope_root=N
         return None, None
 
     counts = {}
-    for _word, paths in salient:
+    for word, paths in salient:
+        if scope_root:
+            paths = _keyword_paths(conn, word, scope_root=scope_root)
         for path in paths:
-            if is_compound_candidate(path) and in_scope(path, scope_root):
+            if is_compound_candidate(path):
                 counts[path] = counts.get(path, 0) + 1
     if not counts:
         return None, None
@@ -384,25 +409,29 @@ def in_scope(path, scope_root):
     return os.path.realpath(path).startswith(root)
 
 
-def history_has_entry(filepath, signal_text):
-    """True when the card's History already holds this exact signal (any date).
+def already_recorded(filepath, signal_text):
+    """True when the file already holds this exact signal: as a History entry
+    (`- YYYY-MM-DD: S`, any date) or as a bare bullet (`- S`, the form a signals
+    file stores new signals in).
 
     The Stop hook runs at every assistant stop and re-reads the transcript
-    tail, so the same signal is extracted more than once; appending it again
-    produced 1,462 duplicate History lines across 197 cards (2026-11-19).
+    tail, so the same signal is extracted again and again. A signal first filed
+    as `- S` in the day's signals file then matched that very file and was
+    appended to its History (2026-11-19: 698 repeats in one signals file,
+    1,462 repeated History lines across 197 cards).
     """
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             content = f.read()
     except Exception:
         return False
-    bounds = _history_section_bounds(content)
-    if not bounds:
-        return False
-    start, end = bounds
     target = signal_text.strip()
-    for line in content[start:end].splitlines():
-        m = HISTORY_ENTRY_RE.match(line.strip())
+    bare = "- " + target
+    for line in content.splitlines():
+        line = line.strip()
+        if line == bare:
+            return True
+        m = HISTORY_ENTRY_RE.match(line)
         if m and m.group(1) == target:
             return True
     return False
@@ -528,6 +557,12 @@ def _project_memory_dir(cwd):
     projects_dir = os.path.expanduser("~/.claude/projects/")
     if not os.path.isdir(projects_dir):
         return None
+    # Claude Code names a project dir by turning EVERY non-alphanumeric char of
+    # the cwd into '-' (so `_worktrees` -> `-worktrees`, `.cache` -> `-cache`).
+    claude_name = re.sub(r"[^A-Za-z0-9]", "-", cwd.rstrip("/"))
+    candidate = os.path.join(projects_dir, claude_name, "memory")
+    if os.path.isdir(candidate):
+        return candidate
     for d in os.listdir(projects_dir):
         if d == sanitized or d == "-" + sanitized:
             candidate = os.path.join(projects_dir, d, "memory")
@@ -625,7 +660,13 @@ def main():
     flagged = []
     scope_root = resolve_memory_dir(cwd)
 
+    todays_signals = os.path.join(scope_root, "signals", f"{TODAY}.md")
+
     for signal in signals:
+        if os.path.exists(todays_signals) and already_recorded(todays_signals, signal):
+            # Re-extracted at a later stop of the same day: already filed.
+            repeated += 1
+            continue
         keywords = extract_keywords(signal)
         matched = False
         # First candidate we could NOT compound into (protected type or a
@@ -636,10 +677,7 @@ def main():
         dup_candidate = None
 
         if conn and keywords:
-            # Over-fetch, then scope: out-of-scope hits must not crowd out an
-            # in-scope match ranked just below them.
-            results = [r for r in search_fts5(conn, keywords, limit=20)
-                       if in_scope(r[0], scope_root)][:3]
+            results = search_fts5(conn, keywords, limit=3, scope_root=scope_root)
             if not results:
                 action, payload = find_overlap_candidate(conn, keywords, signal,
                                                          scope_root=scope_root)
@@ -654,7 +692,7 @@ def main():
                         if dup_candidate is None:
                             dup_candidate = path
                         continue
-                    if history_has_entry(path, signal):
+                    if already_recorded(path, signal):
                         # Already recorded on this card: nothing to write.
                         repeated += 1
                         matched = True

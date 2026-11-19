@@ -252,9 +252,11 @@ def memory_system_scan_dirs(memory_system):
 
 # SQL predicate (alias `c` = memory_chunks) for a card's `## History` chunks —
 # compound's own appended signal lines. The indexer splits a long History into
-# "History (part N)" chunks. Used by compound (never match a signal against a
+# "History (part N)" chunks, a repeated heading becomes "History (2)", and an H3
+# under History becomes a "History › <h3>" breadcrumb. Used by compound (never match a signal against a
 # card's History) and assemble_context (show a card by its own text).
 HISTORY_CHUNK_SQL = (
     "(COALESCE(c.section_heading, '') = 'History' "
-    "OR COALESCE(c.section_heading, '') LIKE 'History (part %')"
+    "OR COALESCE(c.section_heading, '') LIKE 'History (%' "
+    "OR COALESCE(c.section_heading, '') LIKE 'History › %')"
 )

@@ -98,7 +98,8 @@ try:
 except ImportError:
     HISTORY_CHUNK_SQL = (
         "(COALESCE(c.section_heading, '') = 'History' "
-        "OR COALESCE(c.section_heading, '') LIKE 'History (part %')"
+        "OR COALESCE(c.section_heading, '') LIKE 'History (%' "
+        "OR COALESCE(c.section_heading, '') LIKE 'History › %')"
     )
     EVIDENCE_WEIGHTS = {"validated": 1.0, "observed": 0.7, "hypothesis": 0.4}
     SOURCE_WEIGHTS = {"user-explicit": 1.0, "agent-extracted": 0.5, "system-generated": 0.3}
@@ -429,11 +430,15 @@ def fetch_feedback(conn, budget_chars, current_slug=""):
 
 
 def _lead_chunk_sql(where):
-    """Per card path, the id of its first non-History chunk (the first chunk at
-    all when the card is nothing but History), over chunks matching `where`."""
+    """Per card path, the id of its first non-History chunk that is more than a
+    lone title line (`# Foo` before the first `##`), else its first non-History
+    chunk, else its first chunk, over chunks matching `where`."""
+    lone_title = "(TRIM(c.content) LIKE '#%' AND INSTR(TRIM(c.content), char(10)) = 0)"
     return f"""
         SELECT c.path AS path,
-               COALESCE(MIN(CASE WHEN NOT {HISTORY_CHUNK_SQL} THEN c.id END), MIN(c.id)) AS id
+               COALESCE(MIN(CASE WHEN NOT {HISTORY_CHUNK_SQL} AND NOT {lone_title} THEN c.id END),
+                        MIN(CASE WHEN NOT {HISTORY_CHUNK_SQL} THEN c.id END),
+                        MIN(c.id)) AS id
         FROM memory_chunks c
         WHERE {where}
         GROUP BY c.path"""
