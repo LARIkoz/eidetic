@@ -29,6 +29,9 @@ All notable changes to Eidetic are documented here.
 - *Injected context lists each card once.* The Project and Recent blocks listed a card once per section (8 of 8
   Recent entries were one card) and often showed its History; each card now appears once, by its lead chunk (the
   first non-History chunk that is more than a lone `# Title` line).
+- *`local.env` honoured outside the hook.* `assemble_context.py` now reads the per-machine `EIDETIC_*` switches
+  itself (same contract as the SessionStart hook), so `update.sh`'s context refresh no longer drops
+  `EIDETIC_FEEDBACK_OVERFLOW=pointer` (the 2026-11-19 update doubled the context to ~20.7K tokens).
 - *Bounded governor state.* The recovered-charge map (11,754 entries, a 1.46 MB state file rewritten and fsynced on
   every settle) keeps identities for 24 h; orphan `.resource-budget-state-*` temps older than 10 minutes (313 found)
   are swept on save. Both can only over-charge, never under-charge.

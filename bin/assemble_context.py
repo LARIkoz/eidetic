@@ -618,10 +618,37 @@ def fetch_fresh_handoff(cwd, slug):
     return text, len(text)
 
 
+def load_local_env(memory_system):
+    """Apply per-machine EIDETIC_* switches from <memory-system>/local.env.
+
+    The SessionStart hook already reads this file, but update.sh and manual runs
+    call this script directly: after the 2026-11-19 update the context was
+    rebuilt without EIDETIC_FEEDBACK_OVERFLOW=pointer and doubled to ~20.7K
+    tokens. Same contract as the hook: only EIDETIC_* KEY=VALUE lines, nothing
+    executed, a variable already set in the environment wins."""
+    path = os.path.join(memory_system, "local.env")
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return
+    for line in lines:
+        m = re.match(r"^(EIDETIC_[A-Z0-9_]+)=(.*)$", line)
+        if not m:
+            continue
+        key, value = m.group(1), m.group(2)
+        if value.startswith('"') and value.endswith('"') and len(value) >= 2:
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+
+
 def main():
     db_path = sys.argv[1]
     rules_file = sys.argv[2]
     cwd = sys.argv[3] if len(sys.argv) > 3 else os.getcwd()
+    db_dir = os.path.dirname(os.path.abspath(os.path.expanduser(db_path)))
+    if os.path.basename(db_dir) == "db":
+        load_local_env(os.path.dirname(db_dir))
 
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
